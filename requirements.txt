@@ -1,3 +1,7 @@
-Flask==3.0.3
-Werkzeug==3.0.3
-requests==2.32.3
+flask
+flask_sqlalchemy
+gunicorn
+requests
+beautifulsoup4
+lxml
+cloudscraper
