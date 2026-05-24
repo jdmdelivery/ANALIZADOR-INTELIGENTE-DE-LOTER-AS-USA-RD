@@ -1,0 +1,22 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+venv/
+.venv/
+instance/
+*.db
+
+# Herramientas locales de recuperación (no necesarias en producción)
+_reconstructed/
+_patches/
+_rebuild_all.py
+_extract_transcript.py
+_extract_v2.py
+_list_ops.py
+_dump_patches.py
+_find_late_patches.py
+_late_ops.py
+_fix_appjs.py
+_fix_appjs2.py

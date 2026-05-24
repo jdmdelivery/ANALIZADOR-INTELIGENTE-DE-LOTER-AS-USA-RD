@@ -1,0 +1,7 @@
+flask
+flask_sqlalchemy
+gunicorn
+requests
+beautifulsoup4
+lxml
+cloudscraper
