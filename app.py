@@ -44,6 +44,14 @@ from models import (
     INITIAL_ADMIN_USERNAME,
 )
 from analysis import analizar_loteria_por_tanda, generar_jugada_inteligente
+from lottery_schedules import (
+    build_draw_buttons,
+    get_lottery_schedule,
+    get_schedule_slot,
+    schedule_draw_order,
+    slot_draw_name,
+    time_12h_to_24h,
+)
 from importers import import_csv, import_manual, sync_from_api, WebScraperImporter, refresh_lottery_results_now
 
 app = Flask(__name__)
@@ -55,12 +63,6 @@ init_auth(app)
 init_db()
 
 DRAW_BUTTONS = {
-    "RD": [
-        {"draw_name": "mañana", "label": "Mañana", "emoji": "🌅", "css": "tanda-manana"},
-        {"draw_name": "tarde", "label": "Tarde", "emoji": "🌇", "css": "tanda-tarde"},
-        {"draw_name": "tardía", "label": "Tardía", "emoji": "🎯", "css": "tanda-tardia"},
-        {"draw_name": "noche", "label": "Noche", "emoji": "🌙", "css": "tanda-noche"},
-    ],
     "USA": [
         {"draw_name": "Midday", "label": "Midday", "emoji": "☀️", "css": "tanda-midday"},
         {"draw_name": "Evening", "label": "Evening", "emoji": "🌙", "css": "tanda-evening"},
@@ -234,6 +236,23 @@ def api_draw_times():
     if not lottery:
         return jsonify({"ok": False, "message": "Lotería no encontrada"})
     draws = get_draw_times(lottery_id, active_only=True)
+    scheduled = build_draw_buttons(lottery, draws)
+    if scheduled is not None:
+        filtered = []
+        for b in scheduled:
+            enriched = dict(b)
+            enriched["schedule_label"] = _build_schedule_label(
+                lottery, b["draw_name"], b.get("draw_time", "")
+            )
+            filtered.append(enriched)
+        return jsonify({
+            "ok": True,
+            "draw_times": draws,
+            "buttons": filtered,
+            "lottery": lottery,
+            "uses_schedule": True,
+        })
+
     draw_map = {d["draw_name"]: d for d in draws}
     buttons = DRAW_BUTTONS.get(lottery["country"], [])
     available = set(draw_map.keys())
@@ -262,7 +281,13 @@ def api_draw_times():
                     lottery, d["draw_name"], d.get("draw_time", "")
                 ),
             })
-    return jsonify({"ok": True, "draw_times": draws, "buttons": filtered, "lottery": lottery})
+    return jsonify({
+        "ok": True,
+        "draw_times": draws,
+        "buttons": filtered,
+        "lottery": lottery,
+        "uses_schedule": False,
+    })
 
 
 @app.route("/api/results")
@@ -286,15 +311,31 @@ def api_results():
     else:
         results = get_results(lottery_id, draw_name, limit)
 
+    schedule = get_lottery_schedule(lottery["name"]) if lottery else None
+    allowed_draws = None
+    if schedule:
+        allowed_draws = {slot_draw_name(s) for s in schedule}
+
+    if allowed_draws is not None:
+        results = [r for r in results if r.get("draw_name") in allowed_draws]
+        results.sort(key=lambda r: schedule_draw_order(r.get("draw_name")))
+
     for r in results:
         enrich_result_row(r, lottery)
-        r["time_display"] = _format_time_12h(r.get("draw_time", ""))
+        slot = get_schedule_slot(lottery["name"], r.get("draw_name")) if lottery else None
+        r["time_display"] = slot["time"] if slot else _format_time_12h(r.get("draw_time", ""))
 
     if groups is not None:
         for g in groups:
+            if allowed_draws is not None:
+                g["results"] = [
+                    r for r in g["results"] if r.get("draw_name") in allowed_draws
+                ]
+                g["results"].sort(key=lambda r: schedule_draw_order(r.get("draw_name")))
             for r in g["results"]:
                 enrich_result_row(r, lottery)
-                r["time_display"] = _format_time_12h(r.get("draw_time", ""))
+                slot = get_schedule_slot(lottery["name"], r.get("draw_name")) if lottery else None
+                r["time_display"] = slot["time"] if slot else _format_time_12h(r.get("draw_time", ""))
 
     if lottery and lottery.get("country") == "USA":
         results.sort(
@@ -338,6 +379,9 @@ def api_prediction():
 
     draws = get_draw_times(lottery_id, active_only=True)
     draw_time = next((d.get("draw_time") for d in draws if d["draw_name"] == draw_name), "")
+    schedule_slot = get_schedule_slot(lottery["name"], draw_name) if lottery else None
+    if schedule_slot:
+        draw_time = time_12h_to_24h(schedule_slot["time"])
     stats = analizar_loteria_por_tanda(lottery_id, draw_name)
     if stats and stats.get("ok"):
         result["hot_numbers"] = stats.get("hot_numbers", [])[:5]
@@ -352,12 +396,16 @@ def api_prediction():
     if lottery:
         result["schedule_label"] = _build_schedule_label(lottery, draw_name, draw_time)
         result["draw_time"] = draw_time
-        result["time_display"] = _format_time_12h(draw_time)
-        if lottery.get("country") == "RD":
-            labels = {"mañana": "Mañana", "tarde": "Tarde", "tardía": "Tardía", "noche": "Noche"}
-            result["draw_display"] = labels.get(draw_name, draw_name.capitalize())
+        if schedule_slot:
+            result["time_display"] = schedule_slot["time"]
+            result["draw_display"] = schedule_slot["time"]
         else:
-            result["draw_display"] = draw_name
+            result["time_display"] = _format_time_12h(draw_time)
+            if lottery.get("country") == "RD":
+                labels = {"mañana": "Mañana", "tarde": "Tarde", "tardía": "Tardía", "noche": "Noche"}
+                result["draw_display"] = labels.get(draw_name, draw_name.capitalize())
+            else:
+                result["draw_display"] = draw_name
 
     return jsonify(result)
 

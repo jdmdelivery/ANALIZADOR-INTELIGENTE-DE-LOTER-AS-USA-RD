@@ -10,6 +10,8 @@
     const mainSplit = $('mainSplit');
     const recentResults = $('recentResults');
     const drawButtons = $('drawButtons');
+    const selectDraw = $('selectDraw');
+    const drawSelectRow = $('drawSelectRow');
     const loadingOverlay = $('loadingOverlay');
     const liveIndicator = $('liveIndicator');
     const latestDateBadge = $('latestDateBadge');
@@ -25,6 +27,7 @@
     let resultsViewMode = 'latest';
     let refreshTimer = null;
     let activeDrawBtn = null;
+    let currentDrawButtons = [];
 
     const TANDA_CSS = {
         'mañana': 'rc-manana',
@@ -284,12 +287,13 @@
 
     function renderResultCard(r, showDate = true) {
         const timePart = r.time_display || r.draw_time || '';
+        const tandaLine = timePart || r.draw_name || '';
         const dateLine = showDate
-            ? `${escapeHtml(r.draw_date)}${timePart ? ' · ' + escapeHtml(timePart) : ''}`
-            : (timePart ? escapeHtml(timePart) : '');
+            ? `${escapeHtml(r.draw_date)}${tandaLine ? ' · ' + escapeHtml(tandaLine) : ''}`
+            : (tandaLine ? escapeHtml(tandaLine) : '');
         return `
             <div class="result-card-hd ${tandaClass(r.draw_name)} animate-fade-in">
-                <div class="rc-tanda">${escapeHtml(r.draw_name)}</div>
+                <div class="rc-tanda">${escapeHtml(tandaLine)}</div>
                 ${dateLine ? `<div class="rc-date">${dateLine}</div>` : ''}
                 <div class="rc-balls">
                     ${renderBallSet(r.main_numbers || r.numbers, r.bonus_numbers)}
@@ -347,32 +351,80 @@
         }
     }
 
-    async function loadDrawButtons() {
+    function clearDrawScheduleUi() {
         drawButtons.innerHTML = '';
+        currentDrawButtons = [];
+        if (selectDraw) {
+            selectDraw.innerHTML = '<option value="">— Horario del sorteo —</option>';
+            selectDraw.value = '';
+        }
+        if (drawSelectRow) drawSelectRow.style.display = 'none';
+    }
+
+    function selectDrawSchedule(btn, buttonEl) {
+        if (activeDrawBtn) activeDrawBtn.classList.remove('active');
+        if (buttonEl) {
+            buttonEl.classList.add('active');
+            activeDrawBtn = buttonEl;
+        }
+        if (selectDraw && btn.draw_name) {
+            selectDraw.value = btn.draw_name;
+        }
+        getPrediction(btn);
+    }
+
+    function renderDrawScheduleButtons(buttons) {
+        clearDrawScheduleUi();
+        if (!buttons.length) {
+            drawButtons.innerHTML = '<p class="empty-msg">No hay horarios configurados para esta lotería.</p>';
+            return;
+        }
+
+        currentDrawButtons = buttons;
+        if (drawSelectRow) drawSelectRow.style.display = 'flex';
+
+        buttons.forEach(btn => {
+            const timeLine = btn.time_display || btn.time || '';
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = `btn-tanda ${btn.css || 'tanda-default'}`;
+            button.innerHTML = `
+                <span class="tanda-emoji">${btn.emoji || '🎱'}</span>
+                <span class="tanda-label tanda-label-time">${escapeHtml(timeLine)}</span>
+            `;
+            button.dataset.drawName = btn.draw_name;
+            button.title = btn.schedule_label || timeLine || btn.draw_name;
+            button.addEventListener('click', () => selectDrawSchedule(btn, button));
+            drawButtons.appendChild(button);
+
+            if (selectDraw) {
+                const opt = document.createElement('option');
+                opt.value = btn.draw_name;
+                opt.textContent = timeLine;
+                opt.dataset.time = timeLine;
+                selectDraw.appendChild(opt);
+            }
+        });
+
+        if (selectDraw && !selectDraw.dataset.bound) {
+            selectDraw.dataset.bound = '1';
+            selectDraw.addEventListener('change', () => {
+                const drawName = selectDraw.value;
+                if (!drawName) return;
+                const btn = currentDrawButtons.find(b => b.draw_name === drawName);
+                if (!btn) return;
+                const buttonEl = drawButtons.querySelector(`[data-draw-name="${CSS.escape(drawName)}"]`);
+                selectDrawSchedule(btn, buttonEl);
+            });
+        }
+    }
+
+    async function loadDrawButtons() {
+        clearDrawScheduleUi();
         try {
             const res = await fetch(`/api/draw-times?lottery_id=${currentLotteryId}`);
             const data = await res.json();
-
-            data.buttons.forEach(btn => {
-                const button = document.createElement('button');
-                button.type = 'button';
-                button.className = `btn-tanda ${btn.css || 'tanda-default'}`;
-                const timeLine = btn.time_display || '';
-                button.innerHTML = `
-                    <span class="tanda-emoji">${btn.emoji || '🎱'}</span>
-                    <span class="tanda-label">${escapeHtml(btn.label || btn.draw_name)}</span>
-                    ${timeLine ? `<span class="tanda-time">${escapeHtml(timeLine)}</span>` : ''}
-                `;
-                button.dataset.drawName = btn.draw_name;
-                button.title = btn.schedule_label || btn.draw_name;
-                button.addEventListener('click', () => {
-                    if (activeDrawBtn) activeDrawBtn.classList.remove('active');
-                    button.classList.add('active');
-                    activeDrawBtn = button;
-                    getPrediction(btn);
-                });
-                drawButtons.appendChild(button);
-            });
+            renderDrawScheduleButtons(data.buttons || []);
         } catch (e) {
             console.error(e);
         }
@@ -386,6 +438,7 @@
             activeDrawBtn.classList.remove('active');
             activeDrawBtn = null;
         }
+        if (selectDraw) selectDraw.value = '';
     }
 
     function showLoading(show) {

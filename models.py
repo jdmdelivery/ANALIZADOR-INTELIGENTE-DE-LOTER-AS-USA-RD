@@ -39,6 +39,56 @@ def get_db():
         conn.close()
 
 
+def _sync_lottery_draw_schedules(conn):
+    """Alinea draw_times en DB con LOTTERY_SCHEDULES (horarios reales por lotería)."""
+    from lottery_schedules import (
+        get_lottery_schedule,
+        resolve_schedule_key,
+        slot_draw_name,
+        time_12h_to_24h,
+    )
+
+    rows = conn.execute(
+        "SELECT id, name FROM lotteries WHERE country = 'RD'"
+    ).fetchall()
+    for lot in rows:
+        if not resolve_schedule_key(lot["name"]):
+            continue
+        schedule = get_lottery_schedule(lot["name"])
+        if not schedule:
+            continue
+        allowed = set()
+        for slot in schedule:
+            draw_name = slot_draw_name(slot)
+            allowed.add(draw_name)
+            t24 = time_12h_to_24h(slot["time"])
+            existing = conn.execute(
+                "SELECT id FROM draw_times WHERE lottery_id = ? AND draw_name = ?",
+                (lot["id"], draw_name),
+            ).fetchone()
+            if existing:
+                conn.execute(
+                    "UPDATE draw_times SET draw_time = ?, active = 1 WHERE id = ?",
+                    (t24, existing["id"]),
+                )
+            else:
+                conn.execute(
+                    """INSERT INTO draw_times
+                       (lottery_id, draw_name, draw_time, timezone, active)
+                       VALUES (?, ?, ?, 'America/Santo_Domingo', 1)""",
+                    (lot["id"], draw_name, t24),
+                )
+        for d in conn.execute(
+            "SELECT id, draw_name FROM draw_times WHERE lottery_id = ?",
+            (lot["id"],),
+        ).fetchall():
+            if d["draw_name"] not in allowed:
+                conn.execute(
+                    "UPDATE draw_times SET active = 0 WHERE id = ?",
+                    (d["id"],),
+                )
+
+
 def migrate_db():
     """Migraciones incrementales sobre DB existente."""
     conn = get_connection()
@@ -59,22 +109,7 @@ def migrate_db():
                 conn.execute(f"ALTER TABLE lottery_results ADD COLUMN {col} TEXT")
             except sqlite3.OperationalError:
                 pass
-        row = conn.execute(
-            "SELECT id FROM lotteries WHERE name = 'Anguila' AND country = 'RD'"
-        ).fetchone()
-        if row:
-            fixes = [
-                ("mañana", "10:00"),
-                ("tarde", "13:00"),
-                ("tardía", "18:00"),
-                ("noche", "21:00"),
-            ]
-            for draw_name, draw_time in fixes:
-                conn.execute(
-                    """UPDATE draw_times SET draw_time = ?
-                       WHERE lottery_id = ? AND draw_name = ?""",
-                    (draw_time, row["id"], draw_name),
-                )
+        _sync_lottery_draw_schedules(conn)
         # Lucky Day Lotto: asegurar tanda Midday en DB existente
         ld = conn.execute(
             "SELECT id FROM lotteries WHERE name = 'Lucky Day Lotto' AND country = 'USA'"
