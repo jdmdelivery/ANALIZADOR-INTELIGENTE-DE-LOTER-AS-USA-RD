@@ -1,0 +1,520 @@
+import sqlite3
+import json
+from datetime import datetime
+from contextlib import contextmanager
+
+DATABASE = "lottery.db"
+
+DISCLAIMER = (
+    "La lotería es un juego de azar. "
+    "Esta herramienta solo ofrece análisis estadístico y no garantiza premios."
+)
+
+MIN_RESULTS_FOR_ANALYSIS = 10
+
+
+def get_connection():
+    conn = sqlite3.connect(DATABASE)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    return conn
+
+
+@contextmanager
+def get_db():
+    conn = get_connection()
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def migrate_db():
+    """Migraciones incrementales sobre DB existente."""
+    conn = get_connection()
+    try:
+        conn.execute("""
+            DELETE FROM lottery_results
+            WHERE id NOT IN (
+                SELECT MAX(id) FROM lottery_results
+                GROUP BY lottery_id, draw_date, draw_name
+            )
+        """)
+        conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_results_lottery_date_draw
+            ON lottery_results (lottery_id, draw_date, draw_name)
+        """)
+        for col in ("main_numbers", "bonus_numbers", "bonus_label", "game_name"):
+            try:
+                conn.execute(f"ALTER TABLE lottery_results ADD COLUMN {col} TEXT")
+            except sqlite3.OperationalError:
+                pass
+        row = conn.execute(
+            "SELECT id FROM lotteries WHERE name = 'Anguila' AND country = 'RD'"
+        ).fetchone()
+        if row:
+            fixes = [
+                ("mañana", "10:00"),
+                ("tarde", "13:00"),
+                ("tardía", "18:00"),
+                ("noche", "21:00"),
+            ]
+            for draw_name, draw_time in fixes:
+                conn.execute(
+                    """UPDATE draw_times SET draw_time = ?
+                       WHERE lottery_id = ? AND draw_name = ?""",
+                    (draw_time, row["id"], draw_name),
+                )
+        # Lucky Day Lotto: asegurar tanda Midday en DB existente
+        ld = conn.execute(
+            "SELECT id FROM lotteries WHERE name = 'Lucky Day Lotto' AND country = 'USA'"
+        ).fetchone()
+        if ld:
+            has_midday = conn.execute(
+                "SELECT id FROM draw_times WHERE lottery_id = ? AND draw_name = 'Midday'",
+                (ld["id"],),
+            ).fetchone()
+            if not has_midday:
+                conn.execute(
+                    """INSERT INTO draw_times (lottery_id, draw_name, draw_time, timezone, active)
+                       VALUES (?, 'Midday', '12:40', 'America/Chicago', 1)""",
+                    (ld["id"],),
+                )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def init_db():
+    with get_db() as conn:
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS lotteries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                country TEXT NOT NULL,
+                state TEXT,
+                name TEXT NOT NULL,
+                type TEXT NOT NULL,
+                active INTEGER DEFAULT 1
+            );
+
+            CREATE TABLE IF NOT EXISTS draw_times (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                lottery_id INTEGER NOT NULL,
+                draw_name TEXT NOT NULL,
+                draw_time TEXT,
+                timezone TEXT DEFAULT 'America/New_York',
+                active INTEGER DEFAULT 1,
+                FOREIGN KEY (lottery_id) REFERENCES lotteries(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS lottery_results (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                lottery_id INTEGER NOT NULL,
+                draw_name TEXT NOT NULL,
+                draw_time TEXT,
+                draw_date TEXT NOT NULL,
+                numbers TEXT NOT NULL,
+                bonus_number TEXT,
+                fireball_number TEXT,
+                source_url TEXT,
+                confirmed INTEGER DEFAULT 0,
+                created_at TEXT DEFAULT (datetime('now')),
+                FOREIGN KEY (lottery_id) REFERENCES lotteries(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS predictions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                lottery_id INTEGER NOT NULL,
+                draw_name TEXT NOT NULL,
+                generated_numbers TEXT NOT NULL,
+                analysis_text TEXT,
+                confidence_level TEXT,
+                score REAL,
+                created_at TEXT DEFAULT (datetime('now')),
+                FOREIGN KEY (lottery_id) REFERENCES lotteries(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS api_config (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_name TEXT NOT NULL UNIQUE,
+                api_url TEXT,
+                api_key TEXT,
+                active INTEGER DEFAULT 0,
+                last_sync TEXT
+            );
+        """)
+    migrate_db()
+
+
+def row_to_dict(row):
+    if row is None:
+        return None
+    return dict(row)
+
+
+def parse_numbers(numbers_str):
+    if not numbers_str:
+        return []
+    try:
+        parsed = json.loads(numbers_str)
+        if isinstance(parsed, list):
+            return [str(n) for n in parsed]
+    except (json.JSONDecodeError, TypeError):
+        pass
+    return [n.strip() for n in str(numbers_str).replace("|", ",").split(",") if n.strip()]
+
+
+def format_numbers(numbers_list):
+    return json.dumps([str(n) for n in numbers_list])
+
+
+# --- Lottery CRUD ---
+
+def get_all_lotteries(active_only=False):
+    with get_db() as conn:
+        q = "SELECT * FROM lotteries"
+        if active_only:
+            q += " WHERE active = 1"
+        q += " ORDER BY country, state, name"
+        rows = conn.execute(q).fetchall()
+        return [row_to_dict(r) for r in rows]
+
+
+def get_lottery(lottery_id):
+    with get_db() as conn:
+        row = conn.execute("SELECT * FROM lotteries WHERE id = ?", (lottery_id,)).fetchone()
+        return row_to_dict(row)
+
+
+def create_lottery(country, state, name, lottery_type, active=1):
+    with get_db() as conn:
+        cur = conn.execute(
+            "INSERT INTO lotteries (country, state, name, type, active) VALUES (?, ?, ?, ?, ?)",
+            (country, state, name, lottery_type, active),
+        )
+        return cur.lastrowid
+
+
+def update_lottery(lottery_id, country, state, name, lottery_type, active):
+    with get_db() as conn:
+        conn.execute(
+            "UPDATE lotteries SET country=?, state=?, name=?, type=?, active=? WHERE id=?",
+            (country, state, name, lottery_type, active, lottery_id),
+        )
+
+
+def toggle_lottery(lottery_id):
+    with get_db() as conn:
+        conn.execute(
+            "UPDATE lotteries SET active = CASE WHEN active=1 THEN 0 ELSE 1 END WHERE id=?",
+            (lottery_id,),
+        )
+
+
+# --- Draw Times CRUD ---
+
+def get_draw_times(lottery_id, active_only=False):
+    with get_db() as conn:
+        q = "SELECT * FROM draw_times WHERE lottery_id = ?"
+        params = [lottery_id]
+        if active_only:
+            q += " AND active = 1"
+        q += " ORDER BY draw_name"
+        rows = conn.execute(q, params).fetchall()
+        return [row_to_dict(r) for r in rows]
+
+
+def create_draw_time(lottery_id, draw_name, draw_time, timezone, active=1):
+    with get_db() as conn:
+        cur = conn.execute(
+            "INSERT INTO draw_times (lottery_id, draw_name, draw_time, timezone, active) VALUES (?,?,?,?,?)",
+            (lottery_id, draw_name, draw_time, timezone, active),
+        )
+        return cur.lastrowid
+
+
+def update_draw_time(draw_id, draw_name, draw_time, timezone, active):
+    with get_db() as conn:
+        conn.execute(
+            "UPDATE draw_times SET draw_name=?, draw_time=?, timezone=?, active=? WHERE id=?",
+            (draw_name, draw_time, timezone, active, draw_id),
+        )
+
+
+def toggle_draw_time(draw_id):
+    with get_db() as conn:
+        conn.execute(
+            "UPDATE draw_times SET active = CASE WHEN active=1 THEN 0 ELSE 1 END WHERE id=?",
+            (draw_id,),
+        )
+
+
+def delete_draw_time(draw_id):
+    with get_db() as conn:
+        conn.execute("DELETE FROM draw_times WHERE id=?", (draw_id,))
+
+
+# --- Results CRUD ---
+
+def get_results(lottery_id=None, draw_name=None, limit=50):
+    with get_db() as conn:
+        q = "SELECT * FROM lottery_results WHERE 1=1"
+        params = []
+        if lottery_id:
+            q += " AND lottery_id = ?"
+            params.append(lottery_id)
+        if draw_name:
+            q += " AND draw_name = ?"
+            params.append(draw_name)
+        q += " ORDER BY draw_date DESC, id DESC LIMIT ?"
+        params.append(limit)
+        rows = conn.execute(q, params).fetchall()
+        return [row_to_dict(r) for r in rows]
+
+
+RD_DRAW_ORDER = {"mañana": 1, "tarde": 2, "tardía": 3, "noche": 4}
+
+
+def _draw_sort_key(draw_name):
+    return RD_DRAW_ORDER.get(draw_name or "", 99)
+
+
+def get_max_draw_date(lottery_id):
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT MAX(draw_date) AS max_date FROM lottery_results WHERE lottery_id = ?",
+            (lottery_id,),
+        ).fetchone()
+        return row["max_date"] if row and row["max_date"] else None
+
+
+def get_results_for_latest_date(lottery_id, draw_name=None):
+    max_date = get_max_draw_date(lottery_id)
+    if not max_date:
+        return [], None
+    with get_db() as conn:
+        q = "SELECT * FROM lottery_results WHERE lottery_id = ? AND draw_date = ?"
+        params = [lottery_id, max_date]
+        if draw_name:
+            q += " AND draw_name = ?"
+            params.append(draw_name)
+        rows = conn.execute(q, params).fetchall()
+        results = [row_to_dict(r) for r in rows]
+        results.sort(key=lambda r: _draw_sort_key(r.get("draw_name")))
+        return results, max_date
+
+
+def get_results_grouped_by_date(lottery_id, limit_days=30):
+    with get_db() as conn:
+        date_rows = conn.execute(
+            """SELECT DISTINCT draw_date FROM lottery_results
+               WHERE lottery_id = ?
+               ORDER BY draw_date DESC LIMIT ?""",
+            (lottery_id, limit_days),
+        ).fetchall()
+        groups = []
+        for dr in date_rows:
+            draw_date = dr["draw_date"]
+            rows = conn.execute(
+                """SELECT * FROM lottery_results
+                   WHERE lottery_id = ? AND draw_date = ?
+                   ORDER BY draw_date DESC""",
+                (lottery_id, draw_date),
+            ).fetchall()
+            results = [row_to_dict(r) for r in rows]
+            results.sort(key=lambda r: _draw_sort_key(r.get("draw_name")))
+            groups.append({"draw_date": draw_date, "results": results})
+        return groups
+
+
+def get_results_for_analysis(lottery_id, draw_name):
+    with get_db() as conn:
+        rows = conn.execute(
+            """SELECT * FROM lottery_results
+               WHERE lottery_id = ? AND draw_name = ?
+               ORDER BY draw_date DESC, id DESC""",
+            (lottery_id, draw_name),
+        ).fetchall()
+        return [row_to_dict(r) for r in rows]
+
+
+def enrich_result_row(row, lottery=None):
+    """Normaliza main/bonus numbers para API y UI."""
+    if not row:
+        return row
+    main = parse_numbers(row.get("main_numbers") or row.get("numbers"))
+    bonus = parse_numbers(row.get("bonus_numbers") or "")
+    if not bonus and row.get("bonus_number"):
+        bonus = [str(row["bonus_number"])]
+    if not bonus and row.get("fireball_number"):
+        bonus = [str(row["fireball_number"])]
+
+    bonus_label = row.get("bonus_label")
+    if not bonus_label and lottery and bonus:
+        labels = {
+            "powerball": "Powerball",
+            "mega_millions": "Mega Ball",
+            "lotto": "Extra Shot",
+            "pick3": "Fireball",
+            "pick4": "Fireball",
+        }
+        bonus_label = labels.get(lottery.get("type"))
+
+    row["main_numbers"] = main
+    row["bonus_numbers"] = bonus
+    row["numbers"] = main
+    row["bonus_label"] = bonus_label
+    return row
+
+
+def create_result(lottery_id, draw_name, draw_time, draw_date, numbers,
+                  bonus_number=None, fireball_number=None, source_url=None, confirmed=0,
+                  main_numbers=None, bonus_numbers=None, bonus_label=None, game_name=None):
+    result_id, _ = upsert_result(
+        lottery_id, draw_name, draw_time, draw_date, numbers,
+        bonus_number=bonus_number, fireball_number=fireball_number,
+        source_url=source_url, confirmed=confirmed,
+        main_numbers=main_numbers, bonus_numbers=bonus_numbers,
+        bonus_label=bonus_label, game_name=game_name,
+    )
+    return result_id
+
+
+def upsert_result(lottery_id, draw_name, draw_time, draw_date, numbers,
+                  bonus_number=None, fireball_number=None, source_url=None, confirmed=0,
+                  main_numbers=None, bonus_numbers=None, bonus_label=None, game_name=None):
+    """INSERT o UPDATE por (lottery_id, draw_date, draw_name)."""
+    if isinstance(numbers, str) and numbers.startswith("["):
+        nums = format_numbers(parse_numbers(numbers))
+    else:
+        nums = format_numbers(parse_numbers(numbers) if not isinstance(numbers, list) else numbers)
+
+    main_json = main_numbers if main_numbers else nums
+    if isinstance(main_json, list):
+        main_json = format_numbers(main_json)
+    bonus_json = bonus_numbers
+    if isinstance(bonus_json, list):
+        bonus_json = format_numbers(bonus_json)
+
+    with get_db() as conn:
+        existing = conn.execute(
+            """SELECT id FROM lottery_results
+               WHERE lottery_id = ? AND draw_date = ? AND draw_name = ?""",
+            (lottery_id, draw_date, draw_name),
+        ).fetchone()
+        if existing:
+            conn.execute(
+                """UPDATE lottery_results
+                   SET draw_time = ?, numbers = ?, bonus_number = ?, fireball_number = ?,
+                       source_url = ?, confirmed = ?,
+                       main_numbers = ?, bonus_numbers = ?, bonus_label = ?, game_name = ?
+                   WHERE id = ?""",
+                (draw_time, nums, bonus_number, fireball_number, source_url, confirmed,
+                 main_json, bonus_json, bonus_label, game_name, existing["id"]),
+            )
+            return existing["id"], "updated"
+        cur = conn.execute(
+            """INSERT INTO lottery_results
+               (lottery_id, draw_name, draw_time, draw_date, numbers,
+                bonus_number, fireball_number, source_url, confirmed,
+                main_numbers, bonus_numbers, bonus_label, game_name)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (lottery_id, draw_name, draw_time, draw_date, nums,
+             bonus_number, fireball_number, source_url, confirmed,
+             main_json, bonus_json, bonus_label, game_name),
+        )
+        return cur.lastrowid, "inserted"
+
+
+def delete_result(result_id):
+    with get_db() as conn:
+        conn.execute("DELETE FROM lottery_results WHERE id=?", (result_id,))
+
+
+def toggle_result_confirmed(result_id):
+    with get_db() as conn:
+        conn.execute(
+            "UPDATE lottery_results SET confirmed = CASE WHEN confirmed=1 THEN 0 ELSE 1 END WHERE id=?",
+            (result_id,),
+        )
+
+
+# --- Predictions CRUD ---
+
+def create_prediction(lottery_id, draw_name, generated_numbers, analysis_text,
+                      confidence_level, score):
+    with get_db() as conn:
+        nums = format_numbers(generated_numbers)
+        cur = conn.execute(
+            """INSERT INTO predictions
+               (lottery_id, draw_name, generated_numbers, analysis_text,
+                confidence_level, score)
+               VALUES (?,?,?,?,?,?)""",
+            (lottery_id, draw_name, nums, analysis_text, confidence_level, score),
+        )
+        return cur.lastrowid
+
+
+def get_predictions(lottery_id=None, limit=50):
+    with get_db() as conn:
+        q = """SELECT p.*, l.name as lottery_name, l.country, l.state
+               FROM predictions p
+               JOIN lotteries l ON l.id = p.lottery_id
+               WHERE 1=1"""
+        params = []
+        if lottery_id:
+            q += " AND p.lottery_id = ?"
+            params.append(lottery_id)
+        q += " ORDER BY p.created_at DESC LIMIT ?"
+        params.append(limit)
+        rows = conn.execute(q, params).fetchall()
+        results = []
+        for r in rows:
+            d = row_to_dict(r)
+            d["generated_numbers"] = parse_numbers(d["generated_numbers"])
+            results.append(d)
+        return results
+
+
+# --- API Config ---
+
+def get_api_configs():
+    with get_db() as conn:
+        rows = conn.execute("SELECT id, source_name, api_url, active, last_sync FROM api_config").fetchall()
+        return [row_to_dict(r) for r in rows]
+
+
+def upsert_api_config(source_name, api_url, api_key, active=0):
+    with get_db() as conn:
+        existing = conn.execute(
+            "SELECT id FROM api_config WHERE source_name = ?", (source_name,)
+        ).fetchone()
+        if existing:
+            conn.execute(
+                "UPDATE api_config SET api_url=?, api_key=?, active=? WHERE source_name=?",
+                (api_url, api_key, active, source_name),
+            )
+        else:
+            conn.execute(
+                "INSERT INTO api_config (source_name, api_url, api_key, active) VALUES (?,?,?,?)",
+                (source_name, api_url, api_key, active),
+            )
+
+
+LOTTERY_CONFIG = {
+    "pick3": {"count": 3, "min": 0, "max": 9, "allow_repeat": True, "pad": 1, "bonus_min": 0, "bonus_max": 9},
+    "pick4": {"count": 4, "min": 0, "max": 9, "allow_repeat": True, "pad": 1, "bonus_min": 0, "bonus_max": 9},
+    "quiniela": {"count": 3, "min": 0, "max": 99, "allow_repeat": True, "pad": 2},
+    "lucky_day": {"count": 5, "min": 1, "max": 45, "allow_repeat": False, "pad": 2},
+    "lotto": {"count": 6, "min": 1, "max": 52, "allow_repeat": False, "pad": 2, "bonus_min": 1, "bonus_max": 25},
+    "powerball": {"count": 5, "min": 1, "max": 69, "allow_repeat": False, "pad": 2, "bonus_min": 1, "bonus_max": 26},
+    "mega_millions": {"count": 5, "min": 1, "max": 70, "allow_repeat": False, "pad": 2, "bonus_min": 1, "bonus_max": 25},
+}
+
+
+def get_lottery_config(lottery_type):
+    return LOTTERY_CONFIG.get(lottery_type, LOTTERY_CONFIG["quiniela"])

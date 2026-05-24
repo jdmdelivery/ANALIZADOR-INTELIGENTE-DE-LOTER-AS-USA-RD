@@ -1,0 +1,509 @@
+
+============================================================
+L13 Write
+============================================================
+{% extends "base.html" %}
+
+{% block content %}
+<section class="hero-section">
+    <div class="container">
+        <div class="hero-content text-center animate-fade-in">
+            <h1 class="hero-title">Analizador Inteligente de Loterías</h1>
+            <p class="hero-subtitle">USA + República Dominicana</p>
+            <p class="hero-desc">Análisis estadístico histórico · Sugerencias por tanda · Sin promesas de premio</p>
+        </div>
+    </div>
+</section>
+
+<section class="selector-section">
+    <div class="container">
+        <div class="card glass-card selector-card animate-slide-up">
+            <motion></motion>
+            <div class="card-body p-4">
+                <h2 class="section-title mb-4">Selecciona tu lotería</h2>
+                <div class="row g-3">
+                    <div class="col-md-4">
+                        <label class="form-label">País</label>
+                        <select id="selectCountry" class="form-select form-select-lg">
+                            <option value="">-- Elegir país --</option>
+                            <option value="USA">🇺🇸 USA</option>
+                            <option value="RD">🇩🇴 República Dominicana</option>
+                        </select>
+                    </div>
+                    <div class="col-md-4" id="stateGroup" style="display:none;">
+                        <label class="form-label">Estado</label>
+                        <select id="selectState" class="form-select form-select-lg">
+                            <option value="">-- Elegir estado --</option>
+                        </select>
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label">Lotería</label>
+                        <select id="selectLottery" class="form-select form-select-lg" disabled>
+                            <option value="">-- Elegir lotería --</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="results-section" id="resultsSection" style="display:none;">
+    <div class="container">
+        <div class="card glass-card mb-4 animate-slide-up">
+            <div class="card-body p-4">
+                <h3 class="section-title">Últimos resultados</h3>
+                <div id="recentResults" class="results-list"></motion></motion></div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="buttons-section" id="buttonsSection" style="display:none;">
+    <div class="container">
+        <h3 class="section-title text-center mb-4">Elige la tanda para tu análisis</h3>
+        <div id="drawButtons" class="draw-buttons-grid"></div>
+    </div>
+</section>
+
+<section class="prediction-section" id="predictionSection" style="display:none;">
+    <div class="container">
+        <div class="card prediction-card animate-pop-in">
+            <div class="card-body p-4 p-md-5 text-center">
+                <h3 id="predictionTitle" class="prediction-title"></h3>
+                <div id="predictionBalls" class="lottery-balls mt-4 mb-4"></div>
+                <div class="prediction-details">
+                    <p class="prediction-label">Razón del análisis:</p>
+                    <p id="predictionReason" class="prediction-reason"></p>
+                    <p class="prediction-meta">
+                        Nivel de confianza: <span id="predictionConfidence" class="confidence-badge"></span>
+                        · Score: <span id="predictionScore"></span>
+                    </p>
+                    <p class="prediction-date" id="predictionDate"></p>
+                </div>
+                <p class="disclaimer-inline mt-4">{{ disclaimer }}</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<div id="loadingOverlay" class="loading-overlay" style="display:none;">
+    <div class="spinner-border text-warning" role="status"></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion></motion.png
+============================================================
+L14 Write
+============================================================
+{% extends "base.html" %}
+
+{% block content %}
+<section class="hero-section">
+    <motion></motion>
+    <div class="container">
+        <div class="hero-content text-center animate-fade-in">
+            <h1 class="hero-title">Analizador Inteligente de Loterías</h1>
+            <p class="hero-subtitle">USA + República Dominicana</p>
+            <p class="hero-desc">Análisis estadístico histórico · Sugerencias por tanda · Sin promesas de premio</p>
+        </div>
+    </div>
+</section>
+
+<section class="selector-section">
+    <div class="container">
+        <div class="card glass-card selector-card animate-slide-up">
+            <div class="card-body p-4">
+                <h2 class="section-title mb-4">Selecciona tu lotería</h2>
+                <div class="row g-3">
+                    <div class="col-md-4">
+                        <label class="form-label">País</label>
+                        <select id="selectCountry" class="form-select form-select-lg">
+                            <option value="">-- Elegir país --</option>
+                            <option value="USA">🇺🇸 USA</option>
+                            <option value="RD">🇩🇴 República Dominicana</option>
+                        </select>
+                    </div>
+                    <div class="col-md-4" id="stateGroup" style="display:none;">
+                        <label class="form-label">Estado</label>
+                        <select id="selectState" class="form-select form-select-lg">
+                            <option value="">-- Elegir estado --</option>
+                        </select>
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label">Lotería</label>
+                        <select id="selectLottery" class="form-select form-select-lg" disabled>
+                            <option value="">-- Elegir lotería --</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="results-section" id="resultsSection" style="display:none;">
+    <div class="container">
+        <div class="card glass-card mb-4 animate-slide-up">
+            <div class="card-body p-4">
+                <h3 class="section-title">Últimos resultados</h3>
+                <motion></motion>
+                <div id="recentResults" class="results-list"></div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="buttons-section" id="buttonsSection" style="display:none;">
+    <div class="container">
+        <h3 class="section-title text-center mb-4">Elige la tanda para tu análisis</h3>
+        <div id="drawButtons" class="draw-buttons-grid"></div>
+    </div>
+</section>
+
+<section class="prediction-section" id="predictionSection" style="display:none;">
+    <div class="container">
+        <div class="card prediction-card animate-pop-in">
+            <div class="card-body p-4 p-md-5 text-center">
+                <h3 id="predictionTitle" class="prediction-title"></h3>
+                <div id="predictionBalls" class="lottery-balls mt-4 mb-4"></div>
+                <div class="prediction-details">
+                    <p class="prediction-label">Razón del análisis:</p>
+                    <p id="predictionReason" class="prediction-reason"></p>
+                    <p class="prediction-meta">
+                        Nivel de confianza: <span id="predictionConfidence" class="confidence-badge"></span>
+                        · Score: <span id="predictionScore"></span>
+                    </p>
+                    <p class="prediction-date" id="predictionDate"></p>
+                </div>
+                <p class="disclaimer-inline mt-4">{{ disclaimer }}</p>
+            </div>
+        </div>
+    </motion></motion></div>
+</section>
+
+<div id="loadingOverlay" class="loading-overlay" style="display:none;">
+    <div class="spinner-border text-warning" role="status">
+        <span class="visually-hidden">Analizando...</span>
+    </div>
+    <p class="mt-3 text-light">Analizando histórico...</p>
+</div>
+{% endblock %}
+
+============================================================
+L16 StrReplace
+============================================================
+--- OLD ---
+<section class="hero-section">
+    <motion></motion>
+    <div class="container">
+--- NEW ---
+<section class="hero-section">
+    <motion></motion>
+    <div class="container">
+============================================================
+L17 StrReplace
+============================================================
+--- OLD ---
+<section class="hero-section">
+    <motion></motion>
+    <div class="container">
+--- NEW ---
+<section class="hero-section">
+    <div class="container">
+============================================================
+L17 StrReplace
+============================================================
+--- OLD ---
+                <h3 class="section-title">Últimos resultados</h3>
+                <motion></motion>
+                <div id="recentResults" class="results-list"></div>
+--- NEW ---
+                <h3 class="section-title">Últimos resultados</h3>
+                <div id="recentResults" class="results-list"></motion></motion></div>
+============================================================
+L17 StrReplace
+============================================================
+--- OLD ---
+            </div>
+        </div>
+    </motion></motion></motion></div>
+</section>
+--- NEW ---
+            </div>
+        </div>
+    </div>
+</section>
+============================================================
+L19 StrReplace
+============================================================
+--- OLD ---
+                <div id="recentResults" class="results-list"></motion></motion></div>
+--- NEW ---
+                <motion></motion>
+                <div id="recentResults" class="results-list"></div>
+============================================================
+L19 StrReplace
+============================================================
+--- OLD ---
+        </div>
+    </motion></motion></div>
+</section>
+--- NEW ---
+        </div>
+    </div>
+</section>
+============================================================
+L20 StrReplace
+============================================================
+--- OLD ---
+                <h3 class="section-title">Últimos resultados</h3>
+                <motion></motion>
+                <div id="recentResults" class="results-list"></div>
+--- NEW ---
+                <h3 class="section-title">Últimos resultados</h3>
+                <div id="recentResults" class="results-list"></div>
+============================================================
+L119 Write
+============================================================
+{% extends "base.html" %}
+
+{% block content %}
+<!-- HEADER PREMIUM -->
+<header class="premium-header" id="inicio">
+    <motion></motion>
+    <div class="header-orbs">
+        <span class="float-ball b1">8</span>
+        <span class="float-ball b2">23</span>
+        <span class="float-ball b3">41</span>
+        <span class="float-ball b4">07</span>
+    </div>
+    <div class="header-content animate-fade-in">
+        <div class="header-badge">🎱 CASINO ANALYTICS HD</div>
+        <h1 class="header-title">
+            <span class="title-glow">ANALIZADOR INTELIGENTE</span>
+            <span class="title-sub">DE LOTERÍAS USA + RD</span>
+        </h1>
+        <p class="header-disclaimer">{{ disclaimer }}</p>
+    </div>
+</header>
+
+<!-- FILTROS -->
+<section class="premium-section" id="filtros">
+    <div class="glass-panel filters-panel animate-slide-up">
+        <h2 class="panel-title"><span class="title-icon">🔍</span> Filtros de búsqueda</h2>
+        <motion></motion>
+        <div class="filters-grid">
+            <div class="filter-group">
+                <label class="filter-label">PAÍS</label>
+                <select id="selectCountry" class="premium-select">
+                    <option value="">— Seleccionar país —</option>
+                    <option value="USA">🇺🇸 USA</option>
+                    <option value="RD">🇩🇴 República Dominicana</option>
+                </select>
+            </div>
+            <div class="filter-group" id="stateGroup" style="display:none;">
+                <label class="filter-label">ESTADO</label>
+                <select id="selectState" class="premium-select">
+                    <option value="">— Seleccionar estado —</option>
+                </select>
+            </div>
+            <div class="filter-group">
+                <label class="filter-label">LOTERÍA</label>
+                <select id="selectLottery" class="premium-select" disabled>
+                    <option value="">— Seleccionar lotería —</option>
+                </select>
+            </motion></motion></div>
+        <div class="live-indicator" id="liveIndicator" style="display:none;">
+            <span class="pulse-dot"></span> Actualización automática cada 60s
+        </div>
+    </div>
+</section>
+
+<!-- CONTENIDO PRINCIPAL: resultados + análisis -->
+<div class="content-split" id="mainSplit" style="display:none;">
+    <div class="content-left">
+        <!-- RESULTADOS -->
+        <section class="premium-section" id="resultados">
+            <div class="glass-panel animate-slide-up">
+                <h2 class="panel-title"><span class="title-icon">🕘</span> Últimos resultados</h2>
+                <div id="recentResults" class="results-grid"></div>
+            </div>
+        </section>
+
+        <!-- TANDAS -->
+        <section class="premium-section" id="tandas">
+            <div class="glass-panel animate-slide-up">
+                <h2 class="panel-title panel-title-center">
+                    <span class="title-icon">🎯</span> Elige la tanda para tu análisis
+                </h2>
+                <div id="drawButtons" class="tanda-buttons-grid"></div>
+            </div>
+        </section>
+    </div>
+
+    <!-- PANEL ANÁLISIS (derecha) -->
+    <aside class="content-right" id="analisis">
+        <div class="glass-panel analysis-panel animate-fade-in" id="predictionPanel">
+            <motion></motion>
+            <div class="analysis-placeholder" id="analysisPlaceholder">
+                <div class="placeholder-icon">🎯</div>
+                <h3>Análisis inteligente</h3>
+                <p>Selecciona una lotería y una tanda para ver la recomendación estadística sugerida.</p>
+            </div>
+
+            <div class="analysis-content" id="analysisContent" style="display:none;">
+                <div class="analysis-header">
+                    <span class="analysis-badge">RECOMENDACIÓN PARA</span>
+                    <h3 id="predictionDraw" class="analysis-draw-name">TARDÍA</h3>
+                    <p id="predictionSchedule" class="analysis-schedule">📌 Recomendado para: —</p>
+                </div>
+
+                <motion></motion>
+                <div id="predictionBalls" class="lottery-balls-hd"></div>
+
+                <div class="stats-blocks">
+                    <div class="stat-block stat-hot">
+                        <h4>🔥 Calientes</h4>
+                        <div id="statHot" class="stat-numbers"></div>
+                    </div>
+                    <div class="stat-block stat-cold">
+                        <h4>❄️ Fríos</h4>
+                        <div id="statCold" class="stat-numbers"></div>
+                    </div>
+                    <div class="stat-block stat-overdue">
+                        <h4>⏳ Atrasados</h4>
+                        <motion></motion>
+                        <motion></motion>
+                        <div id="statOverdue" class="stat-numbers"></div>
+                    </div>
+                </div>
+
+                <div class="analysis-reason">
+                    <h4>📊 Análisis estadístico</h4>
+                    <p id="predictionReason"></p>
+                </div>
+
+                <div class="analysis-meta">
+                    <div class="meta-item">
+                        <span class="meta-label">Confianza</span>
+                        <span id="predictionConfidence" class="confidence-badge"></span>
+                    </div>
+                    <div class="meta-item">
+                        <span class="meta-label">Score</span>
+                        <span id="predictionScore" class="score-value">—</span>
+                    </div>
+                    <div class="meta-item">
+                        <span class="meta-label">Histórico</span>
+                        <span id="predictionHistoric" class="score-value">—</span>
+                    </div>
+                </div>
+                <p class="analysis-date" id="predictionDate"></p>
+                <p class="disclaimer-inline">{{ disclaimer }}</p>
+            </div>
+
+            <motion></motion>
+            <div class="analysis-error" id="analysisError" style="display:none;">
+                <p id="analysisErrorMsg"></p>
+            </div>
+        </div>
+    </aside>
+</div>
+
+<!-- LOADING -->
+<div id="loadingOverlay" class="loading-overlay" style="display:none;">
+    <div class="loader-premium">
+        <div class="loader-ring"></div>
+        <div class="loader-ball">🎱</div>
+    </div>
+    <p>Analizando histórico...</p>
+</div>
+{% endblock %}
+
+============================================================
+L134 StrReplace
+============================================================
+--- OLD ---
+            <motion></motion>
+            <div class="filter-group">
+                <label class="filter-label">LOTERÍA</label>
+                <select id="selectLottery" class="premium-select" disabled>
+                    <option value="">— Seleccionar lotería —</option>
+                </select>
+            </div>
+        <div class="live-indicator" id="liveIndicator" style="display:none;">
+--- NEW ---
+            <div class="filter-group">
+                <label class="filter-label">LOTERÍA</label>
+                <select id="selectLottery" class="premium-select" disabled>
+                    <option value="">— Seleccionar lotería —</option>
+                </select>
+            </div>
+        </div>
+        <motion></motion>
+        <div class="live-indicator" id="liveIndicator" style="display:none;">
+============================================================
+L135 StrReplace
+============================================================
+--- OLD ---
+                </select>
+            </div>
+        <div class="live-indicator" id="liveIndicator" style="display:none;">
+--- NEW ---
+                </select>
+            </div>
+        </div>
+        <div class="live-indicator" id="liveIndicator" style="display:none;">
+============================================================
+L135 StrReplace
+============================================================
+--- OLD ---
+        </div>
+    </div>
+</section>
+--- NEW ---
+    </div>
+</section>
+============================================================
+L137 StrReplace
+============================================================
+--- OLD ---
+        <div class="live-indicator" id="liveIndicator" style="display:none;">
+            <span class="pulse-dot"></span> Actualización automática cada 60s
+    </div>
+</section>
+--- NEW ---
+        <motion></motion>
+        <div class="live-indicator" id="liveIndicator" style="display:none;">
+            <span class="pulse-dot"></span> Actualización automática cada 60s
+        </div>
+    </div>
+</section>
+============================================================
+L138 StrReplace
+============================================================
+--- OLD ---
+        <motion></motion>
+        <motion></motion>
+        <motion></motion>
+        <div class="live-indicator" id="liveIndicator" style="display:none;">
+--- NEW ---
+        </motion></motion>
+        <div class="live-indicator" id="liveIndicator" style="display:none;">
+============================================================
+L139 StrReplace
+============================================================
+--- OLD ---
+        </div>
+        <motion></motion>
+        <motion></motion>
+        <div class="live-indicator" id="liveIndicator" style="display:none;">
+--- NEW ---
+        </div>
+        <div class="live-indicator" id="liveIndicator" style="display:none;">
+============================================================
+L141 StrReplace
+============================================================
+--- OLD ---
+        </div>
+        <motion></motion>
+        <div class="live-indicator" id="liveIndicator" style="display:none;">
+--- NEW ---
+        </div>
+        <div class="live-indicator" id="liveIndicator" style="display:none;">
