@@ -1163,12 +1163,31 @@ body.premium-body {
 
 /* ── USER SESSION BAR ── */
 .user-session-bar {
-    display: flex; align-items: center; flex-wrap: wrap; gap: 0.6rem;
+    display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.75rem;
     padding: 0.55rem 1rem; margin-bottom: 1rem; border-radius: 12px;
     border: 1px solid rgba(0, 212, 255, 0.25);
 }
+.user-session-info { display: flex; align-items: center; flex-wrap: wrap; gap: 0.5rem; }
 .user-session-label { font-size: 0.82rem; color: var(--text-muted); }
 .user-session-name { font-family: var(--font-display); color: var(--cyan); letter-spacing: 0.04em; }
+.user-session-username { font-size: 0.78rem; color: var(--text-muted); }
+.btn-session-logout {
+    display: inline-flex; align-items: center; gap: 0.35rem;
+    padding: 0.35rem 0.85rem; border-radius: 8px; font-size: 0.78rem; font-weight: 600;
+    text-decoration: none; color: #ff8a8a; border: 1px solid rgba(255, 107, 107, 0.45);
+    background: rgba(255, 80, 80, 0.08); transition: background 0.2s, color 0.2s;
+}
+.btn-session-logout:hover { background: rgba(255, 80, 80, 0.18); color: #ffb4b4; }
+
+.login-sesion-activa {
+    margin-bottom: 1rem; padding: 0.75rem 1rem; border-radius: 10px;
+    background: rgba(0, 212, 255, 0.08); border: 1px solid rgba(0, 212, 255, 0.25);
+    font-size: 0.88rem; color: var(--text-muted);
+}
+.login-sesion-activa strong { color: var(--cyan); }
+.login-sesion-actions { margin: 0.4rem 0 0; font-size: 0.82rem; }
+.login-sesion-actions a { color: var(--gold); text-decoration: none; }
+.login-sesion-actions a:hover { text-decoration: underline; }
 
 .user-badge {
     display: inline-block; padding: 0.2rem 0.55rem; border-radius: 999px;

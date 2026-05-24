@@ -28,6 +28,19 @@
             {% endif %}
             {% endwith %}
 
+            {% if sesion_activa %}
+            <div class="login-sesion-activa">
+                <p>Ya tienes sesión como <strong>{{ usuario_activo }}</strong>.</p>
+                <p class="login-sesion-actions">
+                    <a href="{{ url_for('index') }}">Ir al inicio</a>
+                    ·
+                    <a href="{{ url_for('logout') }}">Cerrar sesión</a>
+                    ·
+                    <a href="{{ url_for('login', cambiar=1) }}">Cambiar de usuario</a>
+                </p>
+            </div>
+            {% endif %}
+
             <form method="post" action="{{ url_for('login') }}" class="login-form">
                 <input type="hidden" name="next" value="{{ next_url or '' }}">
                 <div class="login-field">

@@ -64,8 +64,14 @@ class User(UserMixin):
 
 @login_manager.user_loader
 def load_user(user_id):
-    row = get_user_by_id(int(user_id))
-    return User(row) if row else None
+    try:
+        uid = int(user_id)
+    except (TypeError, ValueError):
+        return None
+    row = get_user_by_id(uid)
+    if not row:
+        return None
+    return User(row)
 
 
 @login_manager.unauthorized_handler

@@ -2,7 +2,7 @@ import os
 import secrets
 from datetime import timedelta
 
-from flask import Flask, render_template, request, jsonify, redirect, url_for, flash, abort
+from flask import Flask, render_template, request, jsonify, redirect, url_for, flash, abort, session
 from flask_login import login_user, logout_user, login_required, current_user
 
 from auth import init_auth, admin_required, User
@@ -109,7 +109,7 @@ def _user_badge_info(row):
 
 @app.before_request
 def enforce_access():
-    if request.endpoint in (None, "login", "static"):
+    if request.endpoint in (None, "login", "logout", "static"):
         return
     if not current_user.is_authenticated:
         if request.path.startswith("/api/"):
@@ -131,50 +131,71 @@ def enforce_access():
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
-    if current_user.is_authenticated:
-        ok, _ = current_user.check_access()
-        if ok:
-            return redirect(request.args.get("next") or url_for("index"))
+    if request.method == "GET":
+        if current_user.is_authenticated and not request.args.get("cambiar"):
+            ok, _ = current_user.check_access()
+            if ok:
+                return redirect(request.args.get("next") or url_for("index"))
+        return render_template(
+            "login.html",
+            disclaimer=DISCLAIMER,
+            next_url=request.args.get("next"),
+            sesion_activa=current_user.is_authenticated,
+            usuario_activo=current_user.username if current_user.is_authenticated else "",
+        )
 
-    if request.method == "POST":
-        username = (request.form.get("username") or "").strip()
-        password = request.form.get("password") or ""
-        row = get_user_by_username(username)
+    # POST: siempre limpiar sesión anterior antes de iniciar otra cuenta
+    logout_user()
+    session.clear()
 
-        if not row or not verify_user_password(row, password):
-            flash("Usuario o contraseña incorrectos.", "danger")
-            return render_template(
-                "login.html",
-                disclaimer=DISCLAIMER,
-                next_url=request.form.get("next"),
-            )
+    username = (request.form.get("username") or "").strip().lower()
+    password = request.form.get("password") or ""
+    row = get_user_by_username(username)
 
-        user = User(row)
-        if not user.is_active:
-            flash("Tu acceso está bloqueado. Contacta al administrador.", "danger")
-            return render_template("login.html", disclaimer=DISCLAIMER, next_url=request.form.get("next"))
+    if not row or not verify_user_password(row, password):
+        flash("Usuario o contraseña incorrectos.", "danger")
+        return render_template(
+            "login.html",
+            disclaimer=DISCLAIMER,
+            next_url=request.form.get("next"),
+            sesion_activa=False,
+            usuario_activo="",
+        )
 
-        if user.is_expired():
-            flash("Tu acceso ha vencido.", "warning")
-            return render_template("login.html", disclaimer=DISCLAIMER, next_url=request.form.get("next"))
+    user = User(row)
+    if not user.is_active:
+        flash("Tu acceso está bloqueado. Contacta al administrador.", "danger")
+        return render_template(
+            "login.html", disclaimer=DISCLAIMER, next_url=request.form.get("next"),
+            sesion_activa=False, usuario_activo="",
+        )
 
-        login_user(user, remember=True)
-        update_last_login(user.id)
-        next_url = request.form.get("next") or request.args.get("next")
-        return redirect(next_url or url_for("index"))
+    if user.is_expired():
+        flash("Tu acceso ha vencido.", "warning")
+        return render_template(
+            "login.html", disclaimer=DISCLAIMER, next_url=request.form.get("next"),
+            sesion_activa=False, usuario_activo="",
+        )
 
-    return render_template(
-        "login.html",
-        disclaimer=DISCLAIMER,
-        next_url=request.args.get("next"),
-    )
+    login_user(user, remember=False, fresh=True)
+    session.permanent = True
+    session["user_id"] = user.id
+    session["username"] = user.username
+    session["role"] = user.role
+    update_last_login(user.id)
+    next_url = request.form.get("next") or request.args.get("next")
+    return redirect(next_url or url_for("index"))
 
 
 @app.route("/logout")
 def logout():
     logout_user()
+    session.clear()
+    resp = redirect(url_for("login"))
+    remember_name = app.config.get("REMEMBER_COOKIE_NAME", "remember_token")
+    resp.delete_cookie(remember_name)
     flash("Sesión cerrada correctamente.", "info")
-    return redirect(url_for("login"))
+    return resp
 
 
 @app.route("/")
