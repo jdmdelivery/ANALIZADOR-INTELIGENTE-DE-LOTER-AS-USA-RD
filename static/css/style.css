@@ -1131,3 +1131,63 @@ body.premium-body {
     .analysis-meta { grid-template-columns: 1fr; }
     .filters-grid { grid-template-columns: 1fr; }
 }
+
+/* ── LOGIN ── */
+.login-body { min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+.login-wrapper { width: 100%; max-width: 420px; padding: 1.5rem; z-index: 2; position: relative; }
+.login-card { padding: 2rem 1.75rem; border: 1px solid rgba(0, 212, 255, 0.35); box-shadow: 0 0 40px rgba(0, 212, 255, 0.15), 0 0 60px rgba(255, 215, 0, 0.08); }
+.login-logo { text-align: center; margin-bottom: 1.5rem; }
+.login-logo-ball { font-size: 2.5rem; display: block; margin-bottom: 0.5rem; filter: drop-shadow(0 0 12px var(--gold-glow)); }
+.login-logo h1 { font-family: var(--font-display); font-size: 1.1rem; color: var(--gold); margin: 0; letter-spacing: 0.06em; }
+.login-logo p { margin: 0.25rem 0 0; color: var(--text-muted); font-size: 0.9rem; }
+.login-field { margin-bottom: 1rem; }
+.login-field label { display: block; font-size: 0.75rem; letter-spacing: 0.08em; color: var(--gold-dim); margin-bottom: 0.35rem; text-transform: uppercase; }
+.login-field input {
+    width: 100%; padding: 0.65rem 0.85rem; border-radius: 10px;
+    background: rgba(5, 12, 30, 0.9); border: 1px solid rgba(0, 212, 255, 0.35);
+    color: var(--text); font-family: var(--font-body); font-size: 1rem;
+}
+.login-field input:focus { outline: none; border-color: var(--cyan); box-shadow: 0 0 16px rgba(0, 212, 255, 0.35); }
+.btn-login-glow {
+    width: 100%; margin-top: 0.5rem; padding: 0.75rem; border: none; border-radius: 12px;
+    font-family: var(--font-display); font-weight: 700; font-size: 1rem; cursor: pointer;
+    background: linear-gradient(135deg, #00d4ff, #0099cc); color: #0a0e17;
+    box-shadow: 0 0 24px rgba(0, 212, 255, 0.45); transition: transform 0.2s, box-shadow 0.2s;
+}
+.btn-login-glow:hover { transform: translateY(-2px); box-shadow: 0 0 32px rgba(0, 212, 255, 0.6); }
+.login-disclaimer { margin-top: 1.25rem; font-size: 0.72rem; color: rgba(200, 220, 255, 0.5); text-align: center; line-height: 1.4; }
+.login-alert { padding: 0.6rem 0.75rem; border-radius: 8px; margin-bottom: 0.75rem; font-size: 0.85rem; }
+.login-alert-danger { background: rgba(255, 80, 80, 0.15); border: 1px solid rgba(255, 80, 80, 0.4); color: #ff8a8a; }
+.login-alert-warning { background: rgba(255, 215, 0, 0.12); border: 1px solid rgba(255, 215, 0, 0.35); color: #ffd700; }
+.login-alert-success, .login-alert-info { background: rgba(0, 212, 255, 0.12); border: 1px solid rgba(0, 212, 255, 0.35); color: var(--cyan); }
+
+/* ── USER SESSION BAR ── */
+.user-session-bar {
+    display: flex; align-items: center; flex-wrap: wrap; gap: 0.6rem;
+    padding: 0.55rem 1rem; margin-bottom: 1rem; border-radius: 12px;
+    border: 1px solid rgba(0, 212, 255, 0.25);
+}
+.user-session-label { font-size: 0.82rem; color: var(--text-muted); }
+.user-session-name { font-family: var(--font-display); color: var(--cyan); letter-spacing: 0.04em; }
+
+.user-badge {
+    display: inline-block; padding: 0.2rem 0.55rem; border-radius: 999px;
+    font-size: 0.68rem; font-weight: 600; letter-spacing: 0.04em;
+}
+.user-badge-activo { background: rgba(0, 255, 136, 0.12); color: #00ff88; border: 1px solid rgba(0, 255, 136, 0.35); }
+.user-badge-bloqueado { background: rgba(255, 80, 80, 0.12); color: #ff8a8a; border: 1px solid rgba(255, 80, 80, 0.35); }
+.user-badge-vencido { background: rgba(255, 215, 0, 0.12); color: #ffd700; border: 1px solid rgba(255, 215, 0, 0.35); }
+.user-badge-admin { background: rgba(255, 215, 0, 0.15); color: var(--gold); border: 1px solid rgba(255, 215, 0, 0.45); }
+
+.user-table { font-size: 0.85rem; }
+.user-table th { color: var(--gold-dim); font-size: 0.7rem; letter-spacing: 0.06em; }
+.user-actions { min-width: 180px; }
+.user-actions form { margin-bottom: 0.35rem; }
+.user-details summary { cursor: pointer; list-style: none; }
+.user-details summary::-webkit-details-marker { display: none; }
+.btn-danger-outline { border-color: rgba(255, 80, 80, 0.5) !important; color: #ff8a8a !important; }
+.form-control-dark, .form-select.form-control-dark {
+    background: rgba(5, 12, 30, 0.85) !important;
+    border-color: rgba(0, 212, 255, 0.3) !important;
+    color: var(--text) !important;
+}

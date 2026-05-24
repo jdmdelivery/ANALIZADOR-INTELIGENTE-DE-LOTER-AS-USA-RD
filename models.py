@@ -1,9 +1,15 @@
 import sqlite3
 import json
+import os
 from datetime import datetime
 from contextlib import contextmanager
 
-DATABASE = "lottery.db"
+from werkzeug.security import check_password_hash, generate_password_hash
+
+DATABASE = os.environ.get("DATABASE_PATH", "lottery.db")
+
+INITIAL_ADMIN_USERNAME = "jdmcashnow"
+INITIAL_ADMIN_PASSWORD = "Moose555@"
 
 DISCLAIMER = (
     "La lotería es un juego de azar. "
@@ -84,9 +90,58 @@ def migrate_db():
                        VALUES (?, 'Midday', '12:40', 'America/Chicago', 1)""",
                     (ld["id"],),
                 )
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT NOT NULL UNIQUE,
+                password_hash TEXT NOT NULL,
+                nombre TEXT,
+                email TEXT,
+                role TEXT NOT NULL DEFAULT 'usuario',
+                is_active INTEGER NOT NULL DEFAULT 1,
+                expires_at TEXT,
+                must_change_password INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT DEFAULT (datetime('now')),
+                updated_at TEXT DEFAULT (datetime('now')),
+                last_login TEXT
+            )
+        """)
         conn.commit()
     finally:
         conn.close()
+
+
+def seed_initial_admin():
+    """Crea admin jdmcashnow si no existe."""
+    with get_db() as conn:
+        existing = conn.execute(
+            "SELECT id FROM users WHERE username = ?",
+            (INITIAL_ADMIN_USERNAME,),
+        ).fetchone()
+        if existing:
+            return False
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        conn.execute(
+            """INSERT INTO users
+               (username, password_hash, nombre, email, role, is_active,
+                expires_at, must_change_password, created_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            (
+                INITIAL_ADMIN_USERNAME,
+                generate_password_hash(INITIAL_ADMIN_PASSWORD),
+                "Administrador",
+                "",
+                "admin",
+                1,
+                None,
+                0,
+                now,
+                now,
+            ),
+        )
+    print("[OK] Admin inicial creado:")
+    print(INITIAL_ADMIN_USERNAME)
+    return True
 
 
 def init_db():
@@ -148,6 +203,7 @@ def init_db():
             );
         """)
     migrate_db()
+    seed_initial_admin()
 
 
 def row_to_dict(row):
@@ -518,3 +574,128 @@ LOTTERY_CONFIG = {
 
 def get_lottery_config(lottery_type):
     return LOTTERY_CONFIG.get(lottery_type, LOTTERY_CONFIG["quiniela"])
+
+
+# --- Users CRUD ---
+
+def get_user_by_id(user_id):
+    with get_db() as conn:
+        row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+        return row_to_dict(row)
+
+
+def get_user_by_username(username):
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT * FROM users WHERE username = ? COLLATE NOCASE",
+            (username.strip(),),
+        ).fetchone()
+        return row_to_dict(row)
+
+
+def get_all_users():
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM users ORDER BY role DESC, username ASC"
+        ).fetchall()
+        return [row_to_dict(r) for r in rows]
+
+
+def create_user(username, password, nombre="", email="", role="usuario",
+                is_active=1, expires_at=None, must_change_password=0):
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with get_db() as conn:
+        cur = conn.execute(
+            """INSERT INTO users
+               (username, password_hash, nombre, email, role, is_active,
+                expires_at, must_change_password, created_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            (
+                username.strip().lower(),
+                generate_password_hash(password),
+                nombre.strip(),
+                email.strip(),
+                role,
+                int(is_active),
+                expires_at or None,
+                int(must_change_password),
+                now,
+                now,
+            ),
+        )
+        return cur.lastrowid
+
+
+def update_user(user_id, nombre=None, email=None, role=None, is_active=None,
+                expires_at=None, must_change_password=None, clear_expiry=False):
+    fields = []
+    params = []
+    if nombre is not None:
+        fields.append("nombre = ?")
+        params.append(nombre.strip())
+    if email is not None:
+        fields.append("email = ?")
+        params.append(email.strip())
+    if role is not None:
+        fields.append("role = ?")
+        params.append(role)
+    if is_active is not None:
+        fields.append("is_active = ?")
+        params.append(int(is_active))
+    if clear_expiry:
+        fields.append("expires_at = ?")
+        params.append(None)
+    elif expires_at is not None:
+        fields.append("expires_at = ?")
+        params.append(expires_at or None)
+    if must_change_password is not None:
+        fields.append("must_change_password = ?")
+        params.append(int(must_change_password))
+    if not fields:
+        return
+    fields.append("updated_at = ?")
+    params.append(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    params.append(user_id)
+    with get_db() as conn:
+        conn.execute(
+            f"UPDATE users SET {', '.join(fields)} WHERE id = ?",
+            params,
+        )
+
+
+def set_user_password(user_id, password, must_change_password=0):
+    with get_db() as conn:
+        conn.execute(
+            """UPDATE users SET password_hash = ?, must_change_password = ?,
+               updated_at = ? WHERE id = ?""",
+            (
+                generate_password_hash(password),
+                int(must_change_password),
+                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                user_id,
+            ),
+        )
+
+
+def set_user_active(user_id, active):
+    update_user(user_id, is_active=1 if active else 0)
+
+
+def delete_user(user_id):
+    with get_db() as conn:
+        conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
+
+
+def update_last_login(user_id):
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with get_db() as conn:
+        conn.execute(
+            "UPDATE users SET last_login = ?, updated_at = ? WHERE id = ?",
+            (now, now, user_id),
+        )
+
+
+def verify_user_password(user_row, password):
+    if not user_row:
+        return False
+    return check_password_hash(user_row["password_hash"], password)

@@ -1,4 +1,5 @@
 flask
+flask-login
 flask_sqlalchemy
 gunicorn
 requests

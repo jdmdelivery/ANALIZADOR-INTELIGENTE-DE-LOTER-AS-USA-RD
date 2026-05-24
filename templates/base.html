@@ -36,12 +36,15 @@
                 <a href="/#tandas" class="nav-link" data-nav="favoritos"><span class="nav-icon">⭐</span> Favoritos</a>
 
                 <p class="nav-section mt-4">Admin</p>
+                {% if current_user.is_authenticated and current_user.is_admin() %}
+                <a href="{{ url_for('admin_usuarios') }}" class="nav-link"><span class="nav-icon">👥</span> Usuarios</a>
+                {% endif %}
                 <a href="/admin" class="nav-link"><span class="nav-icon">⚙️</span> Panel Admin</a>
                 <a href="/admin#tabLotteries" class="nav-link"><span class="nav-icon">➕</span> Agregar Lotería</a>
                 <a href="/admin#tabImport" class="nav-link"><span class="nav-icon">📥</span> Importar Resultados</a>
                 <a href="/admin#tabResults" class="nav-link"><span class="nav-icon">🗂</span> Gestionar Resultados</a>
                 <a href="/admin#tabApi" class="nav-link"><span class="nav-icon">🔧</span> Configuración</a>
-                <a href="/" class="nav-link nav-logout"><span class="nav-icon">🚪</span> Cerrar sesión</a>
+                <a href="{{ url_for('logout') }}" class="nav-link nav-logout"><span class="nav-icon">🚪</span> Cerrar sesión</a>
             </nav>
 
             <div class="sidebar-footer">
@@ -57,6 +60,17 @@
             </button>
 
             <main class="main-content">
+                {% if current_user.is_authenticated %}
+                <div class="user-session-bar glass-panel animate-fade-in">
+                    <span class="user-session-label">👤 Usuario actual:</span>
+                    <strong class="user-session-name">{{ current_user.username }}</strong>
+                    {% if current_user.is_admin() %}
+                    <span class="user-badge user-badge-admin">👑 Admin</span>
+                    {% else %}
+                    <span class="user-badge user-badge-activo">🟢 Activo</span>
+                    {% endif %}
+                </div>
+                {% endif %}
                 {% block content %}{% endblock %}
             </main>
         </div>
