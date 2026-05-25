@@ -1,7 +1,7 @@
 import sqlite3
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from contextlib import contextmanager
 
 from werkzeug.security import check_password_hash, generate_password_hash
@@ -125,6 +125,41 @@ def migrate_db():
                        VALUES (?, 'Midday', '12:40', 'America/Chicago', 1)""",
                     (ld["id"],),
                 )
+        for col_sql in (
+            "ALTER TABLE lottery_results ADD COLUMN estado TEXT DEFAULT 'publicado'",
+            "ALTER TABLE lottery_results ADD COLUMN fuente TEXT",
+            "ALTER TABLE lottery_results ADD COLUMN updated_at TEXT",
+        ):
+            try:
+                conn.execute(col_sql)
+            except sqlite3.OperationalError:
+                pass
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS leidsa_sync_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ok INTEGER NOT NULL DEFAULT 0,
+                message TEXT,
+                error TEXT,
+                imported INTEGER DEFAULT 0,
+                updated INTEGER DEFAULT 0,
+                created_at TEXT DEFAULT (datetime('now'))
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS leidsa_fetch_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT DEFAULT (datetime('now')),
+                status_code INTEGER,
+                parser TEXT,
+                method TEXT,
+                results_found INTEGER DEFAULT 0,
+                html_length INTEGER DEFAULT 0,
+                error TEXT,
+                blocking_type TEXT,
+                api_urls TEXT,
+                ok INTEGER NOT NULL DEFAULT 0
+            )
+        """)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -141,9 +176,199 @@ def migrate_db():
                 last_login TEXT
             )
         """)
+        seed_leidsa_lotteries(conn)
         conn.commit()
     finally:
         conn.close()
+
+
+def seed_leidsa_lotteries(conn=None):
+    """Crea loterías LEIDSA por juego (separadas de Leidsa/Conectate)."""
+    from services.leidsa_config import LEIDSA_GAMES
+
+    def _run(c):
+        old = c.execute(
+            "SELECT id FROM lotteries WHERE name = 'Leidsa' AND country = 'RD'"
+        ).fetchone()
+        if old:
+            c.execute("UPDATE lotteries SET active = 0 WHERE id = ?", (old["id"],))
+        # Migrar slug antiguo pega3_mas → leidsa_pega3
+        old_pega = c.execute(
+            "SELECT id FROM lotteries WHERE type = 'leidsa_pega3_mas' AND country = 'RD'"
+        ).fetchone()
+        if old_pega:
+            c.execute(
+                "UPDATE lotteries SET type = 'leidsa_pega3', active = 1 WHERE id = ?",
+                (old_pega["id"],),
+            )
+
+        for slug, cfg in LEIDSA_GAMES.items():
+            row = c.execute(
+                "SELECT id FROM lotteries WHERE type = ? AND country = 'RD'",
+                (slug,),
+            ).fetchone()
+            if not row:
+                c.execute(
+                    "INSERT INTO lotteries (country, state, name, type, active) VALUES (?,?,?,?,1)",
+                    ("RD", "LEIDSA", cfg["lottery_name"], slug),
+                )
+                lot_id = c.execute("SELECT last_insert_rowid()").fetchone()[0]
+            else:
+                lot_id = row["id"]
+                c.execute(
+                    "UPDATE lotteries SET name = ?, active = 1 WHERE id = ?",
+                    (cfg["lottery_name"], lot_id),
+                )
+            for slot in cfg["draws"]:
+                ex = c.execute(
+                    "SELECT id FROM draw_times WHERE lottery_id = ? AND draw_name = ?",
+                    (lot_id, slot["draw_name"]),
+                ).fetchone()
+                if ex:
+                    c.execute(
+                        "UPDATE draw_times SET draw_time = ?, timezone = ?, active = 1 WHERE id = ?",
+                        (slot["time_24h"], "America/Santo_Domingo", ex["id"]),
+                    )
+                else:
+                    c.execute(
+                        """INSERT INTO draw_times
+                           (lottery_id, draw_name, draw_time, timezone, active)
+                           VALUES (?, ?, ?, 'America/Santo_Domingo', 1)""",
+                        (lot_id, slot["draw_name"], slot["time_24h"]),
+                    )
+
+    if conn is not None:
+        _run(conn)
+    else:
+        with get_db() as c:
+            _run(c)
+
+
+def get_lottery_by_slug(slug):
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT * FROM lotteries WHERE type = ? AND country = 'RD'",
+            (slug,),
+        ).fetchone()
+        return row_to_dict(row)
+
+
+def log_leidsa_sync(ok, message="", error=None, imported=0, updated=0):
+    with get_db() as conn:
+        conn.execute(
+            """INSERT INTO leidsa_sync_log (ok, message, error, imported, updated)
+               VALUES (?,?,?,?,?)""",
+            (1 if ok else 0, message, error, imported, updated),
+        )
+
+
+def get_last_leidsa_sync():
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT * FROM leidsa_sync_log ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        d = row_to_dict(row)
+        if d:
+            d["ok"] = bool(d.get("ok"))
+        return d
+
+
+def log_leidsa_fetch(
+    ok,
+    status_code=None,
+    parser="",
+    method="",
+    results_found=0,
+    html_length=0,
+    error=None,
+    blocking_type="",
+    api_urls=None,
+):
+    urls_json = json.dumps(api_urls or []) if api_urls else "[]"
+    with get_db() as conn:
+        conn.execute(
+            """INSERT INTO leidsa_fetch_logs
+               (ok, status_code, parser, method, results_found, html_length,
+                error, blocking_type, api_urls)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            (
+                1 if ok else 0,
+                status_code,
+                parser or "",
+                method or "",
+                results_found,
+                html_length,
+                error,
+                blocking_type or "",
+                urls_json,
+            ),
+        )
+
+
+def get_last_leidsa_fetch():
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT * FROM leidsa_fetch_logs ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        d = row_to_dict(row)
+        if not d:
+            return None
+        d["ok"] = bool(d.get("ok"))
+        try:
+            d["api_urls"] = json.loads(d.get("api_urls") or "[]")
+        except json.JSONDecodeError:
+            d["api_urls"] = []
+        return d
+
+
+def get_leidsa_results_for_date(fecha_rd):
+    from services.leidsa_config import LEIDSA_SLUGS
+
+    slugs = list(LEIDSA_SLUGS) + ["leidsa_pega3_mas"]
+    if not slugs:
+        return []
+    placeholders = ",".join("?" * len(slugs))
+    with get_db() as conn:
+        rows = conn.execute(
+            f"""SELECT r.*, l.name AS lottery_display, l.type AS lottery_slug
+                FROM lottery_results r
+                JOIN lotteries l ON l.id = r.lottery_id
+                WHERE l.type IN ({placeholders}) AND r.draw_date = ?
+                ORDER BY l.name, r.draw_name""",
+            (*slugs, fecha_rd),
+        ).fetchall()
+        out = []
+        for r in rows:
+            d = row_to_dict(r)
+            d["numeros_list"] = parse_numbers(d.get("numbers"))
+            out.append(d)
+        return out
+
+
+def get_leidsa_history_from_db(limit_days=30):
+    """Historial LEIDSA guardado en lottery_results."""
+    from services.leidsa_config import LEIDSA_SLUGS
+
+    slugs = list(LEIDSA_SLUGS) + ["leidsa_pega3_mas"]
+    placeholders = ",".join("?" * len(slugs))
+    cutoff = (datetime.now() - timedelta(days=limit_days)).strftime("%Y-%m-%d")
+    with get_db() as conn:
+        rows = conn.execute(
+            f"""SELECT r.*, l.name AS lottery_display, l.type AS lottery_slug
+                FROM lottery_results r
+                JOIN lotteries l ON l.id = r.lottery_id
+                WHERE l.type IN ({placeholders})
+                  AND r.draw_date >= ?
+                ORDER BY r.draw_date DESC, l.name, r.draw_name""",
+            (*slugs, cutoff),
+        ).fetchall()
+        out = []
+        for r in rows:
+            d = row_to_dict(r)
+            d["numeros_list"] = parse_numbers(d.get("numbers"))
+            d["time_display"] = d.get("draw_time", "")
+            out.append(d)
+        return out
 
 
 def seed_initial_admin():
@@ -477,7 +702,8 @@ def create_result(lottery_id, draw_name, draw_time, draw_date, numbers,
 
 def upsert_result(lottery_id, draw_name, draw_time, draw_date, numbers,
                   bonus_number=None, fireball_number=None, source_url=None, confirmed=0,
-                  main_numbers=None, bonus_numbers=None, bonus_label=None, game_name=None):
+                  main_numbers=None, bonus_numbers=None, bonus_label=None, game_name=None,
+                  estado="publicado", fuente=None):
     """INSERT o UPDATE por (lottery_id, draw_date, draw_name)."""
     if isinstance(numbers, str) and numbers.startswith("["):
         nums = format_numbers(parse_numbers(numbers))
@@ -491,6 +717,8 @@ def upsert_result(lottery_id, draw_name, draw_time, draw_date, numbers,
     if isinstance(bonus_json, list):
         bonus_json = format_numbers(bonus_json)
 
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    src = fuente or source_url or ""
     with get_db() as conn:
         existing = conn.execute(
             """SELECT id FROM lottery_results
@@ -502,21 +730,24 @@ def upsert_result(lottery_id, draw_name, draw_time, draw_date, numbers,
                 """UPDATE lottery_results
                    SET draw_time = ?, numbers = ?, bonus_number = ?, fireball_number = ?,
                        source_url = ?, confirmed = ?,
-                       main_numbers = ?, bonus_numbers = ?, bonus_label = ?, game_name = ?
+                       main_numbers = ?, bonus_numbers = ?, bonus_label = ?, game_name = ?,
+                       estado = ?, fuente = ?, updated_at = ?
                    WHERE id = ?""",
                 (draw_time, nums, bonus_number, fireball_number, source_url, confirmed,
-                 main_json, bonus_json, bonus_label, game_name, existing["id"]),
+                 main_json, bonus_json, bonus_label, game_name, estado, src, now,
+                 existing["id"]),
             )
             return existing["id"], "updated"
         cur = conn.execute(
             """INSERT INTO lottery_results
                (lottery_id, draw_name, draw_time, draw_date, numbers,
                 bonus_number, fireball_number, source_url, confirmed,
-                main_numbers, bonus_numbers, bonus_label, game_name)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                main_numbers, bonus_numbers, bonus_label, game_name,
+                estado, fuente, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (lottery_id, draw_name, draw_time, draw_date, nums,
              bonus_number, fireball_number, source_url, confirmed,
-             main_json, bonus_json, bonus_label, game_name),
+             main_json, bonus_json, bonus_label, game_name, estado, src, now),
         )
         return cur.lastrowid, "inserted"
 

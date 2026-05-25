@@ -18,6 +18,13 @@
     const toggleResultsMode = $('toggleResultsMode');
     const btnRefreshResultsNow = $('btnRefreshResultsNow');
     const refreshResultsStatus = $('refreshResultsStatus');
+    const leidsaSection = $('leidsaSection');
+    const leidsaBoard = $('leidsaBoard');
+    const leidsaRefreshStatus = $('leidsaRefreshStatus');
+    const btnRefreshLeidsa = $('btnRefreshLeidsa');
+    const btnRefreshLeidsaHistory = $('btnRefreshLeidsaHistory');
+    const btnRefreshRdAll = $('btnRefreshRdAll');
+    const historyDaysFilters = $('historyDaysFilters');
 
     if (!selectCountry) return;
 
@@ -25,6 +32,7 @@
     let currentLotteryName = '';
     let currentCountry = '';
     let resultsViewMode = 'latest';
+    let historyDays = 90;
     let refreshTimer = null;
     let activeDrawBtn = null;
     let currentDrawButtons = [];
@@ -56,6 +64,25 @@
     }
     if (btnRefreshResultsNow) {
         btnRefreshResultsNow.addEventListener('click', refreshResultsNow);
+    }
+    if (btnRefreshLeidsa) {
+        btnRefreshLeidsa.addEventListener('click', refreshLeidsaNow);
+    }
+    if (btnRefreshRdAll) {
+        btnRefreshRdAll.addEventListener('click', refreshRdAllNow);
+    }
+    if (btnRefreshLeidsaHistory) {
+        btnRefreshLeidsaHistory.addEventListener('click', refreshLeidsaHistoryNow);
+    }
+    if (historyDaysFilters) {
+        historyDaysFilters.querySelectorAll('.history-days-btn').forEach((btn) => {
+            btn.addEventListener('click', () => {
+                historyDaysFilters.querySelectorAll('.history-days-btn').forEach((b) => b.classList.remove('active'));
+                btn.classList.add('active');
+                historyDays = parseInt(btn.dataset.days, 10) || 90;
+                if (resultsViewMode === 'all') loadRecentResults();
+            });
+        });
     }
 
     function initSidebar() {
@@ -118,13 +145,17 @@
         hideMain();
 
         if (country === 'USA') {
-            stateGroup.style.display = 'block';
+            stateGroup.style.display = 'none';
+            if (leidsaSection) leidsaSection.style.display = 'none';
             loadStates(country);
         } else if (country === 'RD') {
             stateGroup.style.display = 'none';
+            if (leidsaSection) leidsaSection.style.display = 'block';
             loadLotteries();
+            loadLeidsaBoard();
         } else {
             stateGroup.style.display = 'none';
+            if (leidsaSection) leidsaSection.style.display = 'none';
         }
     }
 
@@ -309,7 +340,10 @@
         try {
             const isRD = currentCountry === 'RD' || selectCountry.value === 'RD';
             let url = `/api/results?lottery_id=${currentLotteryId}&limit=30`;
-            if (isRD) url += `&mode=${resultsViewMode}`;
+            if (isRD) {
+                url += `&mode=${resultsViewMode}`;
+                if (resultsViewMode === 'all') url += `&days=${historyDays}`;
+            }
 
             const res = await fetch(url);
             const data = await res.json();
@@ -317,6 +351,9 @@
             if (toggleResultsMode) {
                 toggleResultsMode.style.display = isRD ? 'inline-block' : 'none';
                 toggleResultsMode.textContent = resultsViewMode === 'latest' ? 'Ver todos' : 'Solo fecha actual';
+            }
+            if (historyDaysFilters) {
+                historyDaysFilters.style.display = (isRD && resultsViewMode === 'all') ? 'flex' : 'none';
             }
             if (latestDateBadge) {
                 if (isRD && data.latest_date && resultsViewMode === 'latest') {
@@ -514,7 +551,31 @@
             }
 
             const drawLabel = (data.draw_display || btn.label || btn.draw_name);
-            $('predictionDraw').textContent = drawLabel;
+            const recCount = data.recommend_count || (data.generated_numbers || []).length;
+            const lotName = data.lottery || currentLotteryName;
+            const titleEl = $('predictionTitle');
+            if (titleEl) {
+                titleEl.textContent = `Recomendación ${lotName} — ${recCount} números`;
+            }
+            const drawSub = $('predictionDraw');
+            if (drawSub) {
+                drawSub.textContent = drawLabel;
+            }
+
+            const warnEl = $('predictionWarning');
+            if (warnEl) {
+                const dup = (data.duplicates_found || []).length;
+                let warnText = data.warning || '';
+                if (dup > 0) {
+                    warnText = `Advertencia: se detectaron duplicados (${dup}). ${warnText}`.trim();
+                }
+                if (warnText) {
+                    warnEl.textContent = warnText;
+                    warnEl.style.display = 'block';
+                } else {
+                    warnEl.style.display = 'none';
+                }
+            }
 
             const scheduleEl = $('predictionSchedule');
             if (data.schedule_label) {
@@ -566,6 +627,214 @@
             console.error(e);
         } finally {
             showLoading(false);
+        }
+    }
+
+    function setLeidsaStatus(text, kind) {
+        if (!leidsaRefreshStatus) return;
+        leidsaRefreshStatus.textContent = text || '';
+        leidsaRefreshStatus.className = 'refresh-status-msg' + (kind ? ` is-${kind}` : '');
+    }
+
+    function renderLeidsaDebugPanel(debug, liveOk, usingCache) {
+        if (!debug) return '';
+        const statusLine = debug.status_label || (debug.status_code ? `STATUS ${debug.status_code}` : 'STATUS ERROR');
+        const errBlock = debug.error
+            ? `<div class="leidsa-debug-err">❌ Error: ${escapeHtml(String(debug.error))}</div>`
+            : '';
+        const cacheNote = usingCache ? '<div class="leidsa-debug-cache">📦 Mostrando últimos resultados guardados (caché)</div>' : '';
+        return `
+            <div class="leidsa-debug-panel" role="status" aria-live="polite">
+                <div class="leidsa-debug-line">${escapeHtml(statusLine)}</div>
+                <div class="leidsa-debug-line">🔍 Parser: ${escapeHtml(String(debug.parser || '—'))}</div>
+                <div class="leidsa-debug-line">⚙️ Método: ${escapeHtml(String(debug.method || '—'))}</div>
+                <div class="leidsa-debug-line">📊 Resultados encontrados: ${Number(debug.results_found || 0)}</div>
+                <div class="leidsa-debug-line">🕒 Último intento: ${escapeHtml(String(debug.last_attempt || '—'))}</div>
+                ${errBlock}
+                ${cacheNote}
+            </div>
+        `;
+    }
+
+    function renderLeidsaUnavailablePanel(debug, warning) {
+        const d = debug || {};
+        return `
+            <div class="leidsa-unavailable-panel">
+                <p class="leidsa-unavailable-title">⚠️ LEIDSA temporalmente no disponible</p>
+                ${warning ? `<p class="leidsa-warning">${escapeHtml(warning)}</p>` : ''}
+                <div class="leidsa-tech-grid">
+                    <div><span class="leidsa-tech-label">STATUS:</span> ${escapeHtml(String(d.status_code ?? 'ERROR'))}</div>
+                    <div><span class="leidsa-tech-label">MÉTODO:</span> ${escapeHtml(String(d.method || '—'))}</div>
+                    <div><span class="leidsa-tech-label">PARSER:</span> ${escapeHtml(String(d.parser || '—'))}</div>
+                    <div><span class="leidsa-tech-label">RESULTADOS:</span> ${Number(d.results_found || 0)}</div>
+                </div>
+                ${d.error ? `<p class="leidsa-debug-err">❌ ${escapeHtml(String(d.error))}</p>` : ''}
+            </div>
+        `;
+    }
+
+    async function loadLeidsaBoard() {
+        if (!leidsaBoard) return;
+        leidsaBoard.innerHTML = '<p class="empty-msg">Cargando LEIDSA...</p>';
+        try {
+            const res = await fetch('/api/resultados/leidsa');
+            if (res.status === 401) {
+                leidsaBoard.innerHTML = '<p class="empty-msg">Inicia sesión para ver LEIDSA.</p>';
+                return;
+            }
+            const data = await res.json();
+            const board = data.board || [];
+            const historial = data.historial || [];
+            const debug = data.debug || {};
+            let html = '';
+
+            html += renderLeidsaDebugPanel(debug, data.live_ok, data.using_cache);
+
+            if (data.warning && !board.length) {
+                html += renderLeidsaUnavailablePanel(debug, data.warning);
+            } else if (data.warning) {
+                html += `<p class="leidsa-warning">${escapeHtml(data.warning)}</p>`;
+            }
+
+            if (board.length) {
+                html += '<div class="leidsa-board-grid">' + board.map((item) => {
+                    const nums = (item.numeros || []).join(' · ');
+                    const cacheTag = item.cached ? ' <span class="leidsa-cache-tag">(caché)</span>' : '';
+                    return `
+                        <div class="leidsa-game-card estado-verde">
+                            <div class="leidsa-game-title">🟢 ${escapeHtml(item.lottery_name)}${cacheTag}</div>
+                            <div class="leidsa-game-time">${escapeHtml(item.time || '')} · ${escapeHtml(item.draw || '')}</div>
+                            <div class="leidsa-game-status">Publicado</div>
+                            <div class="leidsa-game-nums">${escapeHtml(nums)}</div>
+                        </div>
+                    `;
+                }).join('') + '</div>';
+            } else if (!data.warning) {
+                html += '<p class="empty-msg">Sin resultados LEIDSA guardados. Use «Actualizar LEIDSA ahora» (admin).</p>';
+            }
+
+            if (historial.length) {
+                html += '<h3 class="leidsa-historial-title">📋 Historial reciente LEIDSA</h3>';
+                html += '<div class="leidsa-historial-list">' + historial.slice(0, 24).map((h) => {
+                    const nums = (h.numeros_list || []).join(' · ');
+                    const time = h.draw_time || h.time_display || '';
+                    return `
+                        <div class="leidsa-hist-row">
+                            <span class="leidsa-hist-name">${escapeHtml(h.lottery_display || '')}</span>
+                            <span class="leidsa-hist-meta">${escapeHtml(h.draw_date || '')} ${time ? '· ' + escapeHtml(time) : ''} · ${escapeHtml(h.draw_name || '')}</span>
+                            <span class="leidsa-hist-nums">${escapeHtml(nums || '—')}</span>
+                        </div>
+                    `;
+                }).join('') + '</div>';
+            } else if (!data.warning) {
+                html += '<p class="empty-msg">Aún no hay historial LEIDSA guardado. Use «Actualizar LEIDSA ahora».</p>';
+            }
+
+            leidsaBoard.innerHTML = html;
+        } catch (e) {
+            console.error(e);
+            leidsaBoard.innerHTML = renderLeidsaUnavailablePanel(
+                { status_code: 'ERROR', method: '—', results_found: 0, error: String(e.message || e) },
+                '⚠️ LEIDSA temporalmente no disponible'
+            );
+        }
+    }
+
+    async function refreshLeidsaHistoryNow() {
+        if (!btnRefreshLeidsaHistory) return;
+        btnRefreshLeidsaHistory.disabled = true;
+        const prevLabel = btnRefreshLeidsaHistory.textContent;
+        btnRefreshLeidsaHistory.textContent = '⏳ Descargando historial...';
+        setLeidsaStatus('📚 Recorriendo dropdowns LEIDSA (puede tardar 1-2 min)...', 'loading');
+        try {
+            const res = await fetch('/api/resultados/leidsa/actualizar-historial', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ days: historyDays }),
+            });
+            const data = await res.json();
+            if (!data.ok) {
+                setLeidsaStatus(data.message || data.error || 'Error al actualizar historial', 'error');
+            } else {
+                setLeidsaStatus(
+                    `📚 ${data.message || 'OK'} · ${data.results_found || 0} sorteos · ${data.inserted || 0} nuevos`,
+                    'ok'
+                );
+            }
+            await loadLeidsaBoard();
+            if (currentLotteryId && currentCountry === 'RD') {
+                await loadRecentResults(true);
+            }
+        } catch (e) {
+            setLeidsaStatus(`Error historial: ${e.message || e}`, 'error');
+        } finally {
+            btnRefreshLeidsaHistory.disabled = false;
+            btnRefreshLeidsaHistory.textContent = prevLabel;
+        }
+    }
+
+    async function refreshLeidsaNow() {
+        if (!btnRefreshLeidsa) return;
+        btnRefreshLeidsa.disabled = true;
+        const prevLabel = btnRefreshLeidsa.textContent;
+        btnRefreshLeidsa.textContent = '⏳ Actualizando...';
+        setLeidsaStatus('🔄 Conectando con leidsa.com...', 'loading');
+        try {
+            const res = await fetch('/api/resultados/leidsa/actualizar', { method: 'POST' });
+            const data = await res.json();
+            if (!data.ok) {
+                let detail = data.message || 'Leidsa no respondió, intenta de nuevo';
+                if (data.status_code) detail += ` · HTTP ${data.status_code}`;
+                if (data.parser) detail += ` · ${data.parser}`;
+                if (data.error) detail += ` · ${data.error}`;
+                if (data.blocking_type) detail += ` · ${data.blocking_type}`;
+                setLeidsaStatus(detail, 'error');
+                await loadLeidsaBoard();
+                return;
+            }
+            setLeidsaStatus(
+                `✅ ${data.message || 'LEIDSA actualizada'} (${data.inserted || 0} nuevos, ${data.updated || 0} act.)`,
+                'ok'
+            );
+            await loadLeidsaBoard();
+            if (currentLotteryId && currentCountry === 'RD') {
+                await loadRecentResults(true);
+            }
+        } catch (e) {
+            setLeidsaStatus(`Leidsa no respondió: ${e.message || e}`, 'error');
+        } finally {
+            btnRefreshLeidsa.disabled = false;
+            btnRefreshLeidsa.textContent = prevLabel;
+        }
+    }
+
+    async function refreshRdAllNow() {
+        if (!btnRefreshRdAll) return;
+        btnRefreshRdAll.disabled = true;
+        setLeidsaStatus('🔄 Actualizando todas las loterías RD...', 'loading');
+        try {
+            const res = await fetch('/api/resultados/actualizar-ahora', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ country: 'RD', refresh_all_rd: true }),
+            });
+            const data = await res.json();
+            if (!data.ok && !data.leidsa_ok && !(data.imported + data.updated)) {
+                setLeidsaStatus(data.message || 'Error al actualizar RD', 'error');
+                await loadLeidsaBoard();
+                return;
+            }
+            let msg = data.message || '✅ Resultados RD actualizados';
+            if (data.leidsa_ok === false && data.leidsa_error) {
+                msg += ` · LEIDSA: ${data.leidsa_error}`;
+            }
+            setLeidsaStatus(msg, data.leidsa_ok === false ? 'muted' : 'ok');
+            await loadLeidsaBoard();
+            if (currentLotteryId) await loadRecentResults(true);
+        } catch (e) {
+            setLeidsaStatus('Error al actualizar resultados RD', 'error');
+        } finally {
+            btnRefreshRdAll.disabled = false;
         }
     }
 

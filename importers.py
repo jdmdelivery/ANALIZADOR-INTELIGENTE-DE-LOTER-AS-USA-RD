@@ -239,8 +239,13 @@ def refresh_lottery_results_now(country, state=None, lottery=None):
 
     try:
         if country_up == "RD":
-            from scrapers.conectate_rd import import_conectate_lottery_today
-            scrape = import_conectate_lottery_today(lot["name"])
+            lot_type = (lot.get("type") or "").lower()
+            if lot_type.startswith("leidsa_") or lot["name"].lower() == "leidsa":
+                from services.leidsa_service import update_leidsa_now
+                scrape = update_leidsa_now()
+            else:
+                from scrapers.conectate_rd import import_conectate_lottery_today
+                scrape = import_conectate_lottery_today(lot["name"])
         elif country_up == "USA" and state_up.lower() == "illinois":
             from services.resultados.illinois_scraper import import_illinois_lottery_now
             scrape = import_illinois_lottery_now(lot["name"])
@@ -287,6 +292,60 @@ def refresh_lottery_results_now(country, state=None, lottery=None):
         "imported": imported,
         "updated": updated,
         "lottery_id": lottery_id,
+    }
+
+
+def refresh_all_rd_now():
+    """Actualiza LEIDSA (leidsa.com) + demás loterías RD (Conectate). LEIDSA puede fallar sin romper el resto."""
+    from services.leidsa_service import update_leidsa_now
+
+    leidsa_result = update_leidsa_now()
+    details = [{"name": "LEIDSA", **leidsa_result}]
+    total_imported = leidsa_result.get("inserted", leidsa_result.get("imported", 0))
+    total_updated = leidsa_result.get("updated", 0)
+    errors = []
+    leidsa_ok = bool(leidsa_result.get("ok"))
+
+    if not leidsa_ok:
+        errors.append(
+            leidsa_result.get("message")
+            or "LEIDSA: error temporal — otras loterías RD continúan."
+        )
+
+    from scrapers.conectate_rd import import_conectate_lottery_today
+
+    for lot in get_all_lotteries(active_only=True):
+        if lot.get("country") != "RD":
+            continue
+        ltype = (lot.get("type") or "").lower()
+        if ltype.startswith("leidsa_") or lot["name"].lower() == "leidsa":
+            continue
+        try:
+            scrape = import_conectate_lottery_today(lot["name"])
+            details.append({"name": lot["name"], **scrape})
+            if scrape.get("ok"):
+                total_imported += scrape.get("imported", 0)
+                total_updated += scrape.get("updated", 0)
+            else:
+                errors.append(f"{lot['name']}: {scrape.get('message', 'error')}")
+        except Exception as exc:
+            errors.append(f"{lot['name']}: {exc}")
+
+    other_ok = any(
+        d.get("ok") and d.get("name") != "LEIDSA"
+        for d in details
+    ) or total_imported + total_updated > 0
+
+    return {
+        "ok": leidsa_ok or other_ok,
+        "status": "updated" if total_imported + total_updated else "no_new",
+        "message": f"RD: {total_imported} nuevos, {total_updated} actualizados.",
+        "imported": total_imported,
+        "updated": total_updated,
+        "details": details,
+        "errors": errors,
+        "leidsa_ok": leidsa_ok,
+        "leidsa_error": None if leidsa_ok else errors[0] if errors else "LEIDSA falló",
     }
 
 

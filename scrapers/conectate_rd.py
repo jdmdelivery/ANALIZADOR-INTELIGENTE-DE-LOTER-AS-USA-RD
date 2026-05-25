@@ -343,6 +343,11 @@ def import_conectate_rd(days_back=60, delay_seconds=0.4):
 
 def import_conectate_lottery_today(lottery_name):
     """Importa/actualiza solo los sorteos de hoy para una lotería RD."""
+    if (lottery_name or "").strip().lower() == "leidsa":
+        return {
+            "ok": False,
+            "message": "Leidsa se actualiza desde leidsa.com (módulo LEIDSA).",
+        }
     scraper = ConectateRDScraper()
     lotteries = get_all_lotteries()
     lottery_id = _find_lottery_id(lotteries, lottery_name)

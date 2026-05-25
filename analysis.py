@@ -7,6 +7,7 @@ from models import (
     DISCLAIMER,
     MIN_RESULTS_FOR_ANALYSIS,
     create_prediction,
+    get_all_lotteries,
     get_lottery,
     get_lottery_config,
     get_results_for_analysis,
@@ -265,18 +266,67 @@ def _numbers_together(per_draw, top_n=5):
     return together.most_common(top_n)
 
 
+def _resolve_analysis_config(lottery: dict) -> dict:
+    """Config de rango/cantidad: LEIDSA primero, luego LOTTERY_CONFIG."""
+    from services.leidsa_config import resolve_leidsa_recommendation_config
+
+    leidsa_cfg = resolve_leidsa_recommendation_config(
+        lottery.get("name", ""),
+        lottery.get("type", ""),
+    )
+    if leidsa_cfg:
+        return leidsa_cfg
+    return get_lottery_config(lottery["type"])
+
+
+def _find_duplicate_numbers(numbers: list) -> list:
+    seen: set[str] = set()
+    dups: list[str] = []
+    for n in numbers:
+        if n in seen:
+            dups.append(n)
+        else:
+            seen.add(n)
+    return dups
+
+
+def _fallback_unique_numbers(
+    universe: list[str],
+    already: list[str],
+    need: int,
+    pad: int = 2,
+) -> list[str]:
+    """Completa con números únicos del universo sin inventar duplicados."""
+    out = list(already)
+    used = set(out)
+    for n in universe:
+        if n not in used:
+            out.append(n)
+            used.add(n)
+        if len(out) >= need:
+            break
+    i = 0
+    while len(out) < need and universe:
+        candidate = universe[i % len(universe)]
+        if candidate not in used:
+            out.append(candidate)
+            used.add(candidate)
+        i += 1
+    return out[:need]
+
+
 def analizar_loteria_por_tanda(lottery_id, draw_name):
     lottery = get_lottery(lottery_id)
     if not lottery:
         return None
 
     results = get_results_for_analysis(lottery_id, draw_name)
-    config = get_lottery_config(lottery["type"])
+    config = _resolve_analysis_config(lottery)
 
     if len(results) < MIN_RESULTS_FOR_ANALYSIS:
         return {
             "ok": False,
-            "message": "No hay suficientes resultados históricos para analizar esta tanda.",
+            "message": "Necesitamos más historial para analizar.",
             "total_results": len(results),
         }
 
@@ -401,31 +451,38 @@ def _score_number(n, stats, position=None):
 
 
 def _pick_numbers(stats, config):
-    count = config["count"]
-    allow_repeat = config.get("allow_repeat", False)
+    """Elige números por mejor puntuación; sin duplicados salvo allow_repeat."""
+    count = int(config["count"])
+    allow_repeat = bool(config.get("allow_repeat", False))
     pad = config.get("pad", 2)
 
     universe = [_normalize_number(i, pad) for i in range(config["min"], config["max"] + 1)]
-    selected = []
 
-    for i in range(count):
-        candidates = universe if allow_repeat else [n for n in universe if n not in selected]
-        if not candidates:
-            candidates = universe
+    scored: list[tuple[float, str]] = []
+    for n in universe:
+        score = _score_number(n, stats)
+        score += random.uniform(0, 4)
+        scored.append((score, n))
+    scored.sort(key=lambda x: (-x[0], x[1]))
 
-        scored = []
-        for n in candidates:
-            s = _score_number(n, stats, position=i)
-            s += random.uniform(0, 8)
-            scored.append((s, n))
+    if allow_repeat:
+        selected = [scored[i % len(scored)][1] for i in range(count)] if scored else []
+        return selected
 
-        scored.sort(reverse=True)
-        top = scored[: min(5, len(scored))]
-        weights = [t[0] for t in top]
-        chosen = random.choices([t[1] for t in top], weights=weights, k=1)[0]
-        selected.append(chosen)
+    selected: list[str] = []
+    used: set[str] = set()
+    for _, n in scored:
+        if n in used:
+            continue
+        selected.append(n)
+        used.add(n)
+        if len(selected) >= count:
+            break
 
-    return selected
+    if len(selected) < count:
+        selected = _fallback_unique_numbers(universe, selected, count, pad)
+
+    return selected[:count]
 
 
 def _build_explanation(numbers, stats):
@@ -557,14 +614,39 @@ def generar_jugada_inteligente(lottery_id, draw_name):
         return {"ok": False, "message": "Lotería no encontrada."}
 
     stats = analizar_loteria_por_tanda(lottery_id, draw_name)
+    history_count = (stats or {}).get("total_results", 0)
     if not stats or not stats.get("ok"):
         return {
             "ok": False,
-            "message": "No hay suficientes resultados históricos para analizar esta tanda.",
+            "message": "Necesitamos más historial para analizar.",
+            "history_count": history_count,
         }
 
-    config = get_lottery_config(lottery["type"])
+    config = _resolve_analysis_config(lottery)
+    recommend_count = config["count"]
     generated = _pick_numbers(stats, config)
+    duplicates = _find_duplicate_numbers(generated)
+    warning = None
+
+    if duplicates and not config.get("allow_repeat"):
+        seen: set[str] = set()
+        fixed: list[str] = []
+        pad = config.get("pad", 2)
+        universe = [
+            _normalize_number(i, pad)
+            for i in range(config["min"], config["max"] + 1)
+        ]
+        for n in generated:
+            if n not in seen:
+                fixed.append(n)
+                seen.add(n)
+        generated = _fallback_unique_numbers(universe, fixed, recommend_count, pad)
+        duplicates = _find_duplicate_numbers(generated)
+        warning = "Se eliminaron duplicados en la recomendación."
+
+    if history_count < MIN_RESULTS_FOR_ANALYSIS:
+        warning = (warning or "") + " Historial limitado; números únicos por balance."
+
     generated_bonus = _pick_bonus_number(stats, config)
     bonus_label = _bonus_label_for_type(lottery["type"])
 
@@ -599,7 +681,9 @@ def generar_jugada_inteligente(lottery_id, draw_name):
         "state": state_label,
         "lottery": lottery["name"],
         "draw_name": draw_name,
+        "recommend_count": recommend_count,
         "generated_numbers": generated,
+        "numbers": generated,
         "generated_bonus": generated_bonus,
         "bonus_numbers": [generated_bonus] if generated_bonus else [],
         "bonus_label": bonus_label,
@@ -610,6 +694,91 @@ def generar_jugada_inteligente(lottery_id, draw_name):
         "cold_numbers_detail": stats.get("cold_numbers_detail", []),
         "overdue_numbers_detail": stats.get("overdue_numbers_detail", []),
         "analysis_window": stats.get("analysis_window", RECENT_WINDOW_DEFAULT),
+        "total_results": stats.get("total_results", 0),
+        "history_count": stats.get("total_results", 0),
+        "duplicates_found": duplicates,
+        "warning": warning.strip() if warning else None,
         "disclaimer": DISCLAIMER,
         "created_at": now,
+    }
+
+
+def _resolve_draw_name_for_lottery(lottery: dict, draw_label: str) -> str:
+    """Convierte '8:00 PM' o label UI → draw_name interno (noche, tarde, …)."""
+    from models import get_draw_times
+    from services.leidsa_config import get_game_schedule_for_ui
+
+    label = (draw_label or "noche").strip()
+    if label.lower() in ("tarde", "noche", "mañana", "tardía", "sorteo"):
+        return label.lower().replace("tardía", "tardia") if label == "tardía" else label.lower()
+
+    for d in get_draw_times(lottery["id"], active_only=True):
+        if d.get("draw_name") == label:
+            return d["draw_name"]
+        if d.get("draw_time") == label:
+            return d["draw_name"]
+
+    for slot in get_game_schedule_for_ui(lottery.get("name", "")) or []:
+        if slot.get("time") == label or slot.get("label") == label:
+            return slot.get("draw_name", label)
+
+    try:
+        from lottery_schedules import get_schedule_slot
+        slot = get_schedule_slot(lottery.get("name", ""), label)
+        if slot and slot.get("draw_name"):
+            return slot["draw_name"]
+    except Exception:
+        pass
+    return label
+
+
+def debug_leidsa_recommendation(lottery_name: str, draw_name: str) -> dict:
+    """Debug recomendación LEIDSA por nombre de lotería y tanda."""
+    from services.leidsa_config import (
+        LEIDSA_RECOMMENDATION_CONFIG,
+        resolve_leidsa_recommendation_config,
+    )
+
+    draw_label = (draw_name or "noche").strip()
+    name_q = (lottery_name or "").strip()
+    lot = None
+    for row in get_all_lotteries(active_only=True):
+        if row.get("country") != "RD":
+            continue
+        if row["name"] == name_q or row["name"].lower() == name_q.lower():
+            lot = row
+            break
+        if name_q.lower() in row["name"].lower():
+            lot = row
+            break
+
+    if not lot:
+        return {
+            "ok": False,
+            "message": f"Lotería no encontrada: {lottery_name}",
+            "lottery": lottery_name,
+            "draw": draw_label,
+        }
+
+    draw_resolved = _resolve_draw_name_for_lottery(lot, draw_label)
+    cfg = resolve_leidsa_recommendation_config(lot["name"], lot.get("type", ""))
+    raw_cfg = LEIDSA_RECOMMENDATION_CONFIG.get(lot["name"])
+
+    result = generar_jugada_inteligente(lot["id"], draw_resolved)
+    nums = result.get("generated_numbers") or result.get("numbers") or []
+
+    return {
+        "ok": result.get("ok", False),
+        "lottery": lot["name"],
+        "draw": draw_resolved,
+        "draw_label": draw_label,
+        "recommend_count": (cfg or {}).get("count") or (raw_cfg or {}).get("recommend_count"),
+        "numbers": nums,
+        "duplicates_found": _find_duplicate_numbers(nums),
+        "history_count": result.get("history_count", result.get("total_results", 0)),
+        "allow_duplicates": (raw_cfg or {}).get("allow_duplicates", False),
+        "config": raw_cfg,
+        "warning": result.get("warning"),
+        "message": result.get("message"),
+        "score": result.get("score"),
     }

@@ -25,10 +25,7 @@ LOTTERY_SCHEDULES = {
         {"label": "Tarde", "time": "12:30 PM"},
         {"label": "Noche", "time": "6:00 PM"},
     ],
-    "Leidsa": [
-        {"label": "Tarde", "time": "3:55 PM"},
-        {"label": "Noche", "time": "8:55 PM"},
-    ],
+    # Leidsa genérica (Conectate) — desactivada; ver LEIDSA_GAME_SCHEDULES
     "Lotedom": [
         {"label": "Tarde", "time": "12:00 PM"},
     ],
@@ -135,6 +132,13 @@ def time_12h_to_24h(time_12h):
 
 
 def get_lottery_schedule(lottery_name):
+    try:
+        from services.leidsa_config import get_game_schedule_for_ui
+        leidsa_sched = get_game_schedule_for_ui(lottery_name)
+        if leidsa_sched:
+            return leidsa_sched
+    except ImportError:
+        pass
     key = resolve_schedule_key(lottery_name)
     if not key:
         return None

@@ -1,6 +1,6 @@
 import os
 import secrets
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from flask import Flask, render_template, request, jsonify, redirect, url_for, flash, abort, session
 from flask_login import login_user, logout_user, login_required, current_user
@@ -52,7 +52,14 @@ from lottery_schedules import (
     slot_draw_name,
     time_12h_to_24h,
 )
-from importers import import_csv, import_manual, sync_from_api, WebScraperImporter, refresh_lottery_results_now
+from importers import (
+    import_csv,
+    import_manual,
+    sync_from_api,
+    WebScraperImporter,
+    refresh_lottery_results_now,
+    refresh_all_rd_now,
+)
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY") or secrets.token_hex(32)
@@ -302,8 +309,10 @@ def api_results():
     latest_date = None
     groups = None
 
+    days_param = request.args.get("days", type=int)
+    limit_days = days_param if days_param else max(limit, 30)
     if lottery and lottery.get("country") == "RD" and mode == "all":
-        groups = get_results_grouped_by_date(lottery_id, limit_days=max(limit, 30))
+        groups = get_results_grouped_by_date(lottery_id, limit_days=limit_days)
         latest_date = get_max_draw_date(lottery_id)
         results = []
     elif lottery and lottery.get("country") == "RD":
@@ -355,15 +364,139 @@ def api_results():
 
 
 @app.route("/api/resultados/actualizar-ahora", methods=["POST"])
+@login_required
 def api_actualizar_resultados_ahora():
+    if not current_user.is_admin():
+        return jsonify({"ok": False, "message": "Solo administradores pueden actualizar resultados."}), 403
     data = request.get_json(silent=True) or {}
     country = (data.get("country") or request.form.get("country") or "").strip()
     state = (data.get("state") or request.form.get("state") or "").strip()
     lottery = (data.get("lottery") or request.form.get("lottery") or "").strip()
+    refresh_all_rd = data.get("refresh_all_rd") or request.form.get("refresh_all_rd")
 
-    result = refresh_lottery_results_now(country, state, lottery)
+    if country.upper() == "RD" and (refresh_all_rd or not lottery):
+        result = refresh_all_rd_now()
+    else:
+        result = refresh_lottery_results_now(country, state, lottery)
     status_code = 200 if result.get("ok") else 400
     return jsonify(result), status_code
+
+
+def _run_leidsa_update():
+    from services.leidsa_service import update_leidsa_now
+    return update_leidsa_now()
+
+
+@app.route("/admin/resultados/leidsa/actualizar", methods=["POST"])
+@admin_required
+def admin_actualizar_leidsa():
+    result = _run_leidsa_update()
+    if result.get("ok"):
+        flash(result.get("message", "LEIDSA actualizada."), "success")
+    else:
+        flash(result.get("message", "Leidsa no respondió, intenta de nuevo"), "danger")
+    return redirect(url_for("admin") + "#tabApi")
+
+
+@app.route("/admin/resultados/rd/actualizar", methods=["POST"])
+@admin_required
+def admin_actualizar_rd():
+    result = refresh_all_rd_now()
+    if result.get("ok"):
+        flash(result.get("message", "Resultados RD actualizados."), "success")
+    else:
+        flash(result.get("message", "Error al actualizar RD."), "danger")
+    return redirect(url_for("admin") + "#tabApi")
+
+
+@app.route("/api/resultados/leidsa/actualizar", methods=["POST"])
+@admin_required
+def api_actualizar_leidsa():
+    result = _run_leidsa_update()
+    code = 200 if result.get("ok") else 400
+    return jsonify(result), code
+
+
+@app.route("/api/resultados/leidsa")
+@login_required
+def api_resultados_leidsa():
+    from services.leidsa_service import get_leidsa_dashboard
+
+    fecha = request.args.get("fecha") or request.args.get("fecha_rd")
+    days = request.args.get("days", type=int)
+    data = get_leidsa_dashboard(fecha, history_days=days)
+    return jsonify(data)
+
+
+@app.route("/admin/resultados/leidsa/actualizar-historial", methods=["POST"])
+@admin_required
+def admin_actualizar_leidsa_historial():
+    from services.leidsa_history import update_leidsa_history
+
+    days = request.form.get("days", type=int) or 90
+    result = update_leidsa_history(days=days)
+    if result.get("ok"):
+        flash(result.get("message", "Historial LEIDSA actualizado."), "success")
+    else:
+        flash(result.get("message", "Error al actualizar historial LEIDSA."), "danger")
+    return redirect(url_for("admin") + "#tabApi")
+
+
+@app.route("/api/resultados/leidsa/actualizar-historial", methods=["POST"])
+@admin_required
+def api_actualizar_leidsa_historial():
+    from services.leidsa_history import update_leidsa_history
+
+    data = request.get_json(silent=True) or {}
+    days = data.get("days") or request.form.get("days", type=int) or 90
+    result = update_leidsa_history(days=int(days))
+    code = 200 if result.get("ok") else 400
+    return jsonify(result), code
+
+
+@app.route("/debug/leidsa")
+@login_required
+def debug_leidsa():
+    from services.leidsa_service import debug_leidsa as run_debug
+    return jsonify(run_debug())
+
+
+@app.route("/debug/leidsa/dropdowns")
+@login_required
+def debug_leidsa_dropdowns():
+    from services.leidsa_history import debug_leidsa_dropdowns as run_debug
+    return jsonify(run_debug())
+
+
+@app.route("/debug/leidsa/history")
+@login_required
+def debug_leidsa_history():
+    from services.leidsa_history import debug_leidsa_history_sample as run_debug
+
+    days = request.args.get("days", 90, type=int)
+    return jsonify(run_debug(days=days))
+
+
+@app.route("/debug/recomendacion/leidsa")
+@login_required
+def debug_recomendacion_leidsa():
+    from analysis import debug_leidsa_recommendation
+
+    lottery = request.args.get("lottery", "")
+    draw = request.args.get("draw", "noche")
+    return jsonify(debug_leidsa_recommendation(lottery, draw))
+
+
+@app.route("/api/analisis/leidsa")
+def api_analisis_leidsa():
+    from services.leidsa_service import get_leidsa_analysis
+
+    tipo = request.args.get("tipo", "recomendado")
+    draw_name = request.args.get("draw_name") or request.args.get("draw")
+    if tipo not in ("caliente", "frio", "atrasado", "recomendado"):
+        return jsonify({"ok": False, "message": "tipo inválido"}), 400
+    result = get_leidsa_analysis(tipo, draw_name=draw_name or None)
+    return jsonify(result)
 
 
 @app.route("/api/prediction")
