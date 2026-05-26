@@ -45,7 +45,7 @@ class LeidsaRecommendationTests(unittest.TestCase):
     def test_config_super_kino(self):
         cfg = resolve_leidsa_recommendation_config("LEIDSA Super Kino TV", "leidsa_super_kino_tv")
         self.assertIsNotNone(cfg)
-        self.assertEqual(cfg["count"], 10)
+        self.assertEqual(cfg["count"], 20)
         self.assertEqual(cfg["max"], 80)
         self.assertFalse(cfg["allow_repeat"])
 
@@ -63,7 +63,7 @@ class LeidsaRecommendationTests(unittest.TestCase):
             "repeated_combinations": [],
         }
         picked = _pick_numbers(stats, cfg)
-        self.assertEqual(len(picked), 10)
+        self.assertEqual(len(picked), 20)
         self.assertEqual(len(picked), len(set(picked)))
         self.assertEqual(_find_duplicate_numbers(picked), [])
 
@@ -72,9 +72,20 @@ class LeidsaRecommendationTests(unittest.TestCase):
         r = generar_jugada_inteligente(lot["id"], "noche")
         self.assertTrue(r.get("ok"), r.get("message"))
         nums = r.get("generated_numbers") or []
-        self.assertEqual(len(nums), 10)
-        self.assertEqual(r.get("recommend_count"), 10)
+        self.assertEqual(len(nums), 20)
+        self.assertEqual(r.get("recommend_count"), 20)
         self.assertEqual(_find_duplicate_numbers(nums), [])
+
+    def test_generar_excludes_last_draw_numbers(self):
+        from analysis import analizar_loteria_por_tanda
+
+        lot = get_lottery_by_slug("leidsa_super_kino_tv")
+        r = generar_jugada_inteligente(lot["id"], "noche")
+        self.assertTrue(r.get("ok"), r.get("message"))
+        stats = analizar_loteria_por_tanda(lot["id"], "noche")
+        last = set(stats.get("last_draw_numbers") or [])
+        nums = set(r.get("generated_numbers") or [])
+        self.assertFalse(nums & last, "no debe repetir números del último sorteo")
 
     def test_debug_endpoint_payload(self):
         d = debug_leidsa_recommendation("LEIDSA Super Kino TV", "8:00 PM")
@@ -82,7 +93,7 @@ class LeidsaRecommendationTests(unittest.TestCase):
         self.assertIn("duplicates_found", d)
         self.assertIn("history_count", d)
         if d.get("ok"):
-            self.assertEqual(len(d.get("numbers") or []), 10)
+            self.assertEqual(len(d.get("numbers") or []), 20)
             self.assertEqual(d.get("duplicates_found"), [])
 
 

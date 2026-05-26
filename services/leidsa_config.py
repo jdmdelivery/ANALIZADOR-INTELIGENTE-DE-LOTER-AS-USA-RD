@@ -204,7 +204,7 @@ LEIDSA_SLUGS: tuple[str, ...] = tuple(LEIDSA_GAMES.keys())
 # Recomendación por juego (nombre exacto en tabla lotteries.name)
 LEIDSA_RECOMMENDATION_CONFIG: dict[str, dict] = {
     "LEIDSA Super Kino TV": {
-        "recommend_count": 10,
+        "recommend_count": 20,
         "allow_duplicates": False,
         "min": 1,
         "max": 80,

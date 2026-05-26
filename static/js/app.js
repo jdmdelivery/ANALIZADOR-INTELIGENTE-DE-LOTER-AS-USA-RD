@@ -24,9 +24,10 @@
     const btnRefreshLeidsa = $('btnRefreshLeidsa');
     const btnRefreshLeidsaHistory = $('btnRefreshLeidsaHistory');
     const btnRefreshRdAll = $('btnRefreshRdAll');
+    const btnRefreshRdHistoryFull = $('btnRefreshRdHistoryFull');
     const historyDaysFilters = $('historyDaysFilters');
 
-    if (!selectCountry) return;
+    if (!selectCountry || !selectLottery) return;
 
     let currentLotteryId = null;
     let currentLotteryName = '';
@@ -36,6 +37,8 @@
     let refreshTimer = null;
     let activeDrawBtn = null;
     let currentDrawButtons = [];
+    let currentDrawName = '';
+    let lastResultsError = '';
 
     const TANDA_CSS = {
         'mañana': 'rc-manana',
@@ -58,7 +61,7 @@
     if (toggleResultsMode) {
         toggleResultsMode.addEventListener('click', () => {
             resultsViewMode = resultsViewMode === 'latest' ? 'all' : 'latest';
-            toggleResultsMode.textContent = resultsViewMode === 'latest' ? 'Ver todos' : 'Solo fecha actual';
+            toggleResultsMode.textContent = resultsViewMode === 'latest' ? 'Ver historial' : 'Solo fecha actual';
             loadRecentResults();
         });
     }
@@ -70,6 +73,9 @@
     }
     if (btnRefreshRdAll) {
         btnRefreshRdAll.addEventListener('click', refreshRdAllNow);
+    }
+    if (btnRefreshRdHistoryFull) {
+        btnRefreshRdHistoryFull.addEventListener('click', refreshRdHistoryFullNow);
     }
     if (btnRefreshLeidsaHistory) {
         btnRefreshLeidsaHistory.addEventListener('click', refreshLeidsaHistoryNow);
@@ -145,9 +151,8 @@
         hideMain();
 
         if (country === 'USA') {
-            stateGroup.style.display = 'none';
             if (leidsaSection) leidsaSection.style.display = 'none';
-            loadStates(country);
+            loadUsaFilters();
         } else if (country === 'RD') {
             stateGroup.style.display = 'none';
             if (leidsaSection) leidsaSection.style.display = 'block';
@@ -160,19 +165,36 @@
     }
 
     async function loadStates(country) {
+        if (!selectState) return;
         selectState.innerHTML = '<option value="">— Seleccionar estado —</option>';
         try {
             const res = await fetch(`/api/states?country=${country}`);
             const data = await res.json();
-            data.states.forEach(s => {
+            (data.states || []).forEach(s => {
                 const opt = document.createElement('option');
                 opt.value = s;
                 opt.textContent = s;
                 selectState.appendChild(opt);
             });
+            return data.states || [];
         } catch (e) {
             console.error(e);
+            return [];
         }
+    }
+
+    async function loadUsaFilters() {
+        if (!stateGroup) {
+            await loadLotteries();
+            return;
+        }
+        const states = await loadStates('USA');
+        const hasMultiple = states.length > 1;
+        stateGroup.style.display = hasMultiple ? '' : 'none';
+        if (states.length === 1) {
+            selectState.value = states[0];
+        }
+        await loadLotteries();
     }
 
     async function loadLotteries() {
@@ -188,16 +210,28 @@
         try {
             const res = await fetch(url);
             const data = await res.json();
-            data.lotteries.forEach(lot => {
+            const list = data.lotteries || [];
+            list.forEach(lot => {
                 const opt = document.createElement('option');
                 opt.value = lot.id;
                 opt.textContent = lot.name;
                 opt.dataset.name = lot.name;
                 selectLottery.appendChild(opt);
             });
-            selectLottery.disabled = data.lotteries.length === 0;
+            selectLottery.disabled = list.length === 0;
+            if (list.length === 0) {
+                const opt = document.createElement('option');
+                opt.value = '';
+                opt.textContent = '— Sin loterías para este filtro —';
+                selectLottery.appendChild(opt);
+            }
         } catch (e) {
             console.error(e);
+            selectLottery.disabled = false;
+            const opt = document.createElement('option');
+            opt.value = '';
+            opt.textContent = '— Error al cargar loterías —';
+            selectLottery.appendChild(opt);
         }
     }
 
@@ -209,8 +243,8 @@
     }
 
     function hideMain() {
-        mainSplit.style.display = 'none';
-        liveIndicator.style.display = 'none';
+        if (mainSplit) mainSplit.style.display = 'none';
+        if (liveIndicator) liveIndicator.style.display = 'none';
         resetAnalysisPanel();
         setRefreshButtonVisible(false);
     }
@@ -237,6 +271,7 @@
             country: selectCountry.value,
             state: selectState.value || '',
             lottery: currentLotteryName,
+            days: 30,
         };
 
         try {
@@ -248,14 +283,18 @@
             const data = await res.json();
 
             if (!data.ok || data.status === 'error') {
-                setRefreshStatus('🔴 Error actualizando resultados', 'error');
+                const errMsg = data.message || 'Error actualizando resultados';
+                setRefreshStatus(`🔴 ${errMsg}`, 'error');
+                lastResultsError = errMsg;
+                await loadRecentResults(true);
                 return;
             }
 
+            lastResultsError = '';
             if (data.status === 'no_new') {
-                setRefreshStatus('⚪ No hay resultados nuevos todavía', 'muted');
+                setRefreshStatus(data.message || '⚪ Sin resultados nuevos en el rango', 'muted');
             } else {
-                setRefreshStatus('✅ Resultados actualizados', 'ok');
+                setRefreshStatus(data.message || '✅ Historial actualizado (30 días)', 'ok');
             }
 
             await loadRecentResults(true);
@@ -287,7 +326,8 @@
         const opt = selectLottery.options[selectLottery.selectedIndex];
         currentLotteryName = opt?.dataset?.name || opt?.textContent || '';
         currentCountry = selectCountry.value;
-        resultsViewMode = 'latest';
+        resultsViewMode = 'all';
+        historyDays = 30;
         hideMain();
 
         if (!currentLotteryId) return;
@@ -333,6 +373,18 @@
         `;
     }
 
+    function renderEmptyResultsMessage(data) {
+        const lotName = data?.lottery_name || currentLotteryName || 'esta lotería';
+        const tanda = currentDrawName ? ` / tanda «${currentDrawName}»` : '';
+        if (lastResultsError) {
+            return `<p class="empty-msg empty-msg-error">Error: ${escapeHtml(lastResultsError)}</p>`;
+        }
+        if (data?.total_in_db > 0 && currentDrawName) {
+            return `<p class="empty-msg">No hay resultados para ${escapeHtml(lotName)}${escapeHtml(tanda)} en el rango seleccionado. Prueba «Ver todos» o otra tanda.</p>`;
+        }
+        return `<p class="empty-msg">No hay resultados guardados para ${escapeHtml(lotName)}${escapeHtml(tanda)}. Presiona «Actualizar resultados ahora» o «Actualizar resultados RD ahora» (admin) para cargar desde Conectate.</p>`;
+    }
+
     async function loadRecentResults(silent) {
         if (!silent) {
             recentResults.innerHTML = '<p class="empty-msg">Cargando resultados...</p>';
@@ -344,13 +396,22 @@
                 url += `&mode=${resultsViewMode}`;
                 if (resultsViewMode === 'all') url += `&days=${historyDays}`;
             }
+            if (currentDrawName) {
+                url += `&draw_name=${encodeURIComponent(currentDrawName)}`;
+            }
 
             const res = await fetch(url);
             const data = await res.json();
+            if (!data.ok) {
+                lastResultsError = data.message || 'Error al cargar resultados';
+                recentResults.innerHTML = renderEmptyResultsMessage(data);
+                return;
+            }
+            lastResultsError = '';
 
             if (toggleResultsMode) {
                 toggleResultsMode.style.display = isRD ? 'inline-block' : 'none';
-                toggleResultsMode.textContent = resultsViewMode === 'latest' ? 'Ver todos' : 'Solo fecha actual';
+                toggleResultsMode.textContent = resultsViewMode === 'latest' ? 'Ver historial' : 'Solo fecha actual';
             }
             if (historyDaysFilters) {
                 historyDaysFilters.style.display = (isRD && resultsViewMode === 'all') ? 'flex' : 'none';
@@ -377,14 +438,15 @@
             }
 
             const list = data.results || [];
-            if (!list.length) {
-                recentResults.innerHTML = '<p class="empty-msg">No hay resultados registrados aún.</p>';
+            if (!list.length && !(data.groups && data.groups.length)) {
+                recentResults.innerHTML = renderEmptyResultsMessage(data);
                 return;
             }
 
             recentResults.innerHTML = list.map(r => renderResultCard(r, true)).join('');
         } catch (e) {
-            if (!silent) recentResults.innerHTML = '<p class="empty-msg">Error al cargar resultados.</p>';
+            lastResultsError = e.message || String(e);
+            if (!silent) recentResults.innerHTML = `<p class="empty-msg empty-msg-error">Error al cargar resultados: ${escapeHtml(lastResultsError)}</p>`;
         }
     }
 
@@ -407,6 +469,8 @@
         if (selectDraw && btn.draw_name) {
             selectDraw.value = btn.draw_name;
         }
+        currentDrawName = btn.draw_name || '';
+        loadRecentResults(true);
         getPrediction(btn);
     }
 
@@ -476,9 +540,11 @@
             activeDrawBtn = null;
         }
         if (selectDraw) selectDraw.value = '';
+        currentDrawName = '';
     }
 
     function showLoading(show) {
+        if (!loadingOverlay) return;
         loadingOverlay.style.display = show ? 'flex' : 'none';
     }
 
@@ -584,7 +650,13 @@
                     <span class="schedule-value">${escapeHtml(data.schedule_label)}</span>
                 `;
             } else {
-                scheduleEl.textContent = `🕘 ${currentLotteryName} — ${drawLabel}`;
+                const slotEmoji = data.schedule_emoji || '🎱';
+                scheduleEl.textContent = `${slotEmoji} ${currentLotteryName} — ${drawLabel}`;
+            }
+
+            const basisEl = $('predictionBasis');
+            if (basisEl) {
+                basisEl.textContent = data.analysis_basis || 'Basado en análisis histórico y tendencias recientes';
             }
 
             const bonus = data.bonus_numbers || (data.generated_bonus ? [data.generated_bonus] : []);
@@ -808,25 +880,70 @@
         }
     }
 
+    async function refreshRdHistoryFullNow() {
+        if (!btnRefreshRdHistoryFull) return;
+        btnRefreshRdHistoryFull.disabled = true;
+        const prev = btnRefreshRdHistoryFull.textContent;
+        btnRefreshRdHistoryFull.textContent = '⏳ Historial 90 días...';
+        setLeidsaStatus('📚 Descargando historial completo RD (90 días)...', 'loading');
+        try {
+            const res = await fetch('/api/resultados/rd/actualizar-historial-completo', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ days: 90 }),
+            });
+            const data = await res.json();
+            if (!data.ok) {
+                const err = (data.errors && data.errors.length)
+                    ? data.errors.slice(0, 3).join(' · ')
+                    : (data.message || 'Error al actualizar historial');
+                setLeidsaStatus(err, 'error');
+                lastResultsError = err;
+            } else {
+                lastResultsError = '';
+                setLeidsaStatus(
+                    data.message || 'Historial actualizado: 90 días revisados.',
+                    'ok'
+                );
+            }
+            await loadLeidsaBoard();
+            if (currentLotteryId) await loadRecentResults(true);
+        } catch (e) {
+            setLeidsaStatus(`Error: ${e.message || e}`, 'error');
+        } finally {
+            btnRefreshRdHistoryFull.disabled = false;
+            btnRefreshRdHistoryFull.textContent = prev;
+        }
+    }
+
     async function refreshRdAllNow() {
         if (!btnRefreshRdAll) return;
         btnRefreshRdAll.disabled = true;
-        setLeidsaStatus('🔄 Actualizando todas las loterías RD...', 'loading');
+        setLeidsaStatus('🔄 Actualizando historial RD (30 días)...', 'loading');
         try {
             const res = await fetch('/api/resultados/actualizar-ahora', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ country: 'RD', refresh_all_rd: true }),
+                body: JSON.stringify({ country: 'RD', refresh_all_rd: true, days: 30 }),
             });
             const data = await res.json();
             if (!data.ok && !data.leidsa_ok && !(data.imported + data.updated)) {
-                setLeidsaStatus(data.message || 'Error al actualizar RD', 'error');
+                const err = (data.errors && data.errors.length)
+                    ? data.errors.slice(0, 3).join(' · ')
+                    : (data.message || 'Error al actualizar RD');
+                setLeidsaStatus(err, 'error');
+                lastResultsError = err;
                 await loadLeidsaBoard();
+                if (currentLotteryId) await loadRecentResults(true);
                 return;
             }
-            let msg = data.message || '✅ Resultados RD actualizados';
+            lastResultsError = '';
+            let msg = data.message || '✅ Historial RD actualizado (30 días)';
             if (data.leidsa_ok === false && data.leidsa_error) {
                 msg += ` · LEIDSA: ${data.leidsa_error}`;
+            }
+            if (data.errors?.length) {
+                msg += ` · ${data.errors.slice(0, 2).join(' · ')}`;
             }
             setLeidsaStatus(msg, data.leidsa_ok === false ? 'muted' : 'ok');
             await loadLeidsaBoard();

@@ -40,6 +40,12 @@ RECENT_WINDOW_DEFAULT = 25
 TREND_RECENT_DRAWS = 10
 TREND_PREVIOUS_DRAWS = 10
 TOP_STAT_COUNT = 5
+RECENT_EXCLUSION_DRAWS = 5
+MIN_DRAWS_SINCE_FOR_OVERDUE = 2
+MIN_DRAWS_SINCE_FOR_HOT_DISPLAY = 1
+LAST_DRAW_SCORE_CAP = 0.0
+RECENT_APPEARANCE_PENALTY = 55.0
+ANALYSIS_BASIS_TEXT = "Basado en análisis histórico y tendencias recientes"
 
 
 def _parse_draw_date(date_str):
@@ -167,25 +173,73 @@ def _profile_to_overdue_detail(profile):
     return p
 
 
-def _classify_number_stats(profiles, top_n=TOP_STAT_COUNT):
+def _collect_recent_drawn_numbers(per_draw, num_draws=RECENT_EXCLUSION_DRAWS):
+    """Números que salieron en los últimos N sorteos (para excluir de recomendación)."""
+    excluded: set[str] = set()
+    for draw in per_draw[:num_draws]:
+        excluded.update(draw)
+    return excluded
+
+
+def _collect_last_draw_numbers(per_draw):
+    if not per_draw:
+        return set()
+    return set(per_draw[0])
+
+
+def _recency_penalty(number, stats):
+    """Penalización fuerte si salió en el último sorteo o en ventana reciente."""
+    last_draw = stats.get("last_draw_numbers") or set()
+    excluded = stats.get("excluded_recent_numbers") or set()
+    profiles = stats.get("number_profiles", {})
+    draws_since = profiles.get(number, {}).get("draws_since", 999)
+
+    if number in last_draw or draws_since == 0:
+        return RECENT_APPEARANCE_PENALTY * 4
+    if number in excluded:
+        return RECENT_APPEARANCE_PENALTY * 2
+    if draws_since == 1:
+        return RECENT_APPEARANCE_PENALTY
+    return 0.0
+
+
+def _classify_number_stats(
+    profiles,
+    top_n=TOP_STAT_COUNT,
+    last_draw_numbers=None,
+    min_overdue_draws=MIN_DRAWS_SINCE_FOR_OVERDUE,
+):
     if not profiles:
         return [], [], []
 
+    last_draw = last_draw_numbers or set()
     items = list(profiles.values())
-    appeared = [p for p in items if p["count"] > 0]
 
+    hot_pool = [
+        p for p in items
+        if p["count"] > 0 and p["number"] not in last_draw and p["draws_since"] >= MIN_DRAWS_SINCE_FOR_HOT_DISPLAY
+    ]
+    if len(hot_pool) < top_n:
+        hot_pool = [p for p in items if p["count"] > 0 and p["number"] not in last_draw]
     hot_sorted = sorted(
-        appeared,
-        key=lambda p: (p["count"], p["percentage"], -p["draws_since"]),
+        hot_pool,
+        key=lambda p: (p["count"], p["percentage"], p["draws_since"]),
         reverse=True,
     )
     hot = hot_sorted[:top_n]
 
-    cold_pool = sorted(items, key=lambda p: (p["count"], p["percentage"], p["draws_since"]))
+    cold_pool = sorted(
+        [p for p in items if p["number"] not in last_draw],
+        key=lambda p: (p["count"], p["percentage"], p["draws_since"]),
+    )
     cold = cold_pool[:top_n]
 
+    overdue_pool = [
+        p for p in items
+        if p["draws_since"] >= min_overdue_draws and p["number"] not in last_draw
+    ]
     overdue = sorted(
-        items,
+        overdue_pool,
         key=lambda p: (p["draws_since"], -p["count"]),
         reverse=True,
     )[:top_n]
@@ -206,13 +260,18 @@ def _cold_numbers(freq, universe, top_n=5):
     return cold[:top_n]
 
 
-def _overdue_numbers(results, per_draw, universe):
+def _overdue_numbers(per_draw, universe, top_n=TOP_STAT_COUNT, min_draws_since=MIN_DRAWS_SINCE_FOR_OVERDUE):
     last_seen = {}
     for idx, nums in enumerate(per_draw):
         for n in nums:
             if n not in last_seen:
                 last_seen[n] = idx
-    overdue = sorted(universe, key=lambda n: last_seen.get(n, len(per_draw)), reverse=True)
+    last_draw = _collect_last_draw_numbers(per_draw)
+    overdue = sorted(
+        [n for n in universe if n not in last_draw and last_seen.get(n, len(per_draw)) >= min_draws_since],
+        key=lambda n: last_seen.get(n, len(per_draw)),
+        reverse=True,
+    )
     return overdue[:top_n]
 
 
@@ -349,7 +408,13 @@ def analizar_loteria_por_tanda(lottery_id, draw_name):
     number_profiles, analysis_window = _build_number_profiles(
         results, per_draw, config, window=RECENT_WINDOW_DEFAULT
     )
-    hot_detail, cold_detail, overdue_detail = _classify_number_stats(number_profiles)
+    last_draw_numbers = _collect_last_draw_numbers(per_draw)
+    excluded_recent_numbers = _collect_recent_drawn_numbers(per_draw, RECENT_EXCLUSION_DRAWS)
+
+    hot_detail, cold_detail, overdue_detail = _classify_number_stats(
+        number_profiles,
+        last_draw_numbers=last_draw_numbers,
+    )
 
     hot = [p["number"] for p in hot_detail]
     cold = [p["number"] for p in cold_detail]
@@ -389,13 +454,35 @@ def analizar_loteria_por_tanda(lottery_id, draw_name):
         "numbers_together": [{"pair": list(p), "count": c} for p, c in together],
         "frequency_30": dict(_frequency_counter([n for d in per_30 for n in d]).most_common(10)),
         "frequency_60": dict(_frequency_counter([n for d in per_60 for n in d]).most_common(10)),
+        "last_draw_numbers": list(last_draw_numbers),
+        "excluded_recent_numbers": list(excluded_recent_numbers),
+        "recent_exclusion_draws": RECENT_EXCLUSION_DRAWS,
+        "analysis_basis": ANALYSIS_BASIS_TEXT,
+        "_per_draw": per_draw,
         "_all_nums": all_nums,
         "_freq": freq,
         "_config": config,
     }
 
 
+def _is_pickable_number(n, stats):
+    """Nunca elegible si salió en el último sorteo o en la ventana de exclusión reciente."""
+    last_draw = set(stats.get("last_draw_numbers") or [])
+    excluded = set(stats.get("excluded_recent_numbers") or [])
+    profiles = stats.get("number_profiles", {})
+    draws_since = profiles.get(n, {}).get("draws_since", 999)
+
+    if n in last_draw or draws_since == 0:
+        return False
+    if n in excluded:
+        return False
+    return True
+
+
 def _score_number(n, stats, position=None):
+    if not _is_pickable_number(n, stats):
+        return LAST_DRAW_SCORE_CAP
+
     score = 0.0
     profiles = stats.get("number_profiles", {})
     profile = profiles.get(n, {})
@@ -422,14 +509,17 @@ def _score_number(n, stats, position=None):
     elif trend == "falling":
         score -= 6
     elif trend == "overheated":
-        score -= 4
+        score -= 12
 
     freq_ratio = freq.get(n, 0) / total
     score += freq_ratio * 40
 
     recent_trend = stats.get("recent_trend", {})
     if n in recent_trend:
-        score += recent_trend[n] * 2.5
+        score += recent_trend[n] * 1.5
+
+    if draws_since >= 8:
+        score += min(draws_since * 1.5, 18)
 
     if position is not None:
         pos_freq = stats.get("position_frequency", {}).get(position, {})
@@ -447,7 +537,45 @@ def _score_number(n, stats, position=None):
         if n in nums:
             score += combo.get("count", 0) * 1.2
 
+    score -= _recency_penalty(n, stats) * 0.15
     return max(score, 0)
+
+
+def _pick_balanced_random(universe, excluded, count, pad=2):
+    """Recomendación balanceada cuando hay pocos datos; nunca incluye exclusión reciente."""
+    pool = [n for n in universe if n not in excluded]
+    random.shuffle(pool)
+    return pool[:count]
+
+
+def _sanitize_recommendation(numbers, stats, config):
+    """Quita duplicados y números del último sorteo / ventana reciente."""
+    count = int(config["count"])
+    pad = config.get("pad", 2)
+    universe = [_normalize_number(i, pad) for i in range(config["min"], config["max"] + 1)]
+    excluded = set(stats.get("excluded_recent_numbers") or [])
+    excluded.update(stats.get("last_draw_numbers") or [])
+
+    seen: set[str] = set()
+    cleaned: list[str] = []
+    for n in numbers:
+        if n in seen or not _is_pickable_number(n, stats):
+            continue
+        cleaned.append(n)
+        seen.add(n)
+
+    if len(cleaned) < count:
+        cleaned = _fallback_unique_numbers(
+            [n for n in universe if n not in excluded],
+            cleaned,
+            count,
+            pad,
+        )
+
+    if len(cleaned) < count:
+        cleaned = _pick_balanced_random(universe, excluded, count, pad)
+
+    return cleaned[:count]
 
 
 def _pick_numbers(stats, config):
@@ -457,17 +585,23 @@ def _pick_numbers(stats, config):
     pad = config.get("pad", 2)
 
     universe = [_normalize_number(i, pad) for i in range(config["min"], config["max"] + 1)]
+    excluded = set(stats.get("excluded_recent_numbers") or [])
+    excluded.update(stats.get("last_draw_numbers") or [])
+
+    pickable = [n for n in universe if _is_pickable_number(n, stats)]
+    if not pickable:
+        return _pick_balanced_random(universe, excluded, count, pad)
 
     scored: list[tuple[float, str]] = []
-    for n in universe:
+    for n in pickable:
         score = _score_number(n, stats)
-        score += random.uniform(0, 4)
+        score += random.uniform(0, 5.5)
         scored.append((score, n))
     scored.sort(key=lambda x: (-x[0], x[1]))
 
     if allow_repeat:
         selected = [scored[i % len(scored)][1] for i in range(count)] if scored else []
-        return selected
+        return _sanitize_recommendation(selected, stats, config)
 
     selected: list[str] = []
     used: set[str] = set()
@@ -480,9 +614,21 @@ def _pick_numbers(stats, config):
             break
 
     if len(selected) < count:
-        selected = _fallback_unique_numbers(universe, selected, count, pad)
+        pool = [n for n in universe if n not in excluded and n not in used]
+        selected = _fallback_unique_numbers(pool, selected, count, pad)
 
-    return selected[:count]
+    return _sanitize_recommendation(selected[:count], stats, config)
+
+
+def _schedule_emoji(draw_name: str) -> str:
+    key = (draw_name or "").lower().replace("tardía", "tardia")
+    return {
+        "mañana": "🌅",
+        "manana": "🌅",
+        "tarde": "🌇",
+        "tardia": "🎯",
+        "noche": "🌙",
+    }.get(key, "🎱")
 
 
 def _build_explanation(numbers, stats):
@@ -587,9 +733,16 @@ def _pick_bonus_number(stats, config):
     universe = [_normalize_number(i, pad) for i in range(bonus_min, bonus_max + 1)]
     if not universe:
         return None
+    per_draw = stats.get("_per_draw") or []
+    last_bonus = set()
+    for draw in per_draw[:RECENT_EXCLUSION_DRAWS]:
+        for n in draw:
+            if bonus_min <= int(n) <= bonus_max:
+                last_bonus.add(_normalize_number(int(n), pad))
+    pool = [n for n in universe if n not in last_bonus] or universe
     freq = stats.get("_freq", Counter())
     scored = []
-    for n in universe:
+    for n in pool:
         s = freq.get(n, 0) + random.uniform(0, 5)
         scored.append((s, n))
     scored.sort(reverse=True)
@@ -625,8 +778,15 @@ def generar_jugada_inteligente(lottery_id, draw_name):
     config = _resolve_analysis_config(lottery)
     recommend_count = config["count"]
     generated = _pick_numbers(stats, config)
+    generated = _sanitize_recommendation(generated, stats, config)
     duplicates = _find_duplicate_numbers(generated)
     warning = None
+
+    last_draw = set(stats.get("last_draw_numbers") or [])
+    overlap_last: list[str] = sorted(set(generated) & last_draw)
+    if overlap_last:
+        generated = _sanitize_recommendation([], stats, config)
+        warning = "Se ajustó la recomendación para no repetir el último sorteo."
 
     if duplicates and not config.get("allow_repeat"):
         seen: set[str] = set()
@@ -675,28 +835,38 @@ def generar_jugada_inteligente(lottery_id, draw_name):
 
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+    schedule_emoji = _schedule_emoji(draw_name)
+
     return {
         "ok": True,
         "country": lottery["country"],
         "state": state_label,
         "lottery": lottery["name"],
         "draw_name": draw_name,
+        "schedule_emoji": schedule_emoji,
         "recommend_count": recommend_count,
         "generated_numbers": generated,
         "numbers": generated,
+        "recommended_numbers": generated,
         "generated_bonus": generated_bonus,
         "bonus_numbers": [generated_bonus] if generated_bonus else [],
         "bonus_label": bonus_label,
         "confidence_level": confidence,
         "score": score,
         "analysis_text": analysis_text,
+        "analysis_basis": ANALYSIS_BASIS_TEXT,
+        "hot_numbers": stats.get("hot_numbers", []),
+        "cold_numbers": stats.get("cold_numbers", []),
+        "overdue_numbers": stats.get("overdue_numbers", []),
         "hot_numbers_detail": stats.get("hot_numbers_detail", []),
         "cold_numbers_detail": stats.get("cold_numbers_detail", []),
         "overdue_numbers_detail": stats.get("overdue_numbers_detail", []),
         "analysis_window": stats.get("analysis_window", RECENT_WINDOW_DEFAULT),
+        "recent_exclusion_draws": stats.get("recent_exclusion_draws", RECENT_EXCLUSION_DRAWS),
         "total_results": stats.get("total_results", 0),
         "history_count": stats.get("total_results", 0),
         "duplicates_found": duplicates,
+        "excluded_recent_overlap": overlap_last if overlap_last else [],
         "warning": warning.strip() if warning else None,
         "disclaimer": DISCLAIMER,
         "created_at": now,

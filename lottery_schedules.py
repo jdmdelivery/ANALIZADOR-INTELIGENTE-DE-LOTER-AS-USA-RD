@@ -25,12 +25,20 @@ LOTTERY_SCHEDULES = {
         {"label": "Tarde", "time": "12:30 PM"},
         {"label": "Noche", "time": "6:00 PM"},
     ],
-    # Leidsa genérica (Conectate) — desactivada; ver LEIDSA_GAME_SCHEDULES
+    # Leidsa genérica (Conectate / quiniela-pale); juegos LEIDSA usan leidsa_config
+    "Leidsa": [
+        {"label": "Tarde", "time": "3:55 PM"},
+        {"label": "Noche", "time": "8:55 PM"},
+    ],
     "Lotedom": [
         {"label": "Tarde", "time": "12:00 PM"},
     ],
     "Loteka": [
+        {"label": "Tarde", "time": "12:55 PM"},
         {"label": "Noche", "time": "7:55 PM"},
+    ],
+    "Gana Más": [
+        {"label": "Tarde", "time": "2:30 PM"},
     ],
     "Lotería Nacional": [
         {"label": "Tarde", "time": "2:30 PM"},
@@ -43,21 +51,39 @@ LOTTERY_SCHEDULES = {
     ],
     "Quiniela Real": [
         {"label": "Tarde", "time": "12:55 PM"},
+        {"label": "Noche", "time": "8:00 PM"},
     ],
 }
 
 # Nombres en DB u otras fuentes → clave del mapa
 LOTTERY_SCHEDULE_ALIASES = {
     "anguila": "Anguila",
+    "la anguila": "Anguila",
+    "leidsa": "Leidsa",
     "suerte dominicana": "La Suerte Dominicana",
     "la suerte dominicana": "La Suerte Dominicana",
     "loteria real": "Quiniela Real",
     "lotería real": "Quiniela Real",
-    "quiniela real": "Quiniela Real",
     "loto real": "Quiniela Real",
+    "quiniela real": "Quiniela Real",
     "gana mas": "Gana Más",
     "gana más": "Gana Más",
 }
+
+# Loterías RD (Conectate + internacionales en RD) — seed en models.seed_rd_conectate_lotteries
+RD_CONECTATE_LOTTERIES = [
+    {"name": "Anguila", "type": "rd_anguila", "state": ""},
+    {"name": "Florida", "type": "rd_florida", "state": "Internacional"},
+    {"name": "King Lottery", "type": "rd_king_lottery", "state": ""},
+    {"name": "Gana Más", "type": "rd_gana_mas", "state": ""},
+    {"name": "La Primera", "type": "rd_la_primera", "state": ""},
+    {"name": "Suerte Dominicana", "type": "rd_suerte_dom", "state": ""},
+    {"name": "Lotedom", "type": "rd_lotedom", "state": ""},
+    {"name": "Loteka", "type": "rd_loteka", "state": ""},
+    {"name": "Lotería Nacional", "type": "rd_nacional", "state": ""},
+    {"name": "Lotería Real", "type": "rd_loteria_real", "state": ""},
+    {"name": "New York", "type": "rd_new_york", "state": "Internacional"},
+]
 
 LABEL_TO_DRAW_NAME = {
     "mañana": "mañana",

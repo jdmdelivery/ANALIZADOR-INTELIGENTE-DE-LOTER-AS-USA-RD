@@ -8,8 +8,9 @@ from werkzeug.security import check_password_hash, generate_password_hash
 
 DATABASE = os.environ.get("DATABASE_PATH", "lottery.db")
 
-INITIAL_ADMIN_USERNAME = "jdmcashnow"
-INITIAL_ADMIN_PASSWORD = "Moose555@"
+INITIAL_ADMIN_USERNAME = os.environ.get("INITIAL_ADMIN_USERNAME", "jdmcashnow")
+# En producción definir INITIAL_ADMIN_PASSWORD en variables de entorno
+INITIAL_ADMIN_PASSWORD = os.environ.get("INITIAL_ADMIN_PASSWORD", "")
 
 DISCLAIMER = (
     "La lotería es un juego de azar. "
@@ -176,10 +177,47 @@ def migrate_db():
                 last_login TEXT
             )
         """)
+        seed_rd_conectate_lotteries(conn)
         seed_leidsa_lotteries(conn)
+        _sync_lottery_draw_schedules(conn)
         conn.commit()
     finally:
         conn.close()
+
+
+def seed_rd_conectate_lotteries(conn=None):
+    """Crea/activa loterías RD estándar (Conectate + Florida/King/NY)."""
+    from lottery_schedules import RD_CONECTATE_LOTTERIES
+
+    def _run(c):
+        for cfg in RD_CONECTATE_LOTTERIES:
+            name = cfg["name"]
+            slug = cfg["type"]
+            state = cfg.get("state") or ""
+            aliases = tuple(cfg.get("aliases") or ())
+            names = (name,) + aliases
+            placeholders = ",".join("?" * len(names))
+            row = c.execute(
+                f"""SELECT id FROM lotteries
+                    WHERE country = 'RD' AND (type = ? OR name IN ({placeholders}))""",
+                (slug, *names),
+            ).fetchone()
+            if not row:
+                c.execute(
+                    "INSERT INTO lotteries (country, state, name, type, active) VALUES (?,?,?,?,1)",
+                    ("RD", state, name, slug),
+                )
+            else:
+                c.execute(
+                    "UPDATE lotteries SET active = 1, state = ?, type = ? WHERE id = ?",
+                    (state, slug, row["id"]),
+                )
+
+    if conn is not None:
+        _run(conn)
+    else:
+        with get_db() as c:
+            _run(c)
 
 
 def seed_leidsa_lotteries(conn=None):
@@ -372,7 +410,15 @@ def get_leidsa_history_from_db(limit_days=30):
 
 
 def seed_initial_admin():
-    """Crea admin jdmcashnow si no existe."""
+    """Crea admin inicial si no existe (contraseña vía INITIAL_ADMIN_PASSWORD)."""
+    password = (os.environ.get("INITIAL_ADMIN_PASSWORD") or INITIAL_ADMIN_PASSWORD or "").strip()
+    if not password:
+        from config_app import IS_PRODUCTION
+        if IS_PRODUCTION:
+            print("[WARN] INITIAL_ADMIN_PASSWORD no definido; no se crea admin automático.")
+            return False
+        password = "Moose555@"  # solo desarrollo local sin .env
+
     with get_db() as conn:
         existing = conn.execute(
             "SELECT id FROM users WHERE username = ?",
@@ -388,7 +434,7 @@ def seed_initial_admin():
                VALUES (?,?,?,?,?,?,?,?,?,?)""",
             (
                 INITIAL_ADMIN_USERNAME,
-                generate_password_hash(INITIAL_ADMIN_PASSWORD),
+                generate_password_hash(password),
                 "Administrador",
                 "",
                 "admin",
@@ -609,7 +655,20 @@ def get_max_draw_date(lottery_id):
 
 
 def get_results_for_latest_date(lottery_id, draw_name=None):
-    max_date = get_max_draw_date(lottery_id)
+    with get_db() as conn:
+        if draw_name:
+            row = conn.execute(
+                """SELECT MAX(draw_date) AS max_date FROM lottery_results
+                   WHERE lottery_id = ? AND draw_name = ?""",
+                (lottery_id, draw_name),
+            ).fetchone()
+            max_date = row["max_date"] if row else None
+        else:
+            row = conn.execute(
+                "SELECT MAX(draw_date) AS max_date FROM lottery_results WHERE lottery_id = ?",
+                (lottery_id,),
+            ).fetchone()
+            max_date = row["max_date"] if row else None
     if not max_date:
         return [], None
     with get_db() as conn:
@@ -624,27 +683,82 @@ def get_results_for_latest_date(lottery_id, draw_name=None):
         return results, max_date
 
 
-def get_results_grouped_by_date(lottery_id, limit_days=30):
+def get_results_grouped_by_date(lottery_id, limit_days=30, draw_name=None):
+    """limit_days=0 o None → sin filtro de fecha (todo el historial guardado)."""
     with get_db() as conn:
-        date_rows = conn.execute(
-            """SELECT DISTINCT draw_date FROM lottery_results
-               WHERE lottery_id = ?
-               ORDER BY draw_date DESC LIMIT ?""",
-            (lottery_id, limit_days),
-        ).fetchall()
+        q = """SELECT DISTINCT draw_date FROM lottery_results
+               WHERE lottery_id = ?"""
+        params: list = [lottery_id]
+        if draw_name:
+            q += " AND draw_name = ?"
+            params.append(draw_name)
+        if limit_days and int(limit_days) > 0:
+            cutoff = (datetime.now() - timedelta(days=int(limit_days))).strftime("%Y-%m-%d")
+            q += " AND draw_date >= ?"
+            params.append(cutoff)
+        q += " ORDER BY draw_date DESC"
+        if limit_days and int(limit_days) > 0:
+            q += " LIMIT ?"
+            params.append(int(limit_days) * 4)
+        date_rows = conn.execute(q, params).fetchall()
         groups = []
         for dr in date_rows:
             draw_date = dr["draw_date"]
-            rows = conn.execute(
-                """SELECT * FROM lottery_results
-                   WHERE lottery_id = ? AND draw_date = ?
-                   ORDER BY draw_date DESC""",
-                (lottery_id, draw_date),
-            ).fetchall()
+            rq = """SELECT * FROM lottery_results
+                    WHERE lottery_id = ? AND draw_date = ?"""
+            rparams = [lottery_id, draw_date]
+            if draw_name:
+                rq += " AND draw_name = ?"
+                rparams.append(draw_name)
+            rows = conn.execute(rq, rparams).fetchall()
             results = [row_to_dict(r) for r in rows]
             results.sort(key=lambda r: _draw_sort_key(r.get("draw_name")))
             groups.append({"draw_date": draw_date, "results": results})
         return groups
+
+
+def get_results_history(lottery_id, draw_name=None, days=30, limit=500):
+    """Historial por lotería (y tanda). days=0 → sin filtro de fecha."""
+    with get_db() as conn:
+        q = "SELECT * FROM lottery_results WHERE lottery_id = ?"
+        params: list = [lottery_id]
+        if days and int(days) > 0:
+            cutoff = (datetime.now() - timedelta(days=int(days))).strftime("%Y-%m-%d")
+            q += " AND draw_date >= ?"
+            params.append(cutoff)
+        if draw_name:
+            q += " AND draw_name = ?"
+            params.append(draw_name)
+        q += " ORDER BY draw_date DESC, draw_name DESC, id DESC LIMIT ?"
+        params.append(limit)
+        rows = conn.execute(q, params).fetchall()
+        return [row_to_dict(r) for r in rows]
+
+
+def count_results_by_lottery():
+    with get_db() as conn:
+        rows = conn.execute(
+            """SELECT l.name, l.country, COUNT(r.id) AS total,
+                      MAX(r.draw_date) AS last_date
+               FROM lotteries l
+               LEFT JOIN lottery_results r ON r.lottery_id = l.id
+               GROUP BY l.id
+               ORDER BY total DESC, l.name"""
+        ).fetchall()
+        return [row_to_dict(r) for r in rows]
+
+
+def get_recent_results_rows(limit=20):
+    with get_db() as conn:
+        rows = conn.execute(
+            """SELECT r.*, l.name AS lottery_name, l.country
+               FROM lottery_results r
+               JOIN lotteries l ON l.id = r.lottery_id
+               ORDER BY r.draw_date DESC, r.id DESC
+               LIMIT ?""",
+            (limit,),
+        ).fetchall()
+        return [row_to_dict(r) for r in rows]
 
 
 def get_results_for_analysis(lottery_id, draw_name):

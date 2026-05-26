@@ -1,11 +1,25 @@
 import os
+import sys
 import secrets
+import logging
 from datetime import datetime, timedelta
 
 from flask import Flask, render_template, request, jsonify, redirect, url_for, flash, abort, session
 from flask_login import login_user, logout_user, login_required, current_user
 
+from config_app import (
+    DEBUG,
+    HOST,
+    IS_PRODUCTION,
+    PORT,
+    SECRET_KEY as ENV_SECRET_KEY,
+    validate_production_config,
+)
+from services.app_logging import setup_app_logging
 from auth import init_auth, admin_required, User
+
+setup_app_logging()
+logger = logging.getLogger(__name__)
 from models import (
     init_db,
     DISCLAIMER,
@@ -62,12 +76,23 @@ from importers import (
 )
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("SECRET_KEY") or secrets.token_hex(32)
+if ENV_SECRET_KEY:
+    app.secret_key = ENV_SECRET_KEY
+elif IS_PRODUCTION:
+    raise RuntimeError("SECRET_KEY es obligatorio cuando FLASK_ENV=production")
+else:
+    app.secret_key = secrets.token_hex(32)
+    logger.warning("SECRET_KEY no definido; usando clave temporal (solo desarrollo).")
+
 app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(hours=12)
 app.config["REMEMBER_COOKIE_DURATION"] = timedelta(days=7)
 
+for msg in validate_production_config():
+    logger.warning("Config: %s", msg)
+
 init_auth(app)
 init_db()
+logger.info("App iniciada | production=%s | db=%s", IS_PRODUCTION, os.environ.get("DATABASE_PATH", "lottery.db"))
 
 DRAW_BUTTONS = {
     "USA": [
@@ -118,7 +143,7 @@ def _user_badge_info(row):
 
 @app.before_request
 def enforce_access():
-    if request.endpoint in (None, "login", "logout", "static"):
+    if request.endpoint in (None, "login", "logout", "static", "health"):
         return
     if not current_user.is_authenticated:
         if request.path.startswith("/api/"):
@@ -205,6 +230,46 @@ def logout():
     resp.delete_cookie(remember_name)
     flash("Sesión cerrada correctamente.", "info")
     return resp
+
+
+@app.route("/health")
+def health():
+    """Liveness/readiness para Render, balanceadores, etc."""
+    from models import DATABASE, get_connection
+
+    db_ok = False
+    try:
+        conn = get_connection()
+        conn.execute("SELECT 1")
+        conn.close()
+        db_ok = True
+    except Exception as exc:
+        logger.error("Health DB check failed: %s", exc)
+    status = 200 if db_ok else 503
+    return jsonify({
+        "ok": db_ok,
+        "status": "healthy" if db_ok else "degraded",
+        "production": IS_PRODUCTION,
+        "database": DATABASE,
+    }), status
+
+
+@app.route("/debug/system")
+@admin_required
+def debug_system():
+    """Diagnóstico general del sistema (solo admin)."""
+    from models import DATABASE, get_all_lotteries, get_all_users
+
+    lotteries = get_all_lotteries(active_only=False)
+    users = get_all_users()
+    return jsonify({
+        "ok": True,
+        "production": IS_PRODUCTION,
+        "database": DATABASE,
+        "lotteries_count": len(lotteries),
+        "users_count": len(users),
+        "python_version": sys.version.split()[0],
+    })
 
 
 @app.route("/")
@@ -299,8 +364,12 @@ def api_draw_times():
 
 @app.route("/api/results")
 def api_results():
+    from models import get_results_history
+
     lottery_id = request.args.get("lottery_id", type=int)
-    draw_name = request.args.get("draw_name")
+    draw_name = request.args.get("draw_name") or None
+    if draw_name:
+        draw_name = draw_name.strip() or None
     limit = request.args.get("limit", 10, type=int)
     mode = request.args.get("mode", "latest")
     if not lottery_id:
@@ -308,15 +377,40 @@ def api_results():
     lottery = get_lottery(lottery_id)
     latest_date = None
     groups = None
+    load_error = None
 
     days_param = request.args.get("days", type=int)
-    limit_days = days_param if days_param else max(limit, 30)
+    # 365 en UI = “Todo” (sin cutoff de fecha)
+    if days_param == 365:
+        limit_days = 0
+    elif days_param:
+        limit_days = days_param
+    else:
+        limit_days = max(limit, 30)
+
+    today_iso = datetime.now().strftime("%Y-%m-%d")
+
     if lottery and lottery.get("country") == "RD" and mode == "all":
-        groups = get_results_grouped_by_date(lottery_id, limit_days=limit_days)
+        groups = get_results_grouped_by_date(
+            lottery_id, limit_days=limit_days, draw_name=draw_name
+        )
         latest_date = get_max_draw_date(lottery_id)
         results = []
-    elif lottery and lottery.get("country") == "RD":
+    elif lottery and lottery.get("country") == "RD" and mode == "latest":
         results, latest_date = get_results_for_latest_date(lottery_id, draw_name)
+        results = [r for r in results if r.get("draw_date") == today_iso]
+        if not results:
+            results = get_results_history(
+                lottery_id, draw_name=draw_name, days=1, limit=50
+            )
+            results = [r for r in results if r.get("draw_date") == today_iso]
+            if results:
+                latest_date = today_iso
+    elif lottery and lottery.get("country") == "RD":
+        results = get_results_history(
+            lottery_id, draw_name=draw_name, days=limit_days or 30, limit=500
+        )
+        latest_date = results[0].get("draw_date") if results else None
     else:
         results = get_results(lottery_id, draw_name, limit)
 
@@ -355,12 +449,54 @@ def api_results():
             reverse=True,
         )
 
-    payload = {"ok": True, "results": results, "mode": mode}
+    total_in_db = 0
+    if lottery_id:
+        from models import get_results as _gr
+        total_in_db = len(_gr(lottery_id, draw_name=draw_name, limit=500))
+
+    payload = {
+        "ok": True,
+        "results": results,
+        "mode": mode,
+        "draw_name": draw_name,
+        "total_in_db": total_in_db,
+        "has_results": bool(results) or bool(groups),
+        "load_error": load_error,
+        "lottery_name": lottery.get("name") if lottery else "",
+    }
     if latest_date:
         payload["latest_date"] = latest_date
     if groups is not None:
         payload["groups"] = groups
     return jsonify(payload)
+
+
+@app.route("/debug/lottery/<source>")
+@admin_required
+def debug_lottery_source(source):
+    from services.rd_debug import debug_lottery_source as run_debug
+    return jsonify(run_debug(source))
+
+
+@app.route("/debug/resultados")
+@admin_required
+def debug_resultados():
+    from services.rd_debug import debug_resultados_general
+    return jsonify(debug_resultados_general())
+
+
+@app.route("/debug/history")
+@admin_required
+def debug_history():
+    from services.history_fetch import debug_history_status
+    return jsonify(debug_history_status())
+
+
+@app.route("/debug/new-lotteries")
+@admin_required
+def debug_new_lotteries():
+    from services.new_lotteries_debug import debug_new_lotteries as run_debug
+    return jsonify(run_debug())
 
 
 @app.route("/api/resultados/actualizar-ahora", methods=["POST"])
@@ -373,11 +509,12 @@ def api_actualizar_resultados_ahora():
     state = (data.get("state") or request.form.get("state") or "").strip()
     lottery = (data.get("lottery") or request.form.get("lottery") or "").strip()
     refresh_all_rd = data.get("refresh_all_rd") or request.form.get("refresh_all_rd")
+    days = int(data.get("days") or request.form.get("days") or 30)
 
     if country.upper() == "RD" and (refresh_all_rd or not lottery):
-        result = refresh_all_rd_now()
+        result = refresh_all_rd_now(days=days)
     else:
-        result = refresh_lottery_results_now(country, state, lottery)
+        result = refresh_lottery_results_now(country, state, lottery, days=days)
     status_code = 200 if result.get("ok") else 400
     return jsonify(result), status_code
 
@@ -398,10 +535,22 @@ def admin_actualizar_leidsa():
     return redirect(url_for("admin") + "#tabApi")
 
 
+@app.route("/api/resultados/rd/actualizar-historial-completo", methods=["POST"])
+@admin_required
+def api_actualizar_rd_historial_completo():
+    from services.history_fetch import fetch_all_rd_history
+
+    data = request.get_json(silent=True) or {}
+    days = int(data.get("days") or request.form.get("days") or 90)
+    result = fetch_all_rd_history(days=days)
+    code = 200 if result.get("ok") else 400
+    return jsonify(result), code
+
+
 @app.route("/admin/resultados/rd/actualizar", methods=["POST"])
 @admin_required
 def admin_actualizar_rd():
-    result = refresh_all_rd_now()
+    result = refresh_all_rd_now(days=30)
     if result.get("ok"):
         flash(result.get("message", "Resultados RD actualizados."), "success")
     else:
@@ -454,22 +603,41 @@ def api_actualizar_leidsa_historial():
     return jsonify(result), code
 
 
+@app.errorhandler(404)
+def not_found(err):
+    if request.path.startswith("/api/") or request.path.startswith("/debug/"):
+        return jsonify({"ok": False, "message": "Recurso no encontrado."}), 404
+    return render_template("login.html", disclaimer=DISCLAIMER), 404
+
+
+@app.errorhandler(500)
+def server_error(err):
+    logger.exception("Error interno: %s", err)
+    if request.path.startswith("/api/") or request.path.startswith("/debug/"):
+        msg = "Error interno del servidor." if IS_PRODUCTION else str(err)
+        return jsonify({"ok": False, "message": msg}), 500
+    if current_user.is_authenticated:
+        flash("Ocurrió un error interno. Intenta de nuevo.", "danger")
+        return redirect(url_for("index"))
+    return redirect(url_for("login"))
+
+
 @app.route("/debug/leidsa")
-@login_required
+@admin_required
 def debug_leidsa():
     from services.leidsa_service import debug_leidsa as run_debug
     return jsonify(run_debug())
 
 
 @app.route("/debug/leidsa/dropdowns")
-@login_required
+@admin_required
 def debug_leidsa_dropdowns():
     from services.leidsa_history import debug_leidsa_dropdowns as run_debug
     return jsonify(run_debug())
 
 
 @app.route("/debug/leidsa/history")
-@login_required
+@admin_required
 def debug_leidsa_history():
     from services.leidsa_history import debug_leidsa_history_sample as run_debug
 
@@ -478,7 +646,7 @@ def debug_leidsa_history():
 
 
 @app.route("/debug/recomendacion/leidsa")
-@login_required
+@admin_required
 def debug_recomendacion_leidsa():
     from analysis import debug_leidsa_recommendation
 
@@ -539,6 +707,13 @@ def api_prediction():
                 result["draw_display"] = labels.get(draw_name, draw_name.capitalize())
             else:
                 result["draw_display"] = draw_name
+        emoji = result.get("schedule_emoji") or DRAW_EMOJI_RD.get(draw_name, "🎱")
+        tanda = result.get("draw_display") or draw_name
+        result["schedule_label"] = f"{emoji} {tanda} — {result.get('schedule_label', lottery['name'])}"
+
+    if not result.get("analysis_basis"):
+        from analysis import ANALYSIS_BASIS_TEXT
+        result["analysis_basis"] = ANALYSIS_BASIS_TEXT
 
     return jsonify(result)
 
@@ -551,7 +726,7 @@ def api_analysis():
         return jsonify({"ok": False, "message": "lottery_id y draw_name son requeridos"})
     result = analizar_loteria_por_tanda(lottery_id, draw_name)
     if result and result.get("ok"):
-        for key in ("_all_nums", "_freq", "_config"):
+        for key in ("_all_nums", "_freq", "_config", "_per_draw"):
             result.pop(key, None)
     return jsonify(result or {"ok": False, "message": "Error en análisis"})
 
@@ -869,4 +1044,4 @@ def admin_scraper_import():
 
 
 if __name__ == "__main__":
-    app.run(debug=True, host="127.0.0.1", port=5000)
+    app.run(debug=DEBUG, host=HOST, port=PORT)

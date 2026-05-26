@@ -332,10 +332,21 @@ body.premium-body {
 .title-icon { font-size: 1.2rem; }
 
 /* ── FILTROS ── */
+.filters-panel {
+    overflow: visible;
+}
+
 .filters-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
     gap: 1.25rem;
+    position: relative;
+    z-index: 5;
+}
+
+.filter-group {
+    position: relative;
+    z-index: 6;
 }
 
 .filter-label {
@@ -350,6 +361,8 @@ body.premium-body {
 .premium-select {
     width: 100%;
     padding: 0.85rem 1rem;
+    position: relative;
+    z-index: 10;
     background: rgba(3, 8, 20, 0.85);
     border: 1px solid rgba(0, 212, 255, 0.35);
     border-radius: 12px;
@@ -639,6 +652,12 @@ body.premium-body {
         min-width: 2.1rem;
         font-size: 0.85rem;
     }
+}
+.analysis-basis {
+    color: rgba(255, 255, 255, 0.62);
+    font-size: 0.78rem;
+    margin: 0.35rem 0 0;
+    font-style: italic;
 }
 .prediction-warning {
     color: #ffb347;
@@ -1001,6 +1020,13 @@ body.premium-body {
     text-align: center;
     color: var(--text-muted);
     padding: 2rem;
+}
+
+.empty-msg-error {
+    color: #f87171;
+    border: 1px solid rgba(248, 113, 113, 0.35);
+    border-radius: 8px;
+    background: rgba(248, 113, 113, 0.08);
 }
 
 /* ── LOADING ── */
