@@ -76,6 +76,7 @@ from importers import (
 )
 
 app = Flask(__name__)
+app.url_map.strict_slashes = False
 if ENV_SECRET_KEY:
     app.secret_key = ENV_SECRET_KEY
 elif IS_PRODUCTION:
@@ -93,6 +94,11 @@ for msg in validate_production_config():
 init_auth(app)
 init_db()
 logger.info("App iniciada | production=%s | db=%s", IS_PRODUCTION, os.environ.get("DATABASE_PATH", "lottery.db"))
+for _route in ("/api/resultados/actualizar", "/api/resultados/actualizar-ahora"):
+    if _route not in {r.rule for r in app.url_map.iter_rules()}:
+        logger.error("Ruta API faltante: %s", _route)
+    else:
+        logger.info("Ruta API registrada: POST %s", _route)
 
 DRAW_BUTTONS = {
     "USA": [
@@ -102,6 +108,68 @@ DRAW_BUTTONS = {
         {"draw_name": "Mega Millions draw", "label": "Mega Millions", "emoji": "💫", "css": "tanda-mega"},
     ],
 }
+
+USA_ANALYSIS_TIMEOUT_SEC = 15
+
+
+def _usa_analysis_log(msg: str) -> None:
+    line = f"[USA ANALISIS] {msg}"
+    logger.info(line)
+    print(line)
+
+
+def _run_usa_analysis_timed(fn, label: str = "analisis"):
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutTimeout
+
+    _usa_analysis_log("inicio")
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        fut = pool.submit(fn)
+        try:
+            result = fut.result(timeout=USA_ANALYSIS_TIMEOUT_SEC)
+        except FutTimeout:
+            _usa_analysis_log(f"timeout ({USA_ANALYSIS_TIMEOUT_SEC}s) en {label}")
+            return None, "timeout"
+        except Exception as exc:
+            logger.exception("USA análisis %s", label)
+            return None, str(exc)
+    if isinstance(result, dict):
+        loaded = result.get("total_results", result.get("history_count", "—"))
+        _usa_analysis_log(f"resultados cargados: {loaded}")
+    _usa_analysis_log("respuesta enviada")
+    return result, None
+
+
+def _enrich_prediction_payload(result, lottery_id, draw_name, lottery):
+    """Metadatos de horario — generar_jugada_inteligente ya incluye stats."""
+    if not result or not lottery:
+        return result
+
+    draws = get_draw_times(lottery_id, active_only=True)
+    draw_time = next((d.get("draw_time") for d in draws if d["draw_name"] == draw_name), "")
+    schedule_slot = get_schedule_slot(lottery["name"], draw_name)
+    if schedule_slot:
+        draw_time = time_12h_to_24h(schedule_slot["time"])
+
+    result["schedule_label"] = _build_schedule_label(lottery, draw_name, draw_time)
+    result["draw_time"] = draw_time
+    if schedule_slot:
+        result["time_display"] = schedule_slot["time"]
+        result["draw_display"] = schedule_slot["time"]
+    else:
+        result["time_display"] = _format_time_12h(draw_time)
+        if lottery.get("country") == "RD":
+            labels = {"mañana": "Mañana", "tarde": "Tarde", "tardía": "Tardía", "noche": "Noche"}
+            result["draw_display"] = labels.get(draw_name, draw_name.capitalize())
+        else:
+            result["draw_display"] = draw_name
+    emoji = result.get("schedule_emoji") or DRAW_EMOJI_RD.get(draw_name, "🎱")
+    tanda = result.get("draw_display") or draw_name
+    result["schedule_label"] = f"{emoji} {tanda} — {result.get('schedule_label', lottery['name'])}"
+
+    if not result.get("analysis_basis"):
+        from analysis import ANALYSIS_BASIS_TEXT
+        result["analysis_basis"] = ANALYSIS_BASIS_TEXT
+    return result
 
 
 def _format_time_12h(draw_time):
@@ -499,28 +567,72 @@ def debug_new_lotteries():
     return jsonify(run_debug())
 
 
+def _api_actualizar_resultados_payload(data=None):
+    """Despacho estricto US vs DO — sin mezclar Illinois con RD."""
+    from services.actualizar_resultados import (
+        actualizar_resultados_rd,
+        actualizar_resultados_usa,
+        es_pais_do,
+        es_pais_us,
+    )
+
+    data = data or {}
+    pais = (
+        data.get("pais")
+        or data.get("country")
+        or request.form.get("pais")
+        or request.form.get("country")
+        or ""
+    ).strip()
+    state = (data.get("state") or request.form.get("state") or "").strip()
+    loteria = (
+        data.get("loteria")
+        or data.get("lottery")
+        or request.form.get("loteria")
+        or request.form.get("lottery")
+        or ""
+    ).strip()
+    refresh_all_rd = data.get("refresh_all_rd") or request.form.get("refresh_all_rd")
+    refresh_all_usa = data.get("refresh_all_usa") or request.form.get("refresh_all_usa")
+    days = int(data.get("days") or request.form.get("days") or 30)
+
+    if es_pais_us(pais):
+        return actualizar_resultados_usa(
+            loteria or None,
+            state=state or "Illinois",
+            days=days,
+            refresh_all=bool(refresh_all_usa or not loteria),
+        )
+
+    if es_pais_do(pais):
+        return actualizar_resultados_rd(
+            loteria or None,
+            days=days,
+            refresh_all=bool(refresh_all_rd or not loteria),
+        )
+
+    return {
+        "ok": False,
+        "message": f"País no soportado: {pais}. Use US/USA o DO/RD.",
+    }
+
+
+@app.route("/api/resultados/actualizar", methods=["POST"])
 @app.route("/api/resultados/actualizar-ahora", methods=["POST"])
 @login_required
 def api_actualizar_resultados_ahora():
     if not current_user.is_admin():
         return jsonify({"ok": False, "message": "Solo administradores pueden actualizar resultados."}), 403
     data = request.get_json(silent=True) or {}
-    country = (data.get("country") or request.form.get("country") or "").strip()
-    state = (data.get("state") or request.form.get("state") or "").strip()
-    lottery = (data.get("lottery") or request.form.get("lottery") or "").strip()
-    refresh_all_rd = data.get("refresh_all_rd") or request.form.get("refresh_all_rd")
-    days = int(data.get("days") or request.form.get("days") or 30)
-
-    if country.upper() == "RD" and (refresh_all_rd or not lottery):
-        result = refresh_all_rd_now(days=days)
-    else:
-        result = refresh_lottery_results_now(country, state, lottery, days=days)
+    result = _api_actualizar_resultados_payload(data)
+    # 200 si ok o si hay fallback con datos guardados (no romper pantalla)
     status_code = 200 if result.get("ok") else 400
     return jsonify(result), status_code
 
 
 def _run_leidsa_update():
     from services.leidsa_service import update_leidsa_now
+
     return update_leidsa_now()
 
 
@@ -574,7 +686,8 @@ def api_resultados_leidsa():
     fecha = request.args.get("fecha") or request.args.get("fecha_rd")
     days = request.args.get("days", type=int)
     data = get_leidsa_dashboard(fecha, history_days=days)
-    return jsonify(data)
+    # Siempre 200 con payload JSON (evita panel roto si hay datos en BD)
+    return jsonify(data), 200
 
 
 @app.route("/admin/resultados/leidsa/actualizar-historial", methods=["POST"])
@@ -669,66 +782,78 @@ def api_analisis_leidsa():
 
 @app.route("/api/prediction")
 def api_prediction():
-    lottery_id = request.args.get("lottery_id", type=int)
-    draw_name = request.args.get("draw_name", "").strip()
-    if not lottery_id or not draw_name:
-        return jsonify({"ok": False, "message": "lottery_id y draw_name son requeridos"})
-    lottery = get_lottery(lottery_id)
-    result = generar_jugada_inteligente(lottery_id, draw_name)
-    if not result.get("ok"):
-        return jsonify(result)
+    try:
+        lottery_id = request.args.get("lottery_id", type=int)
+        draw_name = request.args.get("draw_name", "").strip()
+        if not lottery_id or not draw_name:
+            return jsonify({"ok": False, "message": "lottery_id y draw_name son requeridos"}), 400
 
-    draws = get_draw_times(lottery_id, active_only=True)
-    draw_time = next((d.get("draw_time") for d in draws if d["draw_name"] == draw_name), "")
-    schedule_slot = get_schedule_slot(lottery["name"], draw_name) if lottery else None
-    if schedule_slot:
-        draw_time = time_12h_to_24h(schedule_slot["time"])
-    stats = analizar_loteria_por_tanda(lottery_id, draw_name)
-    if stats and stats.get("ok"):
-        result["hot_numbers"] = stats.get("hot_numbers", [])[:5]
-        result["cold_numbers"] = stats.get("cold_numbers", [])[:5]
-        result["overdue_numbers"] = stats.get("overdue_numbers", [])[:5]
-        result["hot_numbers_detail"] = stats.get("hot_numbers_detail", [])
-        result["cold_numbers_detail"] = stats.get("cold_numbers_detail", [])
-        result["overdue_numbers_detail"] = stats.get("overdue_numbers_detail", [])
-        result["analysis_window"] = stats.get("analysis_window", 25)
-        result["total_results"] = stats.get("total_results", 0)
+        lottery = get_lottery(lottery_id)
+        if not lottery:
+            return jsonify({"ok": False, "message": "Lotería no encontrada.", "error": "not_found"}), 404
 
-    if lottery:
-        result["schedule_label"] = _build_schedule_label(lottery, draw_name, draw_time)
-        result["draw_time"] = draw_time
-        if schedule_slot:
-            result["time_display"] = schedule_slot["time"]
-            result["draw_display"] = schedule_slot["time"]
-        else:
-            result["time_display"] = _format_time_12h(draw_time)
-            if lottery.get("country") == "RD":
-                labels = {"mañana": "Mañana", "tarde": "Tarde", "tardía": "Tardía", "noche": "Noche"}
-                result["draw_display"] = labels.get(draw_name, draw_name.capitalize())
-            else:
-                result["draw_display"] = draw_name
-        emoji = result.get("schedule_emoji") or DRAW_EMOJI_RD.get(draw_name, "🎱")
-        tanda = result.get("draw_display") or draw_name
-        result["schedule_label"] = f"{emoji} {tanda} — {result.get('schedule_label', lottery['name'])}"
+        def build():
+            result = generar_jugada_inteligente(lottery_id, draw_name)
+            return _enrich_prediction_payload(result, lottery_id, draw_name, lottery)
 
-    if not result.get("analysis_basis"):
-        from analysis import ANALYSIS_BASIS_TEXT
-        result["analysis_basis"] = ANALYSIS_BASIS_TEXT
+        if lottery.get("country") == "USA":
+            result, err = _run_usa_analysis_timed(build, "prediction")
+            if err:
+                return jsonify({
+                    "ok": False,
+                    "message": "⚠️ No se pudo completar el análisis.",
+                    "error": err,
+                }), 500
+            status = 200 if result.get("ok") else 400
+            return jsonify(result), status
 
-    return jsonify(result)
+        result = build()
+        status = 200 if result.get("ok") else 400
+        return jsonify(result), status
+    except Exception as exc:
+        logger.exception("api_prediction")
+        return jsonify({
+            "ok": False,
+            "message": "⚠️ No se pudo completar el análisis.",
+            "error": str(exc),
+        }), 500
 
 
 @app.route("/api/analysis")
 def api_analysis():
-    lottery_id = request.args.get("lottery_id", type=int)
-    draw_name = request.args.get("draw_name", "").strip()
-    if not lottery_id or not draw_name:
-        return jsonify({"ok": False, "message": "lottery_id y draw_name son requeridos"})
-    result = analizar_loteria_por_tanda(lottery_id, draw_name)
-    if result and result.get("ok"):
-        for key in ("_all_nums", "_freq", "_config", "_per_draw"):
-            result.pop(key, None)
-    return jsonify(result or {"ok": False, "message": "Error en análisis"})
+    try:
+        lottery_id = request.args.get("lottery_id", type=int)
+        draw_name = request.args.get("draw_name", "").strip()
+        if not lottery_id or not draw_name:
+            return jsonify({"ok": False, "message": "lottery_id y draw_name son requeridos"}), 400
+
+        lottery = get_lottery(lottery_id)
+
+        def run_analysis():
+            return analizar_loteria_por_tanda(lottery_id, draw_name)
+
+        if lottery and lottery.get("country") == "USA":
+            result, err = _run_usa_analysis_timed(run_analysis, "analysis")
+            if err:
+                return jsonify({
+                    "ok": False,
+                    "message": "⚠️ No se pudo completar el análisis.",
+                    "error": err,
+                }), 500
+        else:
+            result = run_analysis()
+
+        if result and result.get("ok"):
+            for key in ("_all_nums", "_freq", "_config", "_per_draw"):
+                result.pop(key, None)
+        return jsonify(result or {"ok": False, "message": "Error en análisis"})
+    except Exception as exc:
+        logger.exception("api_analysis")
+        return jsonify({
+            "ok": False,
+            "message": "⚠️ No se pudo completar el análisis.",
+            "error": str(exc),
+        }), 500
 
 
 # --- Admin usuarios ---

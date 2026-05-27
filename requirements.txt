@@ -7,4 +7,5 @@ lxml
 cloudscraper
 python-dateutil
 pytz
+tzdata
 pytest

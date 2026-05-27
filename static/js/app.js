@@ -39,6 +39,7 @@
     let currentDrawButtons = [];
     let currentDrawName = '';
     let lastResultsError = '';
+    let refreshResultsInProgress = false;
 
     const TANDA_CSS = {
         'mañana': 'rc-manana',
@@ -262,47 +263,100 @@
     }
 
     async function refreshResultsNow() {
-        if (!currentLotteryId || !btnRefreshResultsNow) return;
+        if (!currentLotteryId || !btnRefreshResultsNow || refreshResultsInProgress) return;
 
+        refreshResultsInProgress = true;
+        const prevLabel = btnRefreshResultsNow.textContent;
         btnRefreshResultsNow.disabled = true;
+        btnRefreshResultsNow.classList.add('is-busy');
+        btnRefreshResultsNow.textContent = '⏳ Actualizando...';
         setRefreshStatus('🔄 Actualizando resultados...', 'loading');
+        if (loadingOverlay) loadingOverlay.style.display = 'flex';
 
+        const isUsa = selectCountry.value === 'USA';
         const body = {
             country: selectCountry.value,
             state: selectState.value || '',
             lottery: currentLotteryName,
             days: 30,
+            refresh_all_usa: isUsa,
         };
 
         try {
-            const res = await fetch('/api/resultados/actualizar-ahora', {
+            const res = await fetch('/api/resultados/actualizar', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(body),
             });
             const data = await res.json();
 
+            if (data.hub_url || data.status_code != null) {
+                console.info('[Illinois Hub]', {
+                    url: data.hub_url,
+                    status_code: data.status_code,
+                    from_cache: data.from_cache,
+                    used_db_fallback: data.used_db_fallback,
+                    saved_count: data.saved_count,
+                });
+            }
+
+            await loadRecentResults(true);
+
+            if (data.used_db_fallback || data.status === 'cached_fallback') {
+                const warnMsg = data.message
+                    || '⚠️ No se pudo actualizar ahora, pero se muestran resultados guardados.';
+                setRefreshStatus(warnMsg, 'muted');
+                lastResultsError = '';
+                return;
+            }
+
             if (!data.ok || data.status === 'error') {
-                const errMsg = data.message || 'Error actualizando resultados';
-                setRefreshStatus(`🔴 ${errMsg}`, 'error');
-                lastResultsError = errMsg;
-                await loadRecentResults(true);
+                const hasSaved = (data.saved_count || 0) > 0;
+                const errMsg = hasSaved
+                    ? (data.message || '⚠️ No se pudo actualizar ahora, pero se muestran resultados guardados.')
+                    : (data.message || '⚠️ Illinois Results Hub no respondió. Mostrando últimos resultados guardados.');
+                setRefreshStatus(
+                    errMsg.startsWith('⚠') ? errMsg : `⚠️ ${errMsg}`,
+                    hasSaved ? 'muted' : 'error'
+                );
+                lastResultsError = hasSaved ? '' : errMsg;
                 return;
             }
 
             lastResultsError = '';
-            if (data.status === 'no_new') {
+            if (data.from_cache) {
+                setRefreshStatus(
+                    data.message || '⚠️ Illinois Results Hub no respondió. Datos desde caché local.',
+                    'muted'
+                );
+            } else if (data.status === 'no_new') {
                 setRefreshStatus(data.message || '⚪ Sin resultados nuevos en el rango', 'muted');
+            } else if (data.partial) {
+                setRefreshStatus(
+                    data.message || '✅ Actualizado con advertencias en algunos juegos',
+                    'muted'
+                );
             } else {
-                setRefreshStatus(data.message || '✅ Historial actualizado (30 días)', 'ok');
+                const okMsg = data.message || '✅ Resultados actualizados correctamente';
+                setRefreshStatus(
+                    okMsg.startsWith('✅') ? okMsg : `✅ ${okMsg}`,
+                    'ok'
+                );
             }
-
-            await loadRecentResults(true);
         } catch (e) {
-            console.error(e);
-            setRefreshStatus('🔴 Error actualizando resultados', 'error');
+            console.error('[Illinois Hub] fetch error', e);
+            setRefreshStatus(
+                '⚠️ No se pudo actualizar ahora. Se mantienen los últimos resultados guardados.',
+                'muted'
+            );
+            lastResultsError = e.message || String(e);
+            await loadRecentResults(true);
         } finally {
+            refreshResultsInProgress = false;
             btnRefreshResultsNow.disabled = false;
+            btnRefreshResultsNow.classList.remove('is-busy');
+            btnRefreshResultsNow.textContent = prevLabel;
+            if (loadingOverlay) loadingOverlay.style.display = 'none';
         }
     }
 
@@ -604,11 +658,31 @@
         $('analysisContent').style.display = 'none';
         $('analysisError').style.display = 'none';
 
+        const isUsa = selectCountry.value === 'USA';
+        const controller = isUsa ? new AbortController() : null;
+        let timeoutId = null;
+        if (controller) {
+            timeoutId = setTimeout(() => controller.abort(), 15000);
+        }
+
         try {
+            const fetchOpts = controller ? { signal: controller.signal } : {};
             const res = await fetch(
-                `/api/prediction?lottery_id=${currentLotteryId}&draw_name=${encodeURIComponent(btn.draw_name)}`
+                `/api/prediction?lottery_id=${currentLotteryId}&draw_name=${encodeURIComponent(btn.draw_name)}`,
+                fetchOpts
             );
-            const data = await res.json();
+            let data;
+            try {
+                data = await res.json();
+            } catch (parseErr) {
+                throw new Error('Respuesta inválida del servidor');
+            }
+
+            if (!res.ok && !data?.ok) {
+                $('analysisError').style.display = 'block';
+                $('analysisErrorMsg').textContent = data?.message || '⚠️ No se pudo completar el análisis.';
+                return;
+            }
 
             if (!data.ok) {
                 $('analysisError').style.display = 'block';
@@ -633,7 +707,7 @@
                 const dup = (data.duplicates_found || []).length;
                 let warnText = data.warning || '';
                 if (dup > 0) {
-                    warnText = `Advertencia: se detectaron duplicados (${dup}). ${warnText}`.trim();
+                    warnText = `Nota: combinación con repetición limitada (${dup}). ${warnText}`.trim();
                 }
                 if (warnText) {
                     warnEl.textContent = warnText;
@@ -665,7 +739,9 @@
             $('predictionReason').textContent = data.analysis_text || '';
 
             const confEl = $('predictionConfidence');
-            confEl.textContent = data.confidence_level || '—';
+            const confLabel = data.confidence_label
+                || ({ alto: 'Alto', medio: 'Medio', bajo: 'Bajo' }[data.confidence_level] || 'Bajo');
+            confEl.textContent = `Nivel: ${confLabel}`;
             confEl.className = `confidence-badge confidence-${data.confidence_level || 'bajo'}`;
 
             $('predictionScore').textContent = data.score ?? '—';
@@ -695,9 +771,13 @@
             scrollToEl('analisis');
         } catch (e) {
             $('analysisError').style.display = 'block';
-            $('analysisErrorMsg').textContent = 'Error al obtener el análisis.';
+            const timedOut = e && (e.name === 'AbortError' || String(e.message || '').includes('aborted'));
+            $('analysisErrorMsg').textContent = timedOut
+                ? '⚠️ No se pudo completar el análisis.'
+                : (e.message || '⚠️ No se pudo completar el análisis.');
             console.error(e);
         } finally {
+            if (timeoutId) clearTimeout(timeoutId);
             showLoading(false);
         }
     }
@@ -762,7 +842,9 @@
 
             html += renderLeidsaDebugPanel(debug, data.live_ok, data.using_cache);
 
-            if (data.warning && !board.length) {
+            const sinDatos = data.show_unavailable === true
+                || (data.has_saved === false && !board.length && !historial.length);
+            if (sinDatos && data.warning) {
                 html += renderLeidsaUnavailablePanel(debug, data.warning);
             } else if (data.warning) {
                 html += `<p class="leidsa-warning">${escapeHtml(data.warning)}</p>`;

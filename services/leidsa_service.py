@@ -34,11 +34,11 @@ from services.leidsa_config import (
 )
 
 logger = logging.getLogger(__name__)
-LOG_PREFIX = "[LEIDSA]"
+LOG_PREFIX = "[RD]"
 
 
 def _log(msg: str) -> None:
-    line = f"{LOG_PREFIX} {msg}"
+    line = msg if msg.startswith(LOG_PREFIX) else f"{LOG_PREFIX} {msg}"
     logger.info(line)
     print(line)
 
@@ -61,8 +61,18 @@ def _safe_response(
 
 def _rd_tz():
     if ZoneInfo:
-        return ZoneInfo(TZ_RD)
-    return None
+        try:
+            return ZoneInfo(TZ_RD)
+        except Exception:
+            pass
+    try:
+        import pytz
+
+        return pytz.timezone(TZ_RD)
+    except Exception:
+        from datetime import timezone, timedelta
+
+        return timezone(timedelta(hours=-4))
 
 
 def _now_rd() -> datetime:
@@ -224,15 +234,53 @@ def _save_debug_raw(html: str, json_data: Any = None, tag: str = "fetch") -> Non
         _log(f"No se pudo guardar debug raw: {exc}")
 
 
+def _save_debug_html_file(html: str) -> str:
+    """Guarda siempre el último HTML en data/debug/leidsa_debug.html."""
+    base = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "debug")
+    os.makedirs(base, exist_ok=True)
+    path = os.path.join(base, "leidsa_debug.html")
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(html or "")
+        _log(f"HTML debug guardado: {path}")
+    except OSError as exc:
+        _log(f"No se pudo guardar leidsa_debug.html: {exc}")
+    return path
+
+
+def _html_has_embedded_results(html: str) -> bool:
+    if not html:
+        return False
+    low = html.lower()
+    return (
+        "drawnvalues" in low
+        or "previousdrawdetails" in low
+        or "latestdrawdetails" in low
+    )
+
+
 def _build_fetch_clients() -> list[tuple[str, Any]]:
+    """cloudscraper primero — requests solo devuelve shell sin JSON embebido."""
     clients: list[tuple[str, Any]] = []
     try:
         import cloudscraper  # noqa: WPS433
+
         for _ in range(FETCH_RETRIES):
-            clients.append(("cloudscraper", cloudscraper.create_scraper()))
+            clients.append(
+                (
+                    "cloudscraper",
+                    cloudscraper.create_scraper(
+                        browser={
+                            "browser": "chrome",
+                            "platform": "windows",
+                            "mobile": False,
+                        }
+                    ),
+                )
+            )
     except ImportError:
-        _log("cloudscraper no instalado")
-    for _ in range(FETCH_RETRIES):
+        _log("cloudscraper no instalado — usando requests")
+    for _ in range(max(1, FETCH_RETRIES - len(clients))):
         clients.append(("requests", requests.Session()))
     return clients
 
@@ -254,23 +302,26 @@ def fetch_leidsa_html() -> dict[str, Any]:
             last_html = html
             _log(f"STATUS: {resp.status_code}")
             _log(f"HTML LENGTH: {len(html)}")
-            _log(f"HTML PREVIEW: {html[:500].replace(chr(10), ' ')}")
+            print(html[:3000])
+            _log(f"HTML PREVIEW (3000): ver consola")
 
-            has_embedded = "drawnValues" in html or '\\"drawnValues\\"' in html
+            has_embedded = _html_has_embedded_results(html)
             blocking = detect_blocking(html, resp.status_code)
-            if blocking and not has_embedded:
-                last_error = f"{blocking} blocked request"
-                _log(f"BLOQUEO DETECTADO: {blocking}")
-                continue
-            if blocking and has_embedded:
-                _log(f"Advertencia {blocking} pero hay datos embebidos — parseando")
             if resp.status_code != 200:
                 last_error = f"HTTP {resp.status_code}"
                 continue
             if len(html) < 1000:
                 last_error = "HTML demasiado corto"
                 continue
+            if not has_embedded:
+                last_error = "HTML sin drawnValues (shell vacío — reintentar)"
+                _log(f"{LOG_PREFIX} HTML descargado pero sin JSON embebido ({method_name})")
+                continue
+            if blocking:
+                _log(f"Advertencia {blocking} — hay datos embebidos, parseando")
 
+            _log(f"{LOG_PREFIX} HTML descargado OK ({method_name})")
+            _save_debug_html_file(html)
             api_urls = detect_hidden_endpoints(html)
             _save_debug_raw(html, {"api_urls": api_urls}, "html")
             return _safe_response(
@@ -344,34 +395,93 @@ def _row_from_game_block(
     }
 
 
+def _parse_draw_detail_match(
+    family: str,
+    site_slug: str,
+    draw_id: str,
+    drawn_raw: str,
+    bonus_raw: str | None,
+    ts: str,
+) -> dict | None:
+    return _row_from_game_block(
+        family,
+        site_slug,
+        draw_id,
+        drawn_raw,
+        bonus_raw,
+        ts,
+    )
+
+
 def _parse_escaped_json_blocks(html: str) -> list[dict]:
+    """JSON escapado en HTML de Next.js — sin límite de 1200 chars."""
     rows = []
     blocks = html.split('{\\"gameId\\":')
     for block in blocks[1:]:
-        if '\\"gameProvider\\":\\"Leidsa\\"' not in block[:1200]:
+        if "drawnValues" not in block and "drawnvalues" not in block.lower():
             continue
+        if "Leidsa" not in block and '\\"gameProvider\\"' not in block:
+            continue
+
         name_m = re.search(r'\\"gameFamilyName\\":\\"([^\\"]+)', block)
-        slug_m = re.search(r'\\"slug\\":\\"([^\\"]+)', block)
-        prev_m = re.search(
-            r'\\"previousDrawDetails\\":\{'
-            r'\\"drawId\\":\\"([^\\"]*)\\",'
-            r'\\"drawnValues\\":\[([^\]]*)\]',
-            block,
-        )
-        ts_m = re.search(r'\\"drawTimestamp\\":\\"([^\\"]+)', block)
-        bonus_m = re.search(r'\\"bonusRoundsValues\\":\[([^\]]*)\]', block)
-        if not name_m or not prev_m or not ts_m:
+        if not name_m:
             continue
-        row = _row_from_game_block(
-            name_m.group(1),
-            slug_m.group(1) if slug_m else "",
-            prev_m.group(1),
-            prev_m.group(2),
-            bonus_m.group(1) if bonus_m else None,
-            ts_m.group(1),
+        family = name_m.group(1)
+        slug_m = re.search(r'\\"slug\\":\\"([^\\"]+)', block)
+
+        detail_pattern = re.compile(
+            r'\\"(?:previous|latest)DrawDetails\\":\{(.*?)\\}(?=,\\"hasLeadZero\\"|,\\"gameId\\"|$)',
+            re.DOTALL,
         )
-        if row:
-            rows.append(row)
+        best_row = None
+        best_ts = ""
+        for det in detail_pattern.finditer(block):
+            chunk = det.group(1)
+            prev_m = re.search(
+                r'\\"drawId\\":\\"([^\\"]*)\\",\\"drawnValues\\":\[([^\]]*)\]',
+                chunk,
+            )
+            if not prev_m:
+                prev_m = re.search(r'\\"drawnValues\\":\[([^\]]*)\]', chunk)
+                if not prev_m:
+                    continue
+                draw_id, drawn_raw = "", prev_m.group(1)
+            else:
+                draw_id, drawn_raw = prev_m.group(1), prev_m.group(2)
+            bonus_m = re.search(r'\\"bonusRoundsValues\\":\[([^\]]*)\]', chunk)
+            ts_m = re.search(r'\\"drawTimestamp\\":\\"([^\\"]+)', chunk)
+            ts = ts_m.group(1) if ts_m else ""
+            row = _parse_draw_detail_match(
+                family,
+                slug_m.group(1) if slug_m else "",
+                draw_id,
+                drawn_raw,
+                bonus_m.group(1) if bonus_m else None,
+                ts,
+            )
+            if row and ts >= best_ts:
+                best_ts = ts
+                best_row = row
+
+        if not best_row:
+            prev_m = re.search(
+                r'\\"drawnValues\\":\[([^\]]*)\].{0,500}?\\"drawTimestamp\\":\\"([^\\"]+)\\"',
+                block,
+                re.DOTALL,
+            )
+            if prev_m:
+                bonus_m = re.search(r'\\"bonusRoundsValues\\":\[([^\]]*)\]', block)
+                best_row = _parse_draw_detail_match(
+                    family,
+                    slug_m.group(1) if slug_m else "",
+                    "",
+                    prev_m.group(1),
+                    bonus_m.group(1) if bonus_m else None,
+                    prev_m.group(2),
+                )
+
+        if best_row:
+            rows.append(best_row)
     return rows
 
 
@@ -414,10 +524,14 @@ def _parse_next_data(html: str) -> list[dict]:
         return rows
     try:
         data = json.loads(m.group(1))
+        rows = _dedupe_rows(_extract_rows_from_json_tree(data))
+        if rows:
+            return rows
         blob = json.dumps(data)
         for prev_m in re.finditer(
-            r'"gameFamilyName"\s*:\s*"([^"]+)".{0,200}?"gameProvider"\s*:\s*"Leidsa".{0,1500}?'
-            r'"drawnValues"\s*:\s*\[([^\]]*)\].{0,400}?"drawTimestamp"\s*:\s*"([^"]+)"',
+            r'"gameFamilyName"\s*:\s*"([^"]+)".{0,200}?"gameProvider"\s*:\s*"Leidsa".{0,2000}?'
+            r'"(?:previous|latest)DrawDetails"\s*:\s*\{[^}]*?"drawnValues"\s*:\s*\[([^\]]*)\]'
+            r'.{0,400}?"drawTimestamp"\s*:\s*"([^"]+)"',
             blob,
             re.DOTALL,
         ):
@@ -428,6 +542,53 @@ def _parse_next_data(html: str) -> list[dict]:
                 rows.append(row)
     except (json.JSONDecodeError, TypeError) as exc:
         _log(f"__NEXT_DATA__ parse error: {exc}")
+    return rows
+
+
+def _parse_regex_global_fallback(html: str) -> list[dict]:
+    """Último recurso: regex sobre todo el HTML si hay drawnValues."""
+    rows = []
+    patterns = [
+        (
+            "escaped_bundle",
+            re.compile(
+                r'\\"gameFamilyName\\":\\"([^\\"]+)\\".{0,4000}?'
+                r'\\"drawnValues\\":\[([^\]]*)\].{0,600}?'
+                r'\\"drawTimestamp\\":\\"([^\\"]+)\\"',
+                re.DOTALL,
+            ),
+        ),
+        (
+            "json_bundle",
+            re.compile(
+                r'"gameFamilyName"\s*:\s*"([^"]+)".{0,4000}?'
+                r'"drawnValues"\s*:\s*\[([^\]]*)\].{0,600}?'
+                r'"drawTimestamp"\s*:\s*"([^"]+)"',
+                re.DOTALL,
+            ),
+        ),
+    ]
+    for label, pat in patterns:
+        for m in pat.finditer(html):
+            bonus_m = re.search(
+                r'bonusRoundsValues\\":\[([^\]]*)\]|"bonusRoundsValues"\s*:\s*\[([^\]]*)\]',
+                m.group(0),
+            )
+            bonus_raw = None
+            if bonus_m:
+                bonus_raw = bonus_m.group(1) or bonus_m.group(2)
+            row = _row_from_game_block(
+                m.group(1),
+                "",
+                "",
+                m.group(2),
+                bonus_raw,
+                m.group(3),
+            )
+            if row:
+                rows.append(row)
+        if rows:
+            _log(f"{LOG_PREFIX} Selector usado: regex_{label}")
     return rows
 
 
@@ -471,7 +632,17 @@ def _extract_rows_from_json_tree(obj: Any, rows: list | None = None) -> list[dic
     if rows is None:
         rows = []
     if isinstance(obj, dict):
-        prev = obj.get("previousDrawDetails") or obj.get("previous_draw_details")
+        prev = None
+        for key in (
+            "previousDrawDetails",
+            "latestDrawDetails",
+            "previous_draw_details",
+            "latest_draw_details",
+        ):
+            cand = obj.get(key)
+            if isinstance(cand, dict) and cand.get("drawnValues"):
+                prev = cand
+                break
         if isinstance(prev, dict) and prev.get("drawnValues"):
             fam = obj.get("gameFamilyName") or (obj.get("gameId") or {}).get("gameFamilyName", "")
             slug = obj.get("slug", "")
@@ -543,15 +714,19 @@ def fetch_js_and_extract_json(js_urls: list[str], limit: int = 3) -> dict[str, A
 
 
 def parse_leidsa_html(html: str) -> dict[str, Any]:
-    """Parse seguro — BeautifulSoup + JSON embebido."""
+    """Parse tolerante — varias estrategias; nunca 0 si hay drawnValues en HTML."""
     if not html:
         return _safe_response(ok=False, error="HTML vacío", parser="none")
 
+    embedded_count = html.lower().count("drawnvalues")
+    _log(f"{LOG_PREFIX} drawnValues en HTML: {embedded_count}")
+
     parsers = [
+        ("next_data_tree", _parse_next_data),
         ("escaped_json", _parse_escaped_json_blocks),
         ("unescaped_json", _parse_unescaped_json_blocks),
-        ("next_data", _parse_next_data),
-        ("BeautifulSoup", _parse_script_json_blobs),
+        ("script_json", _parse_script_json_blobs),
+        ("regex_global", _parse_regex_global_fallback),
     ]
     all_rows: list[dict] = []
     used = []
@@ -561,21 +736,32 @@ def parse_leidsa_html(html: str) -> dict[str, Any]:
             if chunk:
                 used.append(name)
                 all_rows.extend(chunk)
+                _log(f"{LOG_PREFIX} Selector usado: {name} (+{len(chunk)})")
         except Exception as exc:
             _log(f"Parser {name} error: {exc}")
+            logger.exception("LEIDSA parser %s", name)
 
     rows = _dedupe_rows(all_rows)
-    _log(f"RESULTS FOUND: {len(rows)} (parsers: {', '.join(used) or 'ninguno'})")
+    _log(f"{LOG_PREFIX} Resultados parseados: {len(rows)} (parsers: {', '.join(used) or 'ninguno'})")
+
+    if not rows and embedded_count > 0:
+        rows = _dedupe_rows(_parse_regex_global_fallback(html))
+        if rows:
+            used.append("regex_global_retry")
+            _log(f"{LOG_PREFIX} Selector usado: regex_global_retry")
 
     if not rows:
         return _safe_response(
             ok=False,
             error="No se detectaron resultados válidos en leidsa.com",
             parser=",".join(used) or "none",
+            html_has_drawnvalues=embedded_count,
         )
 
-    parser_label = "BeautifulSoup" if "BeautifulSoup" in used else ",".join(used)
-    return _safe_response(ok=True, results=rows, parser=parser_label or "embedded_json")
+    parser_label = used[0] if used else "leidsa"
+    _log(f"{LOG_PREFIX} Parser usado: {parser_label}")
+    _log(f"{LOG_PREFIX} LEIDSA parser OK — resultados encontrados: {len(rows)}")
+    return _safe_response(ok=True, results=rows, parser=parser_label or "leidsa")
 
 
 def scrape_leidsa_results() -> dict[str, Any]:
@@ -806,6 +992,23 @@ def update_leidsa_now() -> dict[str, Any]:
             if scrape.get("blocking_type") == "cloudflare":
                 msg = "Cloudflare bloqueó acceso a leidsa.com"
             log_leidsa_sync(ok=False, message=msg, error=scrape.get("error"))
+            from models import get_leidsa_history_from_db
+
+            saved = len(get_leidsa_history_from_db(limit_days=90))
+            if saved > 0:
+                _log(f"LEIDSA en vivo falló; manteniendo {saved} resultados en BD")
+                return _safe_response(
+                    ok=True,
+                    status="cached_fallback",
+                    message="⚠️ No se pudo actualizar en vivo; se mantienen resultados guardados.",
+                    inserted=0,
+                    updated=0,
+                    skipped=0,
+                    parser="leidsa",
+                    results_found=saved,
+                    used_db_fallback=True,
+                    error=scrape.get("error"),
+                )
             return _safe_response(
                 ok=False,
                 status="error",
@@ -815,7 +1018,7 @@ def update_leidsa_now() -> dict[str, Any]:
                 skipped=0,
                 error=scrape.get("error"),
                 status_code=scrape.get("status_code"),
-                parser=scrape.get("parser"),
+                parser=scrape.get("parser") or "leidsa",
                 blocking_type=scrape.get("blocking_type"),
             )
 
@@ -830,6 +1033,8 @@ def update_leidsa_now() -> dict[str, Any]:
             imported=save.get("inserted", 0),
             updated=save.get("updated", 0),
         )
+        n_found = len(scrape.get("results") or [])
+        _log(f"Parser usado: leidsa — resultados encontrados: {n_found}")
         return _safe_response(
             ok=True,
             status="updated" if save.get("inserted", 0) + save.get("updated", 0) else "no_new",
@@ -837,9 +1042,9 @@ def update_leidsa_now() -> dict[str, Any]:
             inserted=save.get("inserted", 0),
             updated=save.get("updated", 0),
             skipped=save.get("skipped", 0),
-            games=len(scrape.get("results") or []),
-            parser=scrape.get("parser"),
-            results_found=len(scrape.get("results") or []),
+            games=n_found,
+            parser=scrape.get("parser") or "leidsa",
+            results_found=n_found,
             error=None,
         )
     except Exception as exc:
@@ -903,21 +1108,33 @@ def get_leidsa_real_results_board(fecha: str | None = None) -> list[dict]:
     return board
 
 
-def _build_debug_panel(fetch_log: dict | None, live_ok: bool) -> dict:
+def _build_debug_panel(
+    fetch_log: dict | None,
+    live_ok: bool,
+    *,
+    using_cache: bool = False,
+    saved_count: int = 0,
+) -> dict:
     fl = fetch_log or {}
     status = fl.get("status_code")
-    if live_ok and status == 200:
+    if using_cache and saved_count > 0:
+        status_label = f"📦 BD ({saved_count} guardados)"
+    elif live_ok and status == 200:
         status_label = f"🟢 STATUS {status}"
     elif status:
         status_label = f"🔴 STATUS {status}"
     else:
         status_label = "🔴 STATUS ERROR"
+    results_found = fl.get("results_found", 0)
+    if using_cache and saved_count:
+        results_found = max(results_found, saved_count)
     return {
         "status_label": status_label,
         "status_code": status,
-        "parser": fl.get("parser") or "—",
-        "method": fl.get("method") or "—",
-        "results_found": fl.get("results_found", 0),
+        "parser": (fl.get("parser") or ("db_cache" if using_cache else "—")),
+        "method": fl.get("method") or ("cache" if using_cache else "—"),
+        "results_found": results_found,
+        "saved_count": saved_count,
         "last_attempt": fl.get("created_at", "—"),
         "error": fl.get("error") or fl.get("blocking_type") or "",
         "blocking_type": fl.get("blocking_type") or "",
@@ -940,21 +1157,43 @@ def get_leidsa_dashboard(
         last_sync = get_last_leidsa_sync()
         board = get_leidsa_real_results_board(fecha)
         historial = get_leidsa_history_from_db(limit_days=hist_days)
-        debug = _build_debug_panel(fetch_log, live_ok=bool(fetch_log and fetch_log.get("ok")))
+        saved_count = len(historial)
+        has_saved = saved_count > 0 or len(board) > 0
 
-        live_ok = bool(fetch_log and fetch_log.get("ok") and (fetch_log.get("results_found") or 0) > 0)
-        using_cache = not live_ok and len(board) > 0
+        live_ok = bool(
+            fetch_log
+            and fetch_log.get("ok")
+            and (fetch_log.get("results_found") or 0) > 0
+        )
+        using_cache = not live_ok and has_saved
+        debug = _build_debug_panel(
+            fetch_log,
+            live_ok=live_ok,
+            using_cache=using_cache,
+            saved_count=saved_count,
+        )
+
         warning = None
+        show_unavailable = not has_saved
+        if has_saved and not live_ok:
+            warning = "⚠️ En vivo no disponible; mostrando últimos resultados guardados."
+            _log(f"LEIDSA parser OK (BD) — resultados guardados: {saved_count}")
+            show_unavailable = False
+        elif not has_saved:
+            if fetch_log and not fetch_log.get("ok"):
+                err = fetch_log.get("error") or fetch_log.get("blocking_type") or "sin conexión"
+                if fetch_log.get("blocking_type") == "cloudflare":
+                    err = "Cloudflare bloqueó acceso"
+                warning = f"LEIDSA temporalmente no disponible. {err}"
+            else:
+                warning = "LEIDSA temporalmente no disponible. Sin datos guardados aún."
+            show_unavailable = True
 
-        if fetch_log and not fetch_log.get("ok"):
-            err = fetch_log.get("error") or fetch_log.get("blocking_type") or "Error desconocido"
-            if fetch_log.get("blocking_type") == "cloudflare":
-                err = "Cloudflare bloqueó acceso"
-            warning = f"⚠️ LEIDSA temporalmente no disponible. {err}"
-        elif not board and not historial:
-            warning = "⚠️ LEIDSA temporalmente no disponible. Sin datos guardados aún."
-        elif using_cache:
-            warning = "⚠️ Usando últimos resultados guardados (cache)."
+        results_found = len(board)
+        if fetch_log and fetch_log.get("results_found"):
+            results_found = max(results_found, fetch_log.get("results_found", 0))
+        if saved_count:
+            results_found = max(results_found, saved_count)
 
         return _safe_response(
             ok=True,
@@ -967,16 +1206,35 @@ def get_leidsa_dashboard(
             warning=warning,
             using_cache=using_cache,
             live_ok=live_ok,
-            results_found=fetch_log.get("results_found", 0) if fetch_log else len(board),
+            has_saved=has_saved,
+            show_unavailable=show_unavailable,
+            results_found=results_found,
+            saved_count=saved_count,
         )
     except Exception as exc:
         logger.exception("get_leidsa_dashboard")
+        try:
+            board = get_leidsa_real_results_board()
+            historial = get_leidsa_history_from_db(limit_days=30)
+            if board or historial:
+                return _safe_response(
+                    ok=True,
+                    warning="⚠️ En vivo no disponible; mostrando últimos resultados guardados.",
+                    board=board,
+                    historial=historial,
+                    using_cache=True,
+                    has_saved=True,
+                    debug=_build_debug_panel(None, False, using_cache=True, saved_count=len(historial)),
+                )
+        except Exception:
+            pass
         return _safe_response(
-            ok=False,
+            ok=True,
             error=str(exc),
-            warning="⚠️ LEIDSA temporalmente no disponible",
+            warning="Sin datos guardados. Error al leer panel LEIDSA.",
             board=[],
             historial=[],
+            has_saved=False,
             debug=_build_debug_panel(None, False),
         )
 

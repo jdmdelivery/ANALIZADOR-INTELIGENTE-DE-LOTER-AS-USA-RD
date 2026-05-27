@@ -113,7 +113,8 @@ class LeidsaServiceTests(unittest.TestCase):
             ok=False, error="timeout", message="Leidsa no respondió",
         )):
             result = leidsa_service.update_leidsa_now()
-        self.assertFalse(result["ok"])
+        self.assertTrue(result["ok"])
+        self.assertTrue(result.get("used_db_fallback"))
         with models.get_db() as conn:
             after = conn.execute(
                 "SELECT COUNT(*) AS c FROM lottery_results WHERE lottery_id=?",

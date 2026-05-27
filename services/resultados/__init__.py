@@ -1,4 +1,4 @@
-from services.resultados.illinois_scraper import (
+from scrapers_usa.illinois import (  # noqa: F401
     IllinoisResultsHubScraper,
     import_illinois_results_hub,
 )

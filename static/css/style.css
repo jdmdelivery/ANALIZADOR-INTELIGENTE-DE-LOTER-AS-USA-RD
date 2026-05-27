@@ -447,6 +447,11 @@ body.premium-body {
     color: rgba(200, 220, 255, 0.75);
 }
 
+.btn-refresh-now.is-busy {
+    opacity: 0.75;
+    pointer-events: none;
+    cursor: wait;
+}
 .refresh-status-msg.is-loading { color: var(--accent-cyan); }
 .refresh-status-msg.is-ok { color: #4ade80; }
 .refresh-status-msg.is-muted { color: rgba(200, 220, 255, 0.65); }
@@ -660,11 +665,12 @@ body.premium-body {
     font-style: italic;
 }
 .prediction-warning {
-    color: #ffb347;
+    color: #d4a017;
     font-size: 0.78rem;
     margin: 0 0 0.5rem;
-    padding: 0.4rem 0.6rem;
-    background: rgba(255, 160, 0, 0.12);
+    padding: 0.45rem 0.65rem;
+    background: rgba(255, 214, 102, 0.14);
+    border: 1px solid rgba(255, 214, 102, 0.32);
     border-radius: 6px;
 }
 .analysis-schedule-sub {

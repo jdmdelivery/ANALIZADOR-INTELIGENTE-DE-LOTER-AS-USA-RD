@@ -654,6 +654,22 @@ def get_max_draw_date(lottery_id):
         return row["max_date"] if row and row["max_date"] else None
 
 
+def count_results_for_lottery(lottery_id, draw_name=None):
+    """Cantidad de sorteos guardados en BD para una lotería."""
+    with get_db() as conn:
+        if draw_name:
+            row = conn.execute(
+                "SELECT COUNT(*) AS c FROM lottery_results WHERE lottery_id = ? AND draw_name = ?",
+                (lottery_id, draw_name),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT COUNT(*) AS c FROM lottery_results WHERE lottery_id = ?",
+                (lottery_id,),
+            ).fetchone()
+        return int(row["c"]) if row else 0
+
+
 def get_results_for_latest_date(lottery_id, draw_name=None):
     with get_db() as conn:
         if draw_name:
@@ -761,14 +777,16 @@ def get_recent_results_rows(limit=20):
         return [row_to_dict(r) for r in rows]
 
 
-def get_results_for_analysis(lottery_id, draw_name):
+def get_results_for_analysis(lottery_id, draw_name, limit=None):
     with get_db() as conn:
-        rows = conn.execute(
-            """SELECT * FROM lottery_results
+        sql = """SELECT * FROM lottery_results
                WHERE lottery_id = ? AND draw_name = ?
-               ORDER BY draw_date DESC, id DESC""",
-            (lottery_id, draw_name),
-        ).fetchall()
+               ORDER BY draw_date DESC, id DESC"""
+        params: list = [lottery_id, draw_name]
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(int(limit))
+        rows = conn.execute(sql, params).fetchall()
         return [row_to_dict(r) for r in rows]
 
 
@@ -942,8 +960,29 @@ def upsert_api_config(source_name, api_url, api_key, active=0):
 
 
 LOTTERY_CONFIG = {
-    "pick3": {"count": 3, "min": 0, "max": 9, "allow_repeat": True, "pad": 1, "bonus_min": 0, "bonus_max": 9},
-    "pick4": {"count": 4, "min": 0, "max": 9, "allow_repeat": True, "pad": 1, "bonus_min": 0, "bonus_max": 9},
+    "pick3": {
+        "count": 3,
+        "min": 0,
+        "max": 9,
+        "allow_repeat": True,
+        "max_repeat_per_number": 2,
+        "min_unique": 2,
+        "pad": 1,
+        "bonus_min": 0,
+        "bonus_max": 9,
+    },
+    "pick4": {
+        "count": 4,
+        "min": 0,
+        "max": 9,
+        "allow_repeat": True,
+        "max_repeat_per_number": 2,
+        "min_unique": 3,
+        "pick4_strict": True,
+        "pad": 1,
+        "bonus_min": 0,
+        "bonus_max": 9,
+    },
     "quiniela": {"count": 3, "min": 0, "max": 99, "allow_repeat": True, "pad": 2},
     "lucky_day": {"count": 5, "min": 1, "max": 45, "allow_repeat": False, "pad": 2},
     "lotto": {"count": 6, "min": 1, "max": 52, "allow_repeat": False, "pad": 2, "bonus_min": 1, "bonus_max": 25},
