@@ -94,11 +94,6 @@ for msg in validate_production_config():
 init_auth(app)
 init_db()
 logger.info("App iniciada | production=%s | db=%s", IS_PRODUCTION, os.environ.get("DATABASE_PATH", "lottery.db"))
-for _route in ("/api/resultados/actualizar", "/api/resultados/actualizar-ahora"):
-    if _route not in {r.rule for r in app.url_map.iter_rules()}:
-        logger.error("Ruta API faltante: %s", _route)
-    else:
-        logger.info("Ruta API registrada: POST %s", _route)
 
 DRAW_BUTTONS = {
     "USA": [
@@ -614,7 +609,143 @@ def _api_actualizar_resultados_payload(data=None):
     return {
         "ok": False,
         "message": f"País no soportado: {pais}. Use US/USA o DO/RD.",
+        "mensaje": f"País no soportado: {pais}. Use US/USA o DO/RD.",
     }
+
+
+def _format_actualizar_api_response(result: dict) -> tuple[dict, int]:
+    """JSON estándar para /api/resultados/actualizar (+ alias actualizar-ahora)."""
+    if not isinstance(result, dict):
+        return {"ok": False, "error": "Respuesta inválida del servicio de actualización"}, 500
+
+    imported = int(result.get("imported") or 0)
+    updated = int(result.get("updated") or 0)
+    saved = int(result.get("saved_count") or (imported + updated))
+    raw_msg = (result.get("mensaje") or result.get("message") or "").strip()
+    errors = list(result.get("errors") or [])
+
+    base = {**result}
+    base["imported"] = imported
+    base["updated"] = updated
+    base["saved_count"] = saved
+
+    fuente = (result.get("fuente") or result.get("source") or "").lower()
+
+    if result.get("ok"):
+        if result.get("used_db_fallback") or result.get("status") == "cached_fallback":
+            mensaje = raw_msg or "No se pudo actualizar ahora; se muestran resultados guardados."
+            base.update({
+                "ok": True,
+                "warning": True,
+                "cache": True,
+                "mensaje": mensaje,
+                "message": mensaje,
+            })
+            return base, 200
+
+        if result.get("cache") or result.get("cache_used") or result.get("from_json_cache"):
+            mensaje = raw_msg or "No se pudo actualizar ahora; se muestran resultados guardados."
+            base.update({
+                "ok": True,
+                "warning": True,
+                "cache": True,
+                "mensaje": mensaje,
+                "message": mensaje,
+            })
+            return base, 200
+
+        if fuente == "lotteryusa" or (result.get("warning") and "lotteryusa" in fuente):
+            mensaje = raw_msg or "Fuente principal falló. Se usó LotteryUSA."
+            base.update({
+                "ok": True,
+                "warning": True,
+                "fuente": "lotteryusa",
+                "mensaje": mensaje,
+                "message": mensaje,
+            })
+            return base, 200
+
+        if fuente in ("illinoislottery", "illinois_results_hub", "illinois_lottery"):
+            base["fuente"] = "illinoislottery"
+
+        mensaje = raw_msg or "Resultados actualizados correctamente"
+        base.update({
+            "ok": True,
+            "warning": bool(result.get("partial") or result.get("warning")),
+            "mensaje": mensaje,
+            "message": mensaje,
+        })
+        if not base.get("fuente") and fuente:
+            base["fuente"] = fuente
+        return base, 200
+
+    err = raw_msg
+    if not err and errors:
+        err = str(errors[0])
+    if not err:
+        err = "Error al actualizar resultados"
+
+    if saved > 0:
+        mensaje = "No se pudo actualizar ahora, pero se muestran resultados guardados."
+        base.update({
+            "ok": True,
+            "warning": True,
+            "mensaje": mensaje,
+            "message": mensaje,
+            "used_db_fallback": True,
+            "saved_count": saved,
+        })
+        return base, 200
+
+    base.update({"ok": False, "error": err, "message": err, "mensaje": err})
+    return base, 500
+
+
+def _actualizar_resultados_api(data=None):
+    """Lógica compartida POST /api/resultados/actualizar y /actualizar-ahora."""
+    data = data or {}
+    pais = (
+        data.get("pais")
+        or data.get("country")
+        or request.form.get("pais")
+        or request.form.get("country")
+        or ""
+    ).strip()
+    loteria = (
+        data.get("loteria")
+        or data.get("lottery")
+        or request.form.get("loteria")
+        or request.form.get("lottery")
+        or ""
+    ).strip()
+
+    logger.info(
+        "[API] Iniciando actualización | país=%s | lotería=%s | path=%s",
+        pais or "?",
+        loteria or "TODAS",
+        request.path,
+    )
+
+    try:
+        result = _api_actualizar_resultados_payload(data)
+        payload, status = _format_actualizar_api_response(result)
+        logger.info(
+            "[API] Actualización finalizada | ok=%s | imported=%s | updated=%s | warning=%s | status=%s",
+            payload.get("ok"),
+            payload.get("imported", 0),
+            payload.get("updated", 0),
+            payload.get("warning"),
+            status,
+        )
+        if payload.get("ok") is False:
+            logger.error("[API] Error scraper: %s", payload.get("error"))
+        elif errors := payload.get("errors"):
+            if errors:
+                logger.warning("[API] Advertencias scraper: %s", errors[:3])
+        return payload, status
+    except Exception as exc:
+        logger.exception("[API] Excepción actualizando resultados")
+        return {"ok": False, "error": str(exc), "message": str(exc), "mensaje": str(exc)}, 500
 
 
 @app.route("/api/resultados/actualizar", methods=["POST"])
@@ -622,12 +753,14 @@ def _api_actualizar_resultados_payload(data=None):
 @login_required
 def api_actualizar_resultados_ahora():
     if not current_user.is_admin():
-        return jsonify({"ok": False, "message": "Solo administradores pueden actualizar resultados."}), 403
+        return jsonify({
+            "ok": False,
+            "error": "Solo administradores pueden actualizar resultados.",
+            "message": "Solo administradores pueden actualizar resultados.",
+        }), 403
     data = request.get_json(silent=True) or {}
-    result = _api_actualizar_resultados_payload(data)
-    # 200 si ok o si hay fallback con datos guardados (no romper pantalla)
-    status_code = 200 if result.get("ok") else 400
-    return jsonify(result), status_code
+    payload, status = _actualizar_resultados_api(data)
+    return jsonify(payload), status
 
 
 def _run_leidsa_update():
@@ -1167,6 +1300,19 @@ def admin_scraper_import():
         flash(result.get("message", "Error en importación."), "danger")
     return redirect(url_for("admin"))
 
+
+def _verify_api_routes_registered() -> None:
+    """Debe ejecutarse después de registrar todas las rutas (@app.route)."""
+    required = ("/api/resultados/actualizar", "/api/resultados/actualizar-ahora")
+    rules = {r.rule for r in app.url_map.iter_rules()}
+    for route in required:
+        if route not in rules:
+            logger.error("Ruta API faltante: %s", route)
+        else:
+            logger.info("Ruta API registrada: POST %s", route)
+
+
+_verify_api_routes_registered()
 
 if __name__ == "__main__":
     app.run(debug=DEBUG, host=HOST, port=PORT)
