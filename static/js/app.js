@@ -275,8 +275,10 @@
 
         const isUsa = selectCountry.value === 'USA';
         const body = {
+            pais: selectCountry.value,
             country: selectCountry.value,
             state: selectState.value || '',
+            loteria: currentLotteryName,
             lottery: currentLotteryName,
             days: 30,
             refresh_all_usa: isUsa,
@@ -302,9 +304,18 @@
 
             await loadRecentResults(true);
 
-            if (data.used_db_fallback || data.status === 'cached_fallback') {
-                const warnMsg = data.message
-                    || '⚠️ No se pudo actualizar ahora, pero se muestran resultados guardados.';
+            if (data.fuente === 'lotteryusa' && data.warning) {
+                setRefreshStatus(
+                    data.mensaje || data.message || '⚠️ Se usó fuente alternativa (LotteryUSA).',
+                    'muted'
+                );
+                lastResultsError = '';
+                return;
+            }
+
+            if (data.warning || data.used_db_fallback || data.status === 'cached_fallback' || data.cache) {
+                const warnMsg = data.mensaje || data.message
+                    || '⚠️ No se pudo actualizar ahora; se muestran resultados guardados.';
                 setRefreshStatus(warnMsg, 'muted');
                 lastResultsError = '';
                 return;
@@ -313,8 +324,8 @@
             if (!data.ok || data.status === 'error') {
                 const hasSaved = (data.saved_count || 0) > 0;
                 const errMsg = hasSaved
-                    ? (data.message || '⚠️ No se pudo actualizar ahora, pero se muestran resultados guardados.')
-                    : (data.message || '⚠️ Illinois Results Hub no respondió. Mostrando últimos resultados guardados.');
+                    ? (data.mensaje || data.message || '⚠️ No se pudo actualizar ahora, pero se muestran resultados guardados.')
+                    : (data.error || data.mensaje || data.message || '⚠️ Illinois Results Hub no respondió. Mostrando últimos resultados guardados.');
                 setRefreshStatus(
                     errMsg.startsWith('⚠') ? errMsg : `⚠️ ${errMsg}`,
                     hasSaved ? 'muted' : 'error'
@@ -337,7 +348,10 @@
                     'muted'
                 );
             } else {
-                const okMsg = data.message || '✅ Resultados actualizados correctamente';
+                const okMsg = data.mensaje || data.message
+                    || (data.fuente === 'illinoislottery'
+                        ? '✅ Actualizado correctamente'
+                        : '✅ Resultados actualizados correctamente');
                 setRefreshStatus(
                     okMsg.startsWith('✅') ? okMsg : `✅ ${okMsg}`,
                     'ok'

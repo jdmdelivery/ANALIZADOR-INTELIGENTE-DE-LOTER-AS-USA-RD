@@ -232,55 +232,22 @@ def actualizar_resultados_usa(
     days: int = 30,
     refresh_all: bool = True,
 ) -> dict:
-    """Solo Illinois Results Hub. Sin LEIDSA ni Conectate."""
+    """USA: Illinois → LotteryUSA → caché JSON → BD. Sin LEIDSA ni Conectate."""
     logger.info("%s Actualizando resultados USA — lotería=%s", LOG_USA, loteria or "TODAS")
 
     try:
-        from scrapers_usa.illinois import refresh_usa_illinois
+        from scrapers.usa_results_service import actualizar_resultados_usa_profesional
 
-        result = refresh_usa_illinois(
-            lottery_name=loteria,
+        result = actualizar_resultados_usa_profesional(
+            loteria,
+            state=state,
+            days=days,
             refresh_all=refresh_all or not loteria,
         )
     except Exception as exc:
-        logger.exception("%s Illinois error", LOG_USA)
+        logger.exception("%s USA multi-fuente error", LOG_USA)
         result = {"ok": False, "message": str(exc), "errors": [str(exc)]}
 
-    result["pais"] = "US"
-    result["parser"] = "illinois_hub"
-
-    if result.get("ok"):
-        logger.info("%s Illinois parser OK", LOG_USA)
-        return result
-
-    lot = _find_usa_lottery(loteria, state) if loteria else None
-    saved = 0
-    if lot:
-        saved = count_results_for_lottery(lot["id"])
-    else:
-        saved = sum(
-            count_results_for_lottery(l["id"])
-            for l in get_all_lotteries(active_only=True)
-            if l.get("country") == "USA"
-        )
-
-    if saved > 0:
-        logger.info("%s Hub falló; BD tiene %s resultados guardados", LOG_USA, saved)
-        return {
-            "ok": True,
-            "status": "cached_fallback",
-            "pais": "US",
-            "parser": "illinois_hub",
-            "used_db_fallback": True,
-            "saved_count": saved,
-            "imported": 0,
-            "updated": 0,
-            "message": "⚠️ No se pudo actualizar ahora; se muestran resultados guardados.",
-            "errors": result.get("errors", []),
-        }
-
-    result["message"] = result.get(
-        "message",
-        "⚠️ Illinois Results Hub no respondió y no hay datos guardados.",
-    )
+    result.setdefault("pais", "US")
+    result.setdefault("parser", "usa_multi")
     return result

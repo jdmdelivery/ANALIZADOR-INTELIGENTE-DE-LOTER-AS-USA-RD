@@ -440,12 +440,13 @@ def _upsert_illinois_row(row, lotteries):
         format_numbers(row["main_numbers"]),
         bonus_number=bonus_num,
         fireball_number=fireball,
-        source_url=row["source_url"],
+        source_url=row.get("source_url"),
         confirmed=1,
         main_numbers=format_numbers(row["main_numbers"]),
         bonus_numbers=format_numbers(row["bonus_numbers"]) if row.get("bonus_numbers") else None,
         bonus_label=row.get("bonus_label"),
         game_name=row.get("game_name"),
+        fuente=row.get("fuente") or "illinoislottery",
     )
     return action, None
 
