@@ -297,6 +297,25 @@
                 <div class="col-md-6">
                     <div class="card glass-card">
                         <div class="card-body">
+                            <h4>🇩🇴 LEIDSA (leidsa.com)</h4>
+                            <p class="text-muted">Actualiza Quiniela Palé, Pega 3 Más, Loto Pool, Super Kino TV, Super Palé y Loto Más.</p>
+                            <form method="POST" action="{{ url_for('admin_actualizar_leidsa') }}" class="mb-3">
+                                <button type="submit" class="btn btn-gold">🔄 Actualizar LEIDSA ahora</button>
+                            </form>
+                            <form method="POST" action="{{ url_for('admin_actualizar_leidsa_historial') }}" class="mb-3">
+                                <input type="hidden" name="days" value="90">
+                                <button type="submit" class="btn btn-outline-gold">📚 Actualizar historial LEIDSA (90 días)</button>
+                            </form>
+                            <form method="POST" action="{{ url_for('admin_actualizar_rd') }}" class="mb-0">
+                                <button type="submit" class="btn btn-outline-warning">🔄 Actualizar resultados RD ahora</button>
+                            </form>
+                            <p class="text-muted small mt-2">Incluye LEIDSA + loterías Conectate (Anguila, Loteka, etc.).</p>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-6">
+                    <div class="card glass-card">
+                        <div class="card-body">
                             <h4>Scraper / Importador web</h4>
                             <p class="text-muted">Fuentes preparadas: illinoislottery.com, conectate.com.do</p>
                             <form method="POST" action="{{ url_for('admin_scraper_test') }}">

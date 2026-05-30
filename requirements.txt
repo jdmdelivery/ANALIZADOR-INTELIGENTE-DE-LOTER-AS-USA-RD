@@ -1,7 +1,11 @@
 flask
-flask_sqlalchemy
+flask-login
 gunicorn
 requests
 beautifulsoup4
 lxml
 cloudscraper
+python-dateutil
+pytz
+tzdata
+pytest

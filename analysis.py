@@ -1,4 +1,5 @@
 import random
+import os
 from collections import Counter, defaultdict
 from datetime import datetime
 from itertools import combinations
@@ -7,6 +8,7 @@ from models import (
     DISCLAIMER,
     MIN_RESULTS_FOR_ANALYSIS,
     create_prediction,
+    get_all_lotteries,
     get_lottery,
     get_lottery_config,
     get_results_for_analysis,
@@ -39,6 +41,15 @@ RECENT_WINDOW_DEFAULT = 25
 TREND_RECENT_DRAWS = 10
 TREND_PREVIOUS_DRAWS = 10
 TOP_STAT_COUNT = 5
+RECENT_EXCLUSION_DRAWS = 5
+MIN_DRAWS_SINCE_FOR_OVERDUE = 2
+MIN_DRAWS_SINCE_FOR_HOT_DISPLAY = 1
+LAST_DRAW_SCORE_CAP = 0.0
+RECENT_APPEARANCE_PENALTY = 55.0
+ANALYSIS_BASIS_TEXT = "Basado en análisis histórico y tendencias recientes"
+USA_ANALYSIS_MAX_RESULTS = 100
+USA_ANALYSIS_LOG_PREFIX = "[USA ANALISIS]"
+ANALYSIS_BUILD = f"{os.path.getmtime(__file__):.0f}"
 
 
 def _parse_draw_date(date_str):
@@ -166,25 +177,73 @@ def _profile_to_overdue_detail(profile):
     return p
 
 
-def _classify_number_stats(profiles, top_n=TOP_STAT_COUNT):
+def _collect_recent_drawn_numbers(per_draw, num_draws=RECENT_EXCLUSION_DRAWS):
+    """Números que salieron en los últimos N sorteos (para excluir de recomendación)."""
+    excluded: set[str] = set()
+    for draw in per_draw[:num_draws]:
+        excluded.update(draw)
+    return excluded
+
+
+def _collect_last_draw_numbers(per_draw):
+    if not per_draw:
+        return set()
+    return set(per_draw[0])
+
+
+def _recency_penalty(number, stats):
+    """Penalización fuerte si salió en el último sorteo o en ventana reciente."""
+    last_draw = stats.get("last_draw_numbers") or set()
+    excluded = stats.get("excluded_recent_numbers") or set()
+    profiles = stats.get("number_profiles", {})
+    draws_since = profiles.get(number, {}).get("draws_since", 999)
+
+    if number in last_draw or draws_since == 0:
+        return RECENT_APPEARANCE_PENALTY * 4
+    if number in excluded:
+        return RECENT_APPEARANCE_PENALTY * 2
+    if draws_since == 1:
+        return RECENT_APPEARANCE_PENALTY
+    return 0.0
+
+
+def _classify_number_stats(
+    profiles,
+    top_n=TOP_STAT_COUNT,
+    last_draw_numbers=None,
+    min_overdue_draws=MIN_DRAWS_SINCE_FOR_OVERDUE,
+):
     if not profiles:
         return [], [], []
 
+    last_draw = last_draw_numbers or set()
     items = list(profiles.values())
-    appeared = [p for p in items if p["count"] > 0]
 
+    hot_pool = [
+        p for p in items
+        if p["count"] > 0 and p["number"] not in last_draw and p["draws_since"] >= MIN_DRAWS_SINCE_FOR_HOT_DISPLAY
+    ]
+    if len(hot_pool) < top_n:
+        hot_pool = [p for p in items if p["count"] > 0 and p["number"] not in last_draw]
     hot_sorted = sorted(
-        appeared,
-        key=lambda p: (p["count"], p["percentage"], -p["draws_since"]),
+        hot_pool,
+        key=lambda p: (p["count"], p["percentage"], p["draws_since"]),
         reverse=True,
     )
     hot = hot_sorted[:top_n]
 
-    cold_pool = sorted(items, key=lambda p: (p["count"], p["percentage"], p["draws_since"]))
+    cold_pool = sorted(
+        [p for p in items if p["number"] not in last_draw],
+        key=lambda p: (p["count"], p["percentage"], p["draws_since"]),
+    )
     cold = cold_pool[:top_n]
 
+    overdue_pool = [
+        p for p in items
+        if p["draws_since"] >= min_overdue_draws and p["number"] not in last_draw
+    ]
     overdue = sorted(
-        items,
+        overdue_pool,
         key=lambda p: (p["draws_since"], -p["count"]),
         reverse=True,
     )[:top_n]
@@ -205,13 +264,18 @@ def _cold_numbers(freq, universe, top_n=5):
     return cold[:top_n]
 
 
-def _overdue_numbers(results, per_draw, universe):
+def _overdue_numbers(per_draw, universe, top_n=TOP_STAT_COUNT, min_draws_since=MIN_DRAWS_SINCE_FOR_OVERDUE):
     last_seen = {}
     for idx, nums in enumerate(per_draw):
         for n in nums:
             if n not in last_seen:
                 last_seen[n] = idx
-    overdue = sorted(universe, key=lambda n: last_seen.get(n, len(per_draw)), reverse=True)
+    last_draw = _collect_last_draw_numbers(per_draw)
+    overdue = sorted(
+        [n for n in universe if n not in last_draw and last_seen.get(n, len(per_draw)) >= min_draws_since],
+        key=lambda n: last_seen.get(n, len(per_draw)),
+        reverse=True,
+    )
     return overdue[:top_n]
 
 
@@ -265,18 +329,462 @@ def _numbers_together(per_draw, top_n=5):
     return together.most_common(top_n)
 
 
-def analizar_loteria_por_tanda(lottery_id, draw_name):
+def _resolve_analysis_config(lottery: dict) -> dict:
+    """Config de rango/cantidad: LEIDSA primero, luego LOTTERY_CONFIG."""
+    from services.leidsa_config import resolve_leidsa_recommendation_config
+
+    leidsa_cfg = resolve_leidsa_recommendation_config(
+        lottery.get("name", ""),
+        lottery.get("type", ""),
+    )
+    if leidsa_cfg:
+        return leidsa_cfg
+    return get_lottery_config(lottery["type"])
+
+
+def _find_duplicate_numbers(numbers: list) -> list:
+    seen: set[str] = set()
+    dups: list[str] = []
+    for n in numbers:
+        if n in seen:
+            dups.append(n)
+        else:
+            seen.add(n)
+    return dups
+
+
+def _is_pick4_strict(config: dict) -> bool:
+    """Illinois Pick 4 — reglas estrictas de variedad (no aplica RD)."""
+    return bool(config.get("pick4_strict")) and int(config.get("count", 0)) == 4
+
+
+def es_combinacion_valida_pick4(nums: list) -> bool:
+    if len(nums) != 4:
+        return False
+    conteo = Counter(nums)
+    if max(conteo.values()) > 2:
+        return False
+    if len(set(nums)) < 3:
+        return False
+    return True
+
+
+def _pick4_tier_pools(stats: dict, config: dict) -> tuple[list[str], list[str], list[str], list[str]]:
+    """Caliente, frío, atrasado, neutral para Pick 4."""
+    pickable = _pickable_digits(stats, config, strict=False)
+    hot = [n for n in (stats.get("hot_numbers") or []) if n in pickable]
+    cold = [n for n in (stats.get("cold_numbers") or []) if n in pickable]
+    overdue = [n for n in (stats.get("overdue_numbers") or []) if n in pickable]
+    tier_used = set(hot + cold + overdue)
+    scored, _ = _scored_pickable_pool(stats, config, strict=False)
+    neutral = [n for n in [x for _, x in scored] if n in pickable and n not in tier_used]
+    if not neutral:
+        neutral = [n for n in pickable if n not in tier_used] or list(pickable)
+    if not hot:
+        hot = list(pickable)
+    if not cold:
+        cold = [n for n in pickable if n not in hot] or list(pickable)
+    if not overdue:
+        overdue = [n for n in pickable if n not in hot and n not in cold] or list(pickable)
+    return hot, cold, overdue, neutral
+
+
+def _pick4_dominant(nums: list) -> str | None:
+    if not nums:
+        return None
+    return Counter(nums).most_common(1)[0][0]
+
+
+def _generar_pick4(stats: dict, config: dict) -> list[str]:
+    """Un intento de 4 dígitos con mezcla caliente/frío/atrasado/neutral."""
+    count = 4
+    max_r = 2
+    hot, cold, overdue, neutral = _pick4_tier_pools(stats, config)
+    tier_lists = [hot, cold, overdue, neutral]
+    pickable = _pickable_digits(stats, config, strict=False)
+    last_draw = set(stats.get("last_draw_numbers") or [])
+
+    result: list[str] = []
+    counts: Counter = Counter()
+
+    for i in range(count):
+        preferred = tier_lists[i % len(tier_lists)]
+        search = [preferred] + [t for j, t in enumerate(tier_lists) if j != i % len(tier_lists)] + [pickable]
+        placed = None
+        for tier in search:
+            random.shuffle(tier)
+            for n in tier:
+                if counts[n] >= max_r:
+                    continue
+                if n in last_draw and len(pickable) > len(last_draw):
+                    continue
+                trial = result + [n]
+                if len(trial) == count and len(set(trial)) < 3:
+                    continue
+                placed = n
+                break
+            if placed:
+                break
+        if not placed:
+            opts = [n for n in pickable if counts[n] < max_r]
+            if opts:
+                placed = random.choice(opts)
+            else:
+                placed = random.choice(pickable)
+        result.append(placed)
+        counts[placed] += 1
+
+    return result[:count]
+
+
+def _pick4_safe_mix(stats: dict, config: dict) -> list[str]:
+    """Fallback: 4 dígitos distintos — 1 caliente, 1 frío, 1 atrasado, 1 neutral."""
+    hot, cold, overdue, neutral = _pick4_tier_pools(stats, config)
+    picks: list[str] = []
+    seen: set[str] = set()
+    for tier in (hot, cold, overdue, neutral):
+        for n in tier:
+            if n in seen:
+                continue
+            picks.append(n)
+            seen.add(n)
+            break
+        if len(picks) >= 4:
+            break
+    if len(picks) < 4:
+        for n in _pickable_digits(stats, config, strict=False):
+            if n not in seen:
+                picks.append(n)
+                seen.add(n)
+            if len(picks) >= 4:
+                break
+    pad = config.get("pad", 1)
+    if len(picks) < 4:
+        for i in range(config["min"], config["max"] + 1):
+            n = _normalize_number(i, pad)
+            if n not in seen:
+                picks.append(n)
+                seen.add(n)
+            if len(picks) >= 4:
+                break
+    return picks[:4]
+
+
+def _generate_pick4_recommendation(stats: dict, config: dict) -> tuple[list[str], bool]:
+    """Pick 4 Illinois: hasta 50 intentos + mezcla segura."""
+    regenerated = False
+    nums: list[str] = []
+    for _ in range(50):
+        nums = _generar_pick4(stats, config)
+        if es_combinacion_valida_pick4(nums):
+            return nums, regenerated
+        regenerated = True
+    nums = _pick4_safe_mix(stats, config)
+    if not es_combinacion_valida_pick4(nums):
+        pad = config.get("pad", 1)
+        nums = [_normalize_number(i, pad) for i in range(4)]
+    return nums, True
+
+
+def _digit_game_variety(config: dict) -> bool:
+    """Solo Pick 3/4 USA usan tope de repetición y variedad mínima."""
+    return "max_repeat_per_number" in config and "min_unique" in config
+
+
+def _pickable_digits(stats: dict, config: dict, strict: bool = True) -> list[str]:
+    pad = config.get("pad", 2)
+    universe = [
+        _normalize_number(i, pad)
+        for i in range(config["min"], config["max"] + 1)
+    ]
+    if strict:
+        pool = [n for n in universe if _is_pickable_number(n, stats)]
+        if pool:
+            return pool
+    last = set(stats.get("last_draw_numbers") or [])
+    pool = [n for n in universe if n not in last]
+    return pool or universe
+
+
+def _max_repeat_for_config(config: dict) -> int:
+    if not config.get("allow_repeat"):
+        return 1
+    return int(config.get("max_repeat_per_number", 2))
+
+
+def _min_unique_for_config(config: dict) -> int:
+    if "min_unique" in config:
+        return int(config["min_unique"])
+    count = int(config["count"])
+    if config.get("allow_repeat"):
+        return min(count, max(2, (count + 1) // 2))
+    return count
+
+
+def _reportable_duplicates(numbers: list, config: dict) -> list:
+    """Duplicados fuera del límite permitido por lotería."""
+    if not config.get("allow_repeat"):
+        return _find_duplicate_numbers(numbers)
+    max_r = _max_repeat_for_config(config)
+    counts = Counter(numbers)
+    dups: list[str] = []
+    for n, c in counts.items():
+        if c > max_r:
+            dups.extend([n] * (c - max_r))
+    return dups
+
+
+def _is_recommendation_acceptable(numbers: list, config: dict, stats: dict) -> bool:
+    count = int(config["count"])
+    if len(numbers) != count:
+        return False
+    if _is_pick4_strict(config):
+        if not es_combinacion_valida_pick4(numbers):
+            return False
+        per_draw = stats.get("_per_draw") or []
+        if per_draw and numbers == per_draw[0][:4]:
+            return False
+        return True
+    if not _digit_game_variety(config):
+        return all(_is_pickable_number(n, stats) for n in numbers)
+    pickable = _pickable_digits(stats, config, strict=False)
+    min_u = min(_min_unique_for_config(config), len(pickable))
+    if len(set(numbers)) <= 1 and len(pickable) > 1:
+        return False
+    if len(set(numbers)) < min_u:
+        return False
+    if any(c > _max_repeat_for_config(config) for c in Counter(numbers).values()):
+        return False
+    per_draw = stats.get("_per_draw") or []
+    if per_draw and len(per_draw[0]) >= count and numbers == per_draw[0][:count]:
+        return False
+    last = set(stats.get("last_draw_numbers") or [])
+    if any(n in last for n in numbers) and len(pickable) > len(last):
+        return False
+    return True
+
+
+def _scored_pickable_pool(stats: dict, config: dict, strict: bool = True) -> tuple[list[tuple[float, str]], list[str]]:
+    pad = config.get("pad", 2)
+    pickable = _pickable_digits(stats, config, strict=strict)
+    scored: list[tuple[float, str]] = []
+    for n in pickable:
+        scored.append((_score_number(n, stats) + random.uniform(0, 4.0), n))
+    scored.sort(key=lambda x: (-x[0], x[1]))
+    return scored, pickable
+
+
+def _ordered_tier_candidates(stats: dict, config: dict) -> list[str]:
+    """Pool ordenado: caliente → atrasado → frío → puntuación."""
+    scored, pickable = _scored_pickable_pool(stats, config)
+    ranked = [n for _, n in scored]
+    tiers = [
+        [n for n in (stats.get("hot_numbers") or []) if _is_pickable_number(n, stats)],
+        [n for n in (stats.get("overdue_numbers") or []) if _is_pickable_number(n, stats)],
+        [n for n in (stats.get("cold_numbers") or []) if _is_pickable_number(n, stats)],
+        ranked,
+        pickable,
+    ]
+    out: list[str] = []
+    seen: set[str] = set()
+    for tier in tiers:
+        for n in tier:
+            if n not in seen:
+                out.append(n)
+                seen.add(n)
+    return out or pickable
+
+
+def _pick_varied_recommendation(stats: dict, config: dict) -> list[str]:
+    """Pick 3/4: mezcla natural caliente/frío/atrasado/tendencia con repetición limitada."""
+    count = int(config["count"])
+    max_r = _max_repeat_for_config(config)
+    candidates = _ordered_tier_candidates(stats, config)
+    scored, pickable = _scored_pickable_pool(stats, config, strict=True)
+    if len(pickable) < _min_unique_for_config(config):
+        scored, pickable = _scored_pickable_pool(stats, config, strict=False)
+
+    result: list[str] = []
+    counts: Counter = Counter()
+    hot = [n for n in (stats.get("hot_numbers") or []) if n in pickable]
+    overdue = [n for n in (stats.get("overdue_numbers") or []) if n in pickable]
+    cold = [n for n in (stats.get("cold_numbers") or []) if n in pickable]
+    ranked = [n for _, n in scored]
+    if len(candidates) < _min_unique_for_config(config):
+        for n in pickable:
+            if n not in candidates:
+                candidates.append(n)
+    tier_lists = [hot, overdue, cold, ranked, pickable]
+
+    for i in range(count):
+        preferred_tiers = tier_lists[i % len(tier_lists):] + tier_lists[: i % len(tier_lists)]
+        placed = None
+        for tier in preferred_tiers:
+            for n in tier:
+                if counts[n] >= max_r:
+                    continue
+                if n in set(stats.get("last_draw_numbers") or []) and len(pickable) > len(stats.get("last_draw_numbers") or []):
+                    continue
+                if result and n == result[-1] and len(set(candidates)) > 1:
+                    continue
+                placed = n
+                break
+            if placed:
+                break
+        if not placed:
+            for n in candidates:
+                if counts[n] < max_r and _is_pickable_number(n, stats):
+                    if not (result and n == result[-1] and len(set(candidates)) > 1):
+                        placed = n
+                        break
+        if not placed:
+            for n in random.sample(pickable, len(pickable)):
+                if counts[n] < max_r:
+                    placed = n
+                    break
+        if not placed:
+            placed = random.choice(pickable)
+        result.append(placed)
+        counts[placed] += 1
+
+    while len(result) < count and pickable:
+        n = random.choice(pickable)
+        if counts[n] < max_r:
+            result.append(n)
+            counts[n] += 1
+        elif len(set(pickable)) == 1:
+            result.append(n)
+            counts[n] += 1
+        else:
+            opts = [x for x in pickable if counts[x] < max_r] or pickable
+            result.append(random.choice(opts))
+            counts[result[-1]] += 1
+
+    return _enforce_variety(result[:count], stats, config)
+
+
+def _enforce_variety(numbers: list, stats: dict, config: dict) -> list[str]:
+    """Garantiza variedad mínima y tope de repetición por dígito."""
+    count = int(config["count"])
+    min_u = _min_unique_for_config(config)
+    max_r = _max_repeat_for_config(config)
+    numbers = list(numbers[:count])
+    _, pickable = _scored_pickable_pool(stats, config)
+
+    for _ in range(count * 3):
+        counts = Counter(numbers)
+        if len(set(numbers)) >= min_u and all(c <= max_r for c in counts.values()):
+            break
+        changed = False
+        for idx, n in enumerate(numbers):
+            if counts[n] <= max_r and len(set(numbers)) >= min_u:
+                continue
+            for alt in pickable:
+                trial = list(numbers)
+                trial[idx] = alt
+                tc = Counter(trial)
+                if tc[alt] > max_r:
+                    continue
+                if len(set(trial)) < min(min_u, len(trial)):
+                    continue
+                numbers = trial
+                changed = True
+                break
+            if changed:
+                break
+        if not changed:
+            break
+
+    if len(set(numbers)) <= 1 and pickable:
+        base = numbers[0] if numbers else pickable[0]
+        alts = [n for n in pickable if n != base]
+        numbers = [base]
+        for n in alts:
+            if len(numbers) >= count:
+                break
+            numbers.append(n)
+        while len(numbers) < count and alts:
+            numbers.append(random.choice(alts))
+
+    return numbers[:count]
+
+
+def _generate_recommendation(stats: dict, config: dict, max_attempts: int = 8) -> tuple[list[str], bool]:
+    """Genera recomendación válida; regenera si hay demasiados duplicados."""
+    if _is_pick4_strict(config):
+        return _generate_pick4_recommendation(stats, config)
+
+    regenerated = False
+    for _ in range(max_attempts):
+        if _digit_game_variety(config):
+            nums = _pick_varied_recommendation(stats, config)
+        else:
+            nums = _pick_numbers(stats, config)
+            nums = _sanitize_recommendation(nums, stats, config)
+        if _is_recommendation_acceptable(nums, config, stats):
+            return nums, regenerated
+        regenerated = True
+    nums = (
+        _pick_varied_recommendation(stats, config)
+        if _digit_game_variety(config)
+        else _pick_balanced_random(
+            [
+                _normalize_number(i, config.get("pad", 2))
+                for i in range(config["min"], config["max"] + 1)
+            ],
+            set(stats.get("excluded_recent_numbers") or [])
+            | set(stats.get("last_draw_numbers") or []),
+            int(config["count"]),
+            config.get("pad", 2),
+            allow_repeat=False,
+        )
+    )
+    return _enforce_variety(nums, stats, config) if _digit_game_variety(config) else nums, True
+
+
+def _fallback_unique_numbers(
+    universe: list[str],
+    already: list[str],
+    need: int,
+    pad: int = 2,
+) -> list[str]:
+    """Completa con números únicos del universo sin inventar duplicados."""
+    out = list(already)
+    used = set(out)
+    for n in universe:
+        if n not in used:
+            out.append(n)
+            used.add(n)
+        if len(out) >= need:
+            break
+    if len(out) >= need or not universe:
+        return out[:need]
+    i = 0
+    max_passes = len(universe) * max(need - len(out), 1) + 1
+    while len(out) < need and i < max_passes:
+        candidate = universe[i % len(universe)]
+        if candidate not in used:
+            out.append(candidate)
+            used.add(candidate)
+        i += 1
+    return out[:need]
+
+
+def analizar_loteria_por_tanda(lottery_id, draw_name, max_results=None):
     lottery = get_lottery(lottery_id)
     if not lottery:
         return None
 
-    results = get_results_for_analysis(lottery_id, draw_name)
-    config = get_lottery_config(lottery["type"])
+    if max_results is None and lottery.get("country") == "USA":
+        max_results = USA_ANALYSIS_MAX_RESULTS
+
+    results = get_results_for_analysis(lottery_id, draw_name, limit=max_results)
+    config = _resolve_analysis_config(lottery)
 
     if len(results) < MIN_RESULTS_FOR_ANALYSIS:
         return {
             "ok": False,
-            "message": "No hay suficientes resultados históricos para analizar esta tanda.",
+            "message": "Necesitamos más historial para analizar.",
             "total_results": len(results),
         }
 
@@ -299,20 +807,27 @@ def analizar_loteria_por_tanda(lottery_id, draw_name):
     number_profiles, analysis_window = _build_number_profiles(
         results, per_draw, config, window=RECENT_WINDOW_DEFAULT
     )
-    hot_detail, cold_detail, overdue_detail = _classify_number_stats(number_profiles)
+    last_draw_numbers = _collect_last_draw_numbers(per_draw)
+    excluded_recent_numbers = _collect_recent_drawn_numbers(per_draw, RECENT_EXCLUSION_DRAWS)
+
+    hot_detail, cold_detail, overdue_detail = _classify_number_stats(
+        number_profiles,
+        last_draw_numbers=last_draw_numbers,
+    )
 
     hot = [p["number"] for p in hot_detail]
     cold = [p["number"] for p in cold_detail]
     overdue = [p["number"] for p in overdue_detail]
 
-    pairs = _pair_frequency(per_draw)
-    triples = _triple_frequency(per_draw)
-    repeated = _repeated_combinations(per_draw)
-    position_freq = _position_frequency(per_draw)
-    trend = _recent_trend(per_draw)
-    together = _numbers_together(per_draw)
+    stats_per_draw = per_draw[:max_results or len(per_draw)]
+    pairs = _pair_frequency(stats_per_draw)
+    triples = _triple_frequency(stats_per_draw)
+    repeated = _repeated_combinations(stats_per_draw)
+    position_freq = _position_frequency(stats_per_draw)
+    trend = _recent_trend(stats_per_draw)
+    together = _numbers_together(stats_per_draw)
 
-    return {
+    payload = {
         "ok": True,
         "lottery_id": lottery_id,
         "lottery_name": lottery["name"],
@@ -339,13 +854,38 @@ def analizar_loteria_por_tanda(lottery_id, draw_name):
         "numbers_together": [{"pair": list(p), "count": c} for p, c in together],
         "frequency_30": dict(_frequency_counter([n for d in per_30 for n in d]).most_common(10)),
         "frequency_60": dict(_frequency_counter([n for d in per_60 for n in d]).most_common(10)),
+        "last_draw_numbers": list(last_draw_numbers),
+        "excluded_recent_numbers": list(excluded_recent_numbers),
+        "recent_exclusion_draws": RECENT_EXCLUSION_DRAWS,
+        "analysis_basis": ANALYSIS_BASIS_TEXT,
+        "_per_draw": per_draw,
         "_all_nums": all_nums,
         "_freq": freq,
         "_config": config,
     }
+    if lottery.get("country") == "USA":
+        print(f"{USA_ANALYSIS_LOG_PREFIX} cálculo frecuencia OK")
+    return payload
+
+
+def _is_pickable_number(n, stats):
+    """Nunca elegible si salió en el último sorteo o en la ventana de exclusión reciente."""
+    last_draw = set(stats.get("last_draw_numbers") or [])
+    excluded = set(stats.get("excluded_recent_numbers") or [])
+    profiles = stats.get("number_profiles", {})
+    draws_since = profiles.get(n, {}).get("draws_since", 999)
+
+    if n in last_draw or draws_since == 0:
+        return False
+    if n in excluded:
+        return False
+    return True
 
 
 def _score_number(n, stats, position=None):
+    if not _is_pickable_number(n, stats):
+        return LAST_DRAW_SCORE_CAP
+
     score = 0.0
     profiles = stats.get("number_profiles", {})
     profile = profiles.get(n, {})
@@ -372,14 +912,17 @@ def _score_number(n, stats, position=None):
     elif trend == "falling":
         score -= 6
     elif trend == "overheated":
-        score -= 4
+        score -= 12
 
     freq_ratio = freq.get(n, 0) / total
     score += freq_ratio * 40
 
     recent_trend = stats.get("recent_trend", {})
     if n in recent_trend:
-        score += recent_trend[n] * 2.5
+        score += recent_trend[n] * 1.5
+
+    if draws_since >= 8:
+        score += min(draws_since * 1.5, 18)
 
     if position is not None:
         pos_freq = stats.get("position_frequency", {}).get(position, {})
@@ -397,35 +940,130 @@ def _score_number(n, stats, position=None):
         if n in nums:
             score += combo.get("count", 0) * 1.2
 
+    score -= _recency_penalty(n, stats) * 0.15
     return max(score, 0)
 
 
+def _pick_balanced_random(universe, excluded, count, pad=2, allow_repeat=False, max_repeat=2):
+    """Recomendación balanceada cuando hay pocos datos; nunca incluye exclusión reciente."""
+    pool = [n for n in universe if n not in excluded]
+    if not pool:
+        pool = list(universe)
+    if allow_repeat and pool:
+        result: list[str] = []
+        counts: Counter = Counter()
+        for _ in range(count):
+            opts = [n for n in pool if counts[n] < max_repeat] or pool
+            if result and len(set(pool)) > 1:
+                opts = [n for n in opts if n != result[-1]] or opts
+            n = random.choice(opts)
+            result.append(n)
+            counts[n] += 1
+        return result
+    random.shuffle(pool)
+    return pool[:count]
+
+
+def _sanitize_recommendation(numbers, stats, config):
+    """Quita duplicados y números del último sorteo / ventana reciente."""
+    count = int(config["count"])
+    pad = config.get("pad", 2)
+    allow_repeat = bool(config.get("allow_repeat", False))
+    universe = [_normalize_number(i, pad) for i in range(config["min"], config["max"] + 1)]
+    excluded = set(stats.get("excluded_recent_numbers") or [])
+    excluded.update(stats.get("last_draw_numbers") or [])
+
+    if allow_repeat and _digit_game_variety(config):
+        return _enforce_variety(
+            [n for n in numbers if n not in set(stats.get("last_draw_numbers") or [])][:count]
+            or [n for n in numbers if _is_pickable_number(n, stats)][:count],
+            stats,
+            config,
+        )
+
+    if allow_repeat:
+        cleaned = [n for n in numbers if _is_pickable_number(n, stats)][:count]
+        pool = [n for n in universe if _is_pickable_number(n, stats)] or list(universe)
+        while len(cleaned) < count and pool:
+            cleaned.append(random.choice(pool))
+        return cleaned[:count]
+
+    seen: set[str] = set()
+    cleaned: list[str] = []
+    for n in numbers:
+        if n in seen or not _is_pickable_number(n, stats):
+            continue
+        cleaned.append(n)
+        seen.add(n)
+
+    if len(cleaned) < count:
+        cleaned = _fallback_unique_numbers(
+            [n for n in universe if n not in excluded],
+            cleaned,
+            count,
+            pad,
+        )
+
+    if len(cleaned) < count:
+        cleaned = _pick_balanced_random(universe, excluded, count, pad, allow_repeat=False)
+
+    return cleaned[:count]
+
+
 def _pick_numbers(stats, config):
-    count = config["count"]
-    allow_repeat = config.get("allow_repeat", False)
+    """Elige números por mejor puntuación; sin duplicados salvo allow_repeat."""
+    count = int(config["count"])
+    allow_repeat = bool(config.get("allow_repeat", False))
     pad = config.get("pad", 2)
 
     universe = [_normalize_number(i, pad) for i in range(config["min"], config["max"] + 1)]
-    selected = []
+    excluded = set(stats.get("excluded_recent_numbers") or [])
+    excluded.update(stats.get("last_draw_numbers") or [])
 
-    for i in range(count):
-        candidates = universe if allow_repeat else [n for n in universe if n not in selected]
-        if not candidates:
-            candidates = universe
+    pickable = [n for n in universe if _is_pickable_number(n, stats)]
+    if not pickable:
+        return _pick_balanced_random(universe, excluded, count, pad, allow_repeat=allow_repeat)
 
-        scored = []
-        for n in candidates:
-            s = _score_number(n, stats, position=i)
-            s += random.uniform(0, 8)
-            scored.append((s, n))
+    scored: list[tuple[float, str]] = []
+    for n in pickable:
+        score = _score_number(n, stats)
+        score += random.uniform(0, 5.5)
+        scored.append((score, n))
+    scored.sort(key=lambda x: (-x[0], x[1]))
 
-        scored.sort(reverse=True)
-        top = scored[: min(5, len(scored))]
-        weights = [t[0] for t in top]
-        chosen = random.choices([t[1] for t in top], weights=weights, k=1)[0]
-        selected.append(chosen)
+    if allow_repeat and _digit_game_variety(config):
+        return _pick_varied_recommendation(stats, config)
 
-    return selected
+    if allow_repeat:
+        selected = [scored[i % len(scored)][1] for i in range(count)] if scored else []
+        return _sanitize_recommendation(selected, stats, config)
+
+    selected: list[str] = []
+    used: set[str] = set()
+    for _, n in scored:
+        if n in used:
+            continue
+        selected.append(n)
+        used.add(n)
+        if len(selected) >= count:
+            break
+
+    if len(selected) < count:
+        pool = [n for n in universe if n not in excluded and n not in used]
+        selected = _fallback_unique_numbers(pool, selected, count, pad)
+
+    return _sanitize_recommendation(selected[:count], stats, config)
+
+
+def _schedule_emoji(draw_name: str) -> str:
+    key = (draw_name or "").lower().replace("tardía", "tardia")
+    return {
+        "mañana": "🌅",
+        "manana": "🌅",
+        "tarde": "🌇",
+        "tardia": "🎯",
+        "noche": "🌙",
+    }.get(key, "🎱")
 
 
 def _build_explanation(numbers, stats):
@@ -475,22 +1113,47 @@ def _build_explanation(numbers, stats):
 
 def _calculate_confidence(score, total_results, numbers, stats):
     profiles = stats.get("number_profiles", {})
+    hot = set(stats.get("hot_numbers") or [])
+    cold = set(stats.get("cold_numbers") or [])
+    overdue = set(stats.get("overdue_numbers") or [])
+
     trend_hits = sum(
         1 for n in numbers if profiles.get(n, {}).get("trend") in ("rising", "overheated")
     )
     freq_hits = sum(1 for n in numbers if profiles.get(n, {}).get("count", 0) >= 2)
     overdue_hits = sum(1 for n in numbers if profiles.get(n, {}).get("draws_since", 0) >= 6)
+    hot_hits = sum(1 for n in numbers if n in hot)
+    cold_hits = sum(1 for n in numbers if n in cold)
+    mix_bonus = 0
+    if hot_hits:
+        mix_bonus += 4
+    if cold_hits:
+        mix_bonus += 3
+    if overdue_hits or any(n in overdue for n in numbers):
+        mix_bonus += 4
 
-    quality = trend_hits * 4 + freq_hits * 3 + overdue_hits * 2
-    adjusted = score + quality
+    unique_ratio = len(set(numbers)) / max(len(numbers), 1)
+    variety_bonus = 8 if unique_ratio >= 0.75 else (4 if unique_ratio >= 0.5 else 0)
+    dup_penalty = 0
+    if len(set(numbers)) <= 1:
+        dup_penalty = 45
+    elif len(_find_duplicate_numbers(numbers)) >= 3:
+        dup_penalty = 18
 
-    if total_results >= 60 and adjusted >= 78:
+    quality = trend_hits * 4 + freq_hits * 3 + overdue_hits * 2 + mix_bonus + variety_bonus
+    adjusted = score + quality - dup_penalty
+
+    if total_results >= 60 and adjusted >= 78 and unique_ratio >= 0.5:
         return "alto"
-    if total_results >= 25 and adjusted >= 58:
+    if total_results >= 25 and adjusted >= 58 and unique_ratio >= 0.4:
         return "medio"
     if total_results >= MIN_RESULTS_FOR_ANALYSIS and adjusted >= 45:
         return "medio"
     return "bajo"
+
+
+def _confidence_label(level: str) -> str:
+    return {"alto": "Alto", "medio": "Medio", "bajo": "Bajo"}.get(level, "Bajo")
 
 
 def _calculate_overall_score(numbers, stats):
@@ -521,7 +1184,7 @@ def _calculate_overall_score(numbers, stats):
     return min(max(round(raw), 1), 99)
 
 
-def _pick_bonus_number(stats, config):
+def _pick_bonus_number(stats, config, main_numbers=None):
     bonus_min = config.get("bonus_min")
     bonus_max = config.get("bonus_max")
     if bonus_min is None or bonus_max is None:
@@ -530,15 +1193,49 @@ def _pick_bonus_number(stats, config):
     universe = [_normalize_number(i, pad) for i in range(bonus_min, bonus_max + 1)]
     if not universe:
         return None
+    per_draw = stats.get("_per_draw") or []
+    last_bonus = set()
+    for draw in per_draw[:RECENT_EXCLUSION_DRAWS]:
+        for n in draw:
+            if bonus_min <= int(n) <= bonus_max:
+                last_bonus.add(_normalize_number(int(n), pad))
+    pool = [n for n in universe if n not in last_bonus] or universe
+    if main_numbers:
+        mains = set(main_numbers)
+        if _is_pick4_strict(config):
+            dominant = _pick4_dominant(main_numbers)
+            if dominant:
+                alt = [n for n in pool if n != dominant]
+                if alt:
+                    pool = alt
+        else:
+            varied = [n for n in pool if n not in mains]
+            if varied:
+                pool = varied
+            elif len(set(main_numbers)) == 1:
+                dominant = main_numbers[0]
+                alt = [n for n in pool if n != dominant]
+                if alt:
+                    pool = alt
     freq = stats.get("_freq", Counter())
     scored = []
-    for n in universe:
+    for n in pool:
         s = freq.get(n, 0) + random.uniform(0, 5)
         scored.append((s, n))
     scored.sort(reverse=True)
     top = scored[: min(5, len(scored))]
+    if not top:
+        top = [(0.0, n) for n in pool[:5]]
     weights = [t[0] + 0.1 for t in top]
-    return random.choices([t[1] for t in top], weights=weights, k=1)[0]
+    bonus = random.choices([t[1] for t in top], weights=weights, k=1)[0]
+    if _is_pick4_strict(config) and main_numbers:
+        dominant = _pick4_dominant(main_numbers)
+        if dominant and bonus == dominant:
+            alts = [n for n in universe if n != dominant and n not in last_bonus]
+            if not alts:
+                alts = [n for n in universe if n != dominant]
+            bonus = random.choice(alts) if alts else bonus
+    return bonus
 
 
 def _bonus_label_for_type(lottery_type):
@@ -557,15 +1254,68 @@ def generar_jugada_inteligente(lottery_id, draw_name):
         return {"ok": False, "message": "Lotería no encontrada."}
 
     stats = analizar_loteria_por_tanda(lottery_id, draw_name)
+    history_count = (stats or {}).get("total_results", 0)
     if not stats or not stats.get("ok"):
         return {
             "ok": False,
-            "message": "No hay suficientes resultados históricos para analizar esta tanda.",
+            "message": "Necesitamos más historial para analizar.",
+            "history_count": history_count,
         }
 
-    config = get_lottery_config(lottery["type"])
-    generated = _pick_numbers(stats, config)
-    generated_bonus = _pick_bonus_number(stats, config)
+    config = _resolve_analysis_config(lottery)
+    recommend_count = config["count"]
+    generated, was_regenerated = _generate_recommendation(stats, config)
+    if _is_pick4_strict(config) and not es_combinacion_valida_pick4(generated):
+        generated = _pick4_safe_mix(stats, config)
+        was_regenerated = True
+    duplicates = _reportable_duplicates(generated, config)
+    warning = None
+
+    last_draw = set(stats.get("last_draw_numbers") or [])
+    per_draw = stats.get("_per_draw") or []
+    if per_draw and generated == per_draw[0][: len(generated)]:
+        if _is_pick4_strict(config):
+            generated, was_regenerated = _generate_pick4_recommendation(stats, config)
+        else:
+            generated, was_regenerated = _generate_recommendation(stats, config, max_attempts=10)
+        warning = "Se evitó repetir el último sorteo exacto."
+        duplicates = _reportable_duplicates(generated, config)
+        was_regenerated = True
+
+    overlap_last: list[str] = sorted(set(generated) & last_draw)
+    if overlap_last and not config.get("allow_repeat"):
+        pad = config.get("pad", 2)
+        universe = [
+            _normalize_number(i, pad)
+            for i in range(config["min"], config["max"] + 1)
+        ]
+        generated = _fallback_unique_numbers(universe, [], recommend_count, pad)
+        warning = "Se ajustó la recomendación para no repetir el último sorteo."
+        duplicates = _reportable_duplicates(generated, config)
+
+    if duplicates and not config.get("allow_repeat"):
+        seen: set[str] = set()
+        fixed: list[str] = []
+        pad = config.get("pad", 2)
+        universe = [
+            _normalize_number(i, pad)
+            for i in range(config["min"], config["max"] + 1)
+        ]
+        for n in generated:
+            if n not in seen:
+                fixed.append(n)
+                seen.add(n)
+        generated = _fallback_unique_numbers(universe, fixed, recommend_count, pad)
+        duplicates = _reportable_duplicates(generated, config)
+        warning = "Se eliminaron duplicados en la recomendación."
+
+    if was_regenerated and not warning:
+        warning = "Combinación ajustada para mayor variedad."
+
+    if history_count < MIN_RESULTS_FOR_ANALYSIS:
+        warning = ((warning or "") + " Historial limitado; números balanceados.").strip()
+
+    generated_bonus = _pick_bonus_number(stats, config, main_numbers=generated)
     bonus_label = _bonus_label_for_type(lottery["type"])
 
     analysis_text = _build_explanation(generated, stats)
@@ -593,23 +1343,123 @@ def generar_jugada_inteligente(lottery_id, draw_name):
 
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+    schedule_emoji = _schedule_emoji(draw_name)
+
     return {
         "ok": True,
         "country": lottery["country"],
         "state": state_label,
         "lottery": lottery["name"],
         "draw_name": draw_name,
+        "schedule_emoji": schedule_emoji,
+        "recommend_count": recommend_count,
         "generated_numbers": generated,
+        "numbers": generated,
+        "recommended_numbers": generated,
         "generated_bonus": generated_bonus,
         "bonus_numbers": [generated_bonus] if generated_bonus else [],
         "bonus_label": bonus_label,
         "confidence_level": confidence,
+        "confidence_label": _confidence_label(confidence),
+        "variety_score": round(len(set(generated)) / max(len(generated), 1), 2),
         "score": score,
         "analysis_text": analysis_text,
+        "analysis_basis": ANALYSIS_BASIS_TEXT,
+        "hot_numbers": stats.get("hot_numbers", []),
+        "cold_numbers": stats.get("cold_numbers", []),
+        "overdue_numbers": stats.get("overdue_numbers", []),
         "hot_numbers_detail": stats.get("hot_numbers_detail", []),
         "cold_numbers_detail": stats.get("cold_numbers_detail", []),
         "overdue_numbers_detail": stats.get("overdue_numbers_detail", []),
         "analysis_window": stats.get("analysis_window", RECENT_WINDOW_DEFAULT),
+        "recent_exclusion_draws": stats.get("recent_exclusion_draws", RECENT_EXCLUSION_DRAWS),
+        "total_results": stats.get("total_results", 0),
+        "history_count": stats.get("total_results", 0),
+        "duplicates_found": duplicates,
+        "excluded_recent_overlap": overlap_last if overlap_last else [],
+        "warning": warning.strip() if warning else None,
+        "analysis_build": ANALYSIS_BUILD,
         "disclaimer": DISCLAIMER,
         "created_at": now,
+    }
+
+
+def _resolve_draw_name_for_lottery(lottery: dict, draw_label: str) -> str:
+    """Convierte '8:00 PM' o label UI → draw_name interno (noche, tarde, …)."""
+    from models import get_draw_times
+    from services.leidsa_config import get_game_schedule_for_ui
+
+    label = (draw_label or "noche").strip()
+    if label.lower() in ("tarde", "noche", "mañana", "tardía", "sorteo"):
+        return label.lower().replace("tardía", "tardia") if label == "tardía" else label.lower()
+
+    for d in get_draw_times(lottery["id"], active_only=True):
+        if d.get("draw_name") == label:
+            return d["draw_name"]
+        if d.get("draw_time") == label:
+            return d["draw_name"]
+
+    for slot in get_game_schedule_for_ui(lottery.get("name", "")) or []:
+        if slot.get("time") == label or slot.get("label") == label:
+            return slot.get("draw_name", label)
+
+    try:
+        from lottery_schedules import get_schedule_slot
+        slot = get_schedule_slot(lottery.get("name", ""), label)
+        if slot and slot.get("draw_name"):
+            return slot["draw_name"]
+    except Exception:
+        pass
+    return label
+
+
+def debug_leidsa_recommendation(lottery_name: str, draw_name: str) -> dict:
+    """Debug recomendación LEIDSA por nombre de lotería y tanda."""
+    from services.leidsa_config import (
+        LEIDSA_RECOMMENDATION_CONFIG,
+        resolve_leidsa_recommendation_config,
+    )
+
+    draw_label = (draw_name or "noche").strip()
+    name_q = (lottery_name or "").strip()
+    lot = None
+    for row in get_all_lotteries(active_only=True):
+        if row.get("country") != "RD":
+            continue
+        if row["name"] == name_q or row["name"].lower() == name_q.lower():
+            lot = row
+            break
+        if name_q.lower() in row["name"].lower():
+            lot = row
+            break
+
+    if not lot:
+        return {
+            "ok": False,
+            "message": f"Lotería no encontrada: {lottery_name}",
+            "lottery": lottery_name,
+            "draw": draw_label,
+        }
+
+    draw_resolved = _resolve_draw_name_for_lottery(lot, draw_label)
+    cfg = resolve_leidsa_recommendation_config(lot["name"], lot.get("type", ""))
+    raw_cfg = LEIDSA_RECOMMENDATION_CONFIG.get(lot["name"])
+
+    result = generar_jugada_inteligente(lot["id"], draw_resolved)
+    nums = result.get("generated_numbers") or result.get("numbers") or []
+
+    return {
+        "ok": result.get("ok", False),
+        "lottery": lot["name"],
+        "draw": draw_resolved,
+        "draw_label": draw_label,
+        "recommend_count": (cfg or {}).get("count") or (raw_cfg or {}).get("recommend_count"),
+        "numbers": nums,
+        "duplicates_found": _find_duplicate_numbers(nums),
+        "history_count": result.get("history_count", result.get("total_results", 0)),
+        "allow_duplicates": (raw_cfg or {}).get("allow_duplicates", False),
+        "config": raw_cfg,
+        "warning": result.get("warning"),
+        "message": result.get("message"),
+        "score": result.get("score"),
     }

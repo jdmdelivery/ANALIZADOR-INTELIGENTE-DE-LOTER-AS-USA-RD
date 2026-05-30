@@ -1,0 +1,138 @@
+{% extends "base.html" %}
+
+{% block title %}Usuarios — Admin{% endblock %}
+
+{% block content %}
+<div class="premium-header animate-fade-in">
+    <h1 class="hero-title">👥 Administración de usuarios</h1>
+    <p class="hero-subtitle">Crear, bloquear y gestionar acceso de clientes</p>
+</div>
+
+{% with messages = get_flashed_messages(with_categories=true) %}
+{% if messages %}
+<div class="mb-4">
+    {% for category, message in messages %}
+    <div class="alert alert-{{ category }} alert-dismissible fade show" role="alert">
+        {{ message }}
+        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    </div>
+    {% endfor %}
+</div>
+{% endif %}
+{% endwith %}
+
+<div class="content-split" style="display:grid; grid-template-columns: 1fr 1.2fr; gap: 1.25rem; align-items: start;">
+    <section class="premium-section">
+        <div class="glass-panel animate-slide-up">
+            <h2 class="panel-title"><span class="title-icon">✅</span> Crear usuario</h2>
+            <form method="post" action="{{ url_for('admin_usuarios_crear') }}" class="user-admin-form">
+                <div class="mb-2">
+                    <label class="form-label">Nombre</label>
+                    <input type="text" name="nombre" class="form-control form-control-dark" required>
+                </div>
+                <div class="mb-2">
+                    <label class="form-label">Usuario</label>
+                    <input type="text" name="username" class="form-control form-control-dark" required>
+                </div>
+                <div class="mb-2">
+                    <label class="form-label">Email</label>
+                    <input type="email" name="email" class="form-control form-control-dark">
+                </div>
+                <div class="mb-2">
+                    <label class="form-label">Contraseña</label>
+                    <input type="password" name="password" class="form-control form-control-dark" required minlength="6">
+                </div>
+                <div class="mb-2">
+                    <label class="form-label">Rol</label>
+                    <select name="role" class="form-select form-control-dark">
+                        <option value="usuario">usuario</option>
+                        <option value="admin">admin</option>
+                    </select>
+                </div>
+                <div class="mb-2">
+                    <label class="form-label">Fecha vencimiento (opcional)</label>
+                    <input type="date" name="expires_at" class="form-control form-control-dark">
+                </div>
+                <div class="mb-3 form-check">
+                    <input type="checkbox" name="is_active" value="1" class="form-check-input" id="createActive" checked>
+                    <label class="form-check-label" for="createActive">Activo</label>
+                </div>
+                <button type="submit" class="btn-link-toggle w-100">✅ Crear usuario</button>
+            </form>
+        </div>
+    </section>
+
+    <section class="premium-section">
+        <div class="glass-panel animate-slide-up">
+            <h2 class="panel-title"><span class="title-icon">📋</span> Usuarios registrados</h2>
+            <div class="table-responsive">
+                <table class="table table-dark table-hover user-table mb-0">
+                    <thead>
+                        <tr>
+                            <th>Usuario</th>
+                            <th>Estado</th>
+                            <th>Vence</th>
+                            <th>Último login</th>
+                            <th>Acciones</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for u in users %}
+                        <tr>
+                            <td>
+                                <strong>{{ u.username }}</strong>
+                                {% if u.nombre %}<br><small class="text-muted">{{ u.nombre }}</small>{% endif %}
+                                {% if u.email %}<br><small>{{ u.email }}</small>{% endif %}
+                            </td>
+                            <td>
+                                <span class="user-badge user-badge-{{ u.badge_class }}">{{ u.badge_label }}</span>
+                                <br><small>{{ u.role }}</small>
+                            </td>
+                            <td>{{ u.expires_at[:10] if u.expires_at else '—' }}</td>
+                            <td><small>{{ u.last_login or 'Nunca' }}</small></td>
+                            <td class="user-actions">
+                                <details class="user-details">
+                                    <summary class="btn-link-toggle btn-sm">✏️ Editar</summary>
+                                    <form method="post" action="{{ url_for('admin_usuarios_editar', user_id=u.id) }}" class="mt-2">
+                                        <input type="text" name="nombre" value="{{ u.nombre or '' }}" placeholder="Nombre" class="form-control form-control-dark mb-1">
+                                        <input type="email" name="email" value="{{ u.email or '' }}" placeholder="Email" class="form-control form-control-dark mb-1">
+                                        <select name="role" class="form-select form-control-dark mb-1">
+                                            <option value="usuario" {% if u.role=='usuario' %}selected{% endif %}>usuario</option>
+                                            <option value="admin" {% if u.role=='admin' %}selected{% endif %}>admin</option>
+                                        </select>
+                                        <input type="date" name="expires_at" value="{{ u.expires_at[:10] if u.expires_at else '' }}" class="form-control form-control-dark mb-1">
+                                        <label class="form-check-label"><input type="checkbox" name="clear_expiry" value="1"> Sin vencimiento</label>
+                                        <button type="submit" class="btn-link-toggle btn-sm mt-1">Guardar</button>
+                                    </form>
+                                </details>
+                                <form method="post" action="{{ url_for('admin_usuarios_password', user_id=u.id) }}" class="d-inline">
+                                    <input type="password" name="password" placeholder="Nueva clave" class="form-control form-control-dark form-control-sm mb-1" minlength="6" required>
+                                    <button type="submit" class="btn-link-toggle btn-sm">🔑 Cambiar</button>
+                                </form>
+                                {% if u.is_active %}
+                                <form method="post" action="{{ url_for('admin_usuarios_bloquear', user_id=u.id) }}" class="d-inline">
+                                    <button type="submit" class="btn-link-toggle btn-sm btn-danger-outline">🚫 Bloquear</button>
+                                </form>
+                                {% else %}
+                                <form method="post" action="{{ url_for('admin_usuarios_activar', user_id=u.id) }}" class="d-inline">
+                                    <button type="submit" class="btn-link-toggle btn-sm">🟢 Activar</button>
+                                </form>
+                                {% endif %}
+                                {% if u.id != current_user.id %}
+                                <form method="post" action="{{ url_for('admin_usuarios_eliminar', user_id=u.id) }}" class="d-inline"
+                                      onsubmit="return confirm('¿Eliminar usuario {{ u.username }}?');">
+                                    <button type="submit" class="btn-link-toggle btn-sm btn-danger-outline">🗑 Eliminar</button>
+                                </form>
+                                {% endif %}
+                            </td>
+                        </tr>
+                        {% else %}
+                        <tr><td colspan="5" class="text-center text-muted">No hay usuarios.</td></tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </section>
+</div>
+{% endblock %}

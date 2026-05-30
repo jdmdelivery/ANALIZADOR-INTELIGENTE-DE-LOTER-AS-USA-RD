@@ -7,6 +7,9 @@ venv/
 .venv/
 instance/
 *.db
+data/
+debug/
+.pytest_cache/
 
 # Herramientas locales de recuperación (no necesarias en producción)
 _reconstructed/

@@ -53,6 +53,25 @@
     </div>
 </section>
 
+<!-- LEIDSA RD -->
+<section class="premium-section" id="leidsaSection" style="display:none;">
+    <div class="glass-panel animate-slide-up">
+        <div class="leidsa-header-row">
+            <h2 class="panel-title"><span class="title-icon">🇩🇴</span> LEIDSA</h2>
+            {% if current_user.is_admin() %}
+            <div class="leidsa-header-actions">
+                <button type="button" id="btnRefreshLeidsa" class="btn-link-toggle btn-refresh-now">🔄 Actualizar LEIDSA ahora</button>
+                <button type="button" id="btnRefreshLeidsaHistory" class="btn-link-toggle btn-refresh-now">📚 Actualizar historial LEIDSA</button>
+                <button type="button" id="btnRefreshRdAll" class="btn-link-toggle btn-refresh-now">🔄 Actualizar resultados RD ahora</button>
+                <button type="button" id="btnRefreshRdHistoryFull" class="btn-link-toggle btn-refresh-now">📚 Actualizar historial completo</button>
+            </div>
+            {% endif %}
+        </div>
+        <p id="leidsaRefreshStatus" class="refresh-status-msg" aria-live="polite"></p>
+        <div id="leidsaBoard" class="leidsa-board"></div>
+    </div>
+</section>
+
 <!-- CONTENIDO PRINCIPAL: resultados + análisis -->
 <div class="content-split" id="mainSplit" style="display:none;">
     <div class="content-left">
@@ -67,6 +86,12 @@
                     </div>
                     <div class="results-header-actions">
                         <span id="latestDateBadge" class="date-badge" style="display:none"></span>
+                        <div id="historyDaysFilters" class="history-days-filters" style="display:none">
+                            <button type="button" class="btn-link-toggle history-days-btn active" data-days="7">7 días</button>
+                            <button type="button" class="btn-link-toggle history-days-btn" data-days="30">30 días</button>
+                            <button type="button" class="btn-link-toggle history-days-btn" data-days="90">90 días</button>
+                            <button type="button" class="btn-link-toggle history-days-btn" data-days="365">Todo</button>
+                        </div>
                         <button type="button" id="toggleResultsMode" class="btn-link-toggle" style="display:none">Ver todos</button>
                     </div>
                 </div>
@@ -80,6 +105,12 @@
                 <h2 class="panel-title panel-title-center">
                     <span class="title-icon">🎯</span> Elige la tanda para tu análisis
                 </h2>
+                <div class="draw-select-row" id="drawSelectRow" style="display:none;">
+                    <label class="filter-label" for="selectDraw">SORTEO</label>
+                    <select id="selectDraw" class="premium-select draw-select-inline">
+                        <option value="">— Horario del sorteo —</option>
+                    </select>
+                </div>
                 <div id="drawButtons" class="tanda-buttons-grid"></div>
             </div>
         </section>
@@ -97,13 +128,15 @@
 
             <div class="analysis-content" id="analysisContent" style="display:none;">
                 <div class="analysis-header">
-                    <span class="analysis-badge">RECOMENDACIÓN PARA</span>
-                    <h3 id="predictionDraw" class="analysis-draw-name">TARDÍA</h3>
+                    <span class="analysis-badge">RECOMENDACIÓN</span>
+                    <h3 id="predictionTitle" class="analysis-draw-name">—</h3>
+                    <p id="predictionDraw" class="analysis-schedule-sub">—</p>
                     <p id="predictionSchedule" class="analysis-schedule">📌 Recomendado para: —</p>
+                    <p id="predictionBasis" class="analysis-basis">Basado en análisis histórico y tendencias recientes</p>
                 </div>
 
-                
-                <div id="predictionBalls" class="lottery-balls-hd"></div>
+                <p id="predictionWarning" class="prediction-warning" style="display:none" aria-live="polite"></p>
+                <div id="predictionBalls" class="lottery-balls-hd lottery-balls-recommend"></div>
 
                 <div class="stats-blocks">
                     <div class="stat-block stat-hot">

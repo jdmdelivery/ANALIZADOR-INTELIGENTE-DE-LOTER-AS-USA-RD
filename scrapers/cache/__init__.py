@@ -1,0 +1,1 @@
+"""Caché local resultados USA."""
