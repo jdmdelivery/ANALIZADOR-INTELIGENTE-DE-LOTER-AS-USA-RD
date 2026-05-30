@@ -287,10 +287,23 @@ def actualizar_resultados_usa_profesional(
     _record_try(sources_tried, "illinoislottery", illinois, "https://www.illinoislottery.com/results-hub")
 
     if illinois.get("ok") and _illinois_live_ok(illinois):
-        result = _normalize_success(illinois, fuente="illinoislottery", warning=bool(illinois.get("partial")))
-        result["sources_tried"] = sources_tried
-        _persist_meta(result, sources_tried)
-        return result
+        saved_il = _source_saved(illinois)
+        if saved_il or (not loteria and illinois.get("status") == "no_new"):
+            result = _normalize_success(
+                illinois,
+                fuente="illinoislottery",
+                warning=bool(illinois.get("partial")),
+            )
+            result["sources_tried"] = sources_tried
+            _persist_meta(result, sources_tried)
+            return result
+        if loteria:
+            logger.info(
+                "%s Illinois sin datos nuevos para %s; probando fallback",
+                LOG,
+                loteria,
+            )
+            errors.append(illinois.get("message") or f"Sin datos Illinois para {loteria}")
 
     if not illinois.get("ok"):
         errors.append(illinois.get("message") or "Illinois Lottery falló")
