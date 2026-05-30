@@ -104,7 +104,7 @@ def _import_lucky_day_cache() -> dict:
     }
 
 
-def _success(res: dict, *, fuente_key: str, warning: bool = False, cache: bool = False) -> dict:
+def _success(res: dict, *, fuente_key: str, warning: bool = False, cache: bool = False, sources_tried: list | None = None) -> dict:
     label = res.get("fuente_label") or SOURCE_LABELS.get(fuente_key, fuente_key)
     _log_fuente(label)
     out = {
@@ -119,6 +119,8 @@ def _success(res: dict, *, fuente_key: str, warning: bool = False, cache: bool =
         "cache": cache,
         "lottery_name": LOTTERY_NAME,
     }
+    if sources_tried is not None:
+        out["sources_tried"] = sources_tried
     if cache:
         out["mensaje"] = res.get("message") or "Mostrando resultados guardados (caché local)."
     elif warning:
@@ -152,7 +154,7 @@ def actualizar_lucky_day_lotto() -> dict:
         illinois["elapsed"] = round(time.monotonic() - t0, 2)
         _record(sources_tried, "illinoislottery", illinois, "https://www.illinoislottery.com/results-hub")
         if illinois.get("ok") and _illinois_live_ok(illinois) and _saved(illinois):
-            return _success(illinois, fuente_key="illinoislottery")
+            return _success(illinois, fuente_key="illinoislottery", sources_tried=sources_tried)
         if not illinois.get("ok"):
             errors.append(illinois.get("message") or "Illinois Lottery falló")
         else:
@@ -169,7 +171,7 @@ def actualizar_lucky_day_lotto() -> dict:
         usa = import_lotteryusa_results(LOTTERY_NAME)
         _record(sources_tried, "lotteryusa", usa)
         if usa.get("ok") and (_saved(usa) or int(usa.get("rows_parsed") or 0) > 0):
-            return _success(usa, fuente_key="lotteryusa", warning=not _illinois_live_ok(illinois))
+            return _success(usa, fuente_key="lotteryusa", warning=not _illinois_live_ok(illinois), sources_tried=sources_tried)
         if usa.get("message"):
             errors.append(usa["message"])
     except Exception as exc:
@@ -184,7 +186,7 @@ def actualizar_lucky_day_lotto() -> dict:
         iln = import_iln_luckyday_results()
         _record(sources_tried, "illinoislotterynumbers", iln)
         if iln.get("ok") and (_saved(iln) or int(iln.get("rows_parsed") or 0) > 0):
-            return _success(iln, fuente_key="illinoislotterynumbers", warning=True)
+            return _success(iln, fuente_key="illinoislotterynumbers", warning=True, sources_tried=sources_tried)
         if iln.get("message"):
             errors.append(iln["message"])
     except Exception as exc:
@@ -197,7 +199,7 @@ def actualizar_lucky_day_lotto() -> dict:
         cached = _import_lucky_day_cache()
         _record(sources_tried, "cache_json", cached)
         if cached.get("ok") and int(cached.get("saved") or 0) > 0:
-            return _success(cached, fuente_key="cache_json", cache=True)
+            return _success(cached, fuente_key="cache_json", cache=True, sources_tried=sources_tried)
     except Exception as exc:
         logger.exception("%s Lucky Day caché JSON error", LOG)
         errors.append(str(exc))
