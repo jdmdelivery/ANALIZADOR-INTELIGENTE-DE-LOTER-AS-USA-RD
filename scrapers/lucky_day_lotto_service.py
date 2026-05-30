@@ -151,7 +151,7 @@ def actualizar_lucky_day_lotto() -> dict:
         illinois = import_illinois_lottery_now(LOTTERY_NAME)
         illinois["elapsed"] = round(time.monotonic() - t0, 2)
         _record(sources_tried, "illinoislottery", illinois, "https://www.illinoislottery.com/results-hub")
-        if illinois.get("ok") and _illinois_live_ok(illinois) and (_saved(illinois) or illinois.get("status") == "no_new"):
+        if illinois.get("ok") and _illinois_live_ok(illinois) and _saved(illinois):
             return _success(illinois, fuente_key="illinoislottery")
         if not illinois.get("ok"):
             errors.append(illinois.get("message") or "Illinois Lottery falló")
