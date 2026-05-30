@@ -247,10 +247,15 @@ class LotteryUsaScraper:
         }
 
     def scrape_all(self, lottery_name: str | None = None, max_rows: int = 15) -> dict:
+        import os
+
         slugs = list(LOTTERYUSA_GAMES.keys())
         if lottery_name:
             slug = LOTTERY_NAME_TO_SLUG.get(lottery_name.lower())
             slugs = [slug] if slug else []
+        elif os.environ.get("RENDER"):
+            # Render: probar juegos clave antes de pasar a LotteryPost (1 sola URL)
+            slugs = ["powerball", "megamillions", "pick3", "pick4", "lotto", "luckyday", "cash4life"]
 
         all_rows: list[dict] = []
         errors: list[str] = []

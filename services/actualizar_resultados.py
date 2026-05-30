@@ -247,6 +247,23 @@ def actualizar_resultados_usa(
     except Exception as exc:
         logger.exception("%s USA multi-fuente error", LOG_USA)
         result = {"ok": False, "message": str(exc), "errors": [str(exc)]}
+        saved = sum(
+            count_results_for_lottery(l["id"])
+            for l in get_all_lotteries(active_only=True)
+            if l.get("country") == "USA"
+        )
+        if saved > 0:
+            result = {
+                "ok": True,
+                "status": "cached_fallback",
+                "used_db_fallback": True,
+                "saved_count": saved,
+                "imported": 0,
+                "updated": 0,
+                "message": "Mostrando resultados guardados.",
+                "mensaje": "Mostrando resultados guardados.",
+                "errors": [str(exc)],
+            }
 
     result.setdefault("pais", "US")
     result.setdefault("parser", "usa_multi")

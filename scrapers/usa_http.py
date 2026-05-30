@@ -11,8 +11,12 @@ import time
 logger = logging.getLogger(__name__)
 LOG = "[USA SCRAPER]"
 
-DEFAULT_TIMEOUT = int(os.environ.get("USA_FETCH_TIMEOUT", "35"))
-DEFAULT_RETRIES = int(os.environ.get("USA_FETCH_RETRIES", "4"))
+DEFAULT_TIMEOUT = int(os.environ.get("USA_FETCH_TIMEOUT", "20" if os.environ.get("RENDER") else "35"))
+DEFAULT_RETRIES = int(os.environ.get("USA_FETCH_RETRIES", "2" if os.environ.get("RENDER") else "4"))
+
+
+def is_render_env() -> bool:
+    return bool(os.environ.get("RENDER") or os.environ.get("RENDER_SERVICE_ID"))
 
 USA_FETCH_HEADERS = {
     "User-Agent": (
@@ -105,8 +109,10 @@ def fetch_url(
             )
 
             if status_code == 403:
-                last_error = f"HTTP 403 Forbidden (posible bloqueo Cloudflare/IP datacenter)"
+                last_error = "HTTP 403 Forbidden (posible bloqueo Cloudflare/IP datacenter)"
                 reset_usa_session()
+                if is_render_env() and attempt >= min(2, retries):
+                    break
                 time.sleep(2.0 * attempt)
                 continue
             if status_code == 429:

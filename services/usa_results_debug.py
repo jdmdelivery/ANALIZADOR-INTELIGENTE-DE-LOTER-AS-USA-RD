@@ -44,7 +44,7 @@ def _probe_illinois() -> dict:
         "error": None,
     }
     try:
-        from scrapers.usa_http import fetch_url
+        from scrapers.usa_http import fetch_url, is_render_env
         from services.resultados.illinois_scraper import parse_results_hub_html
 
         page = fetch_url(
@@ -52,6 +52,8 @@ def _probe_illinois() -> dict:
             valid_markers=("results-container",),
             source="illinoislottery",
             min_bytes=1000,
+            timeout=15 if is_render_env() else 25,
+            retries=2,
         )
         out["status_code"] = page.get("status_code")
         out["elapsed"] = page.get("elapsed") or round(time.monotonic() - t0, 2)

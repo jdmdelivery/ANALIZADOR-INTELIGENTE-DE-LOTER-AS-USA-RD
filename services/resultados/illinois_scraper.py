@@ -313,31 +313,36 @@ class IllinoisResultsHubScraper:
             page.get("message"),
         )
 
-        merged_html_parts = []
-        merged_url = RESULTS_HUB_URL
-        ok_slugs = []
-        for slug in ILLINOIS_GAME_URLS:
-            gpage = self.fetch_game_page(slug)
-            if gpage.get("ok") and gpage.get("html"):
-                merged_html_parts.append(gpage["html"])
-                ok_slugs.append(slug)
-                merged_url = gpage.get("url", merged_url)
-        if merged_html_parts:
-            combined = "\n".join(merged_html_parts)
-            logger.info(
-                "%s Illinois parser OK (fallback juegos: %s)",
-                LOG_PREFIX,
-                ", ".join(ok_slugs),
-            )
-            save_hub_cache(combined, url=merged_url, status_code=200)
-            return {
-                "ok": True,
-                "html": combined,
-                "url": merged_url,
-                "status_code": 200,
-                "from_cache": False,
-                "fallback_games": ok_slugs,
-            }
+        from scrapers.usa_http import is_render_env
+
+        if not is_render_env():
+            merged_html_parts = []
+            merged_url = RESULTS_HUB_URL
+            ok_slugs = []
+            for slug in ILLINOIS_GAME_URLS:
+                gpage = self.fetch_game_page(slug)
+                if gpage.get("ok") and gpage.get("html"):
+                    merged_html_parts.append(gpage["html"])
+                    ok_slugs.append(slug)
+                    merged_url = gpage.get("url", merged_url)
+            if merged_html_parts:
+                combined = "\n".join(merged_html_parts)
+                logger.info(
+                    "%s Illinois parser OK (fallback juegos: %s)",
+                    LOG_PREFIX,
+                    ", ".join(ok_slugs),
+                )
+                save_hub_cache(combined, url=merged_url, status_code=200)
+                return {
+                    "ok": True,
+                    "html": combined,
+                    "url": merged_url,
+                    "status_code": 200,
+                    "from_cache": False,
+                    "fallback_games": ok_slugs,
+                }
+        else:
+            logger.info("%s Render: hub falló; saltando fallback juego-a-juego", LOG_PREFIX)
 
         if allow_cache:
             cached = load_hub_cache()
