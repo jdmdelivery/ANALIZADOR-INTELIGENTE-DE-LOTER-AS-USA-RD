@@ -329,6 +329,46 @@ def _numbers_together(per_draw, top_n=5):
     return together.most_common(top_n)
 
 
+def _is_illinois_lotto(lottery: dict | None) -> bool:
+    if not lottery:
+        return False
+    if lottery.get("country") != "USA":
+        return False
+    return (lottery.get("name") or "").strip().lower() == "illinois lotto"
+
+
+def es_combinacion_valida_illinois_lotto(nums: list) -> bool:
+    """Illinois Lotto: 6 números únicos entre 1 y 50."""
+    if len(nums) != 6:
+        return False
+    seen: set[int] = set()
+    for raw in nums:
+        try:
+            v = int(str(raw).lstrip("0") or "0")
+        except (TypeError, ValueError):
+            return False
+        if v < 1 or v > 50:
+            return False
+        if v in seen:
+            return False
+        seen.add(v)
+    return True
+
+
+def _filter_draw_numbers_for_config(nums: list, config: dict) -> list:
+    lo, hi = int(config["min"]), int(config["max"])
+    pad = config.get("pad", 2)
+    out: list[str] = []
+    for raw in nums:
+        try:
+            v = int(str(raw).lstrip("0") or "0")
+        except (TypeError, ValueError):
+            continue
+        if lo <= v <= hi:
+            out.append(_normalize_number(v, pad))
+    return out
+
+
 def _resolve_analysis_config(lottery: dict) -> dict:
     """Config de rango/cantidad: LEIDSA primero, luego LOTTERY_CONFIG."""
     from services.leidsa_config import resolve_leidsa_recommendation_config
@@ -339,7 +379,10 @@ def _resolve_analysis_config(lottery: dict) -> dict:
     )
     if leidsa_cfg:
         return leidsa_cfg
-    return get_lottery_config(lottery["type"])
+    cfg = dict(get_lottery_config(lottery["type"]))
+    if _is_illinois_lotto(lottery):
+        cfg.update({"count": 6, "min": 1, "max": 50, "allow_repeat": False, "pad": 2})
+    return cfg
 
 
 def _find_duplicate_numbers(numbers: list) -> list:
@@ -545,6 +588,9 @@ def _is_recommendation_acceptable(numbers: list, config: dict, stats: dict) -> b
         if per_draw and numbers == per_draw[0][:4]:
             return False
         return True
+    if stats.get("_illinois_lotto"):
+        if not es_combinacion_valida_illinois_lotto(numbers):
+            return False
     if not _digit_game_variety(config):
         return all(_is_pickable_number(n, stats) for n in numbers)
     pickable = _pickable_digits(stats, config, strict=False)
@@ -789,6 +835,9 @@ def analizar_loteria_por_tanda(lottery_id, draw_name, max_results=None):
         }
 
     all_nums, per_draw = _extract_all_numbers(results)
+    if _is_illinois_lotto(lottery):
+        per_draw = [_filter_draw_numbers_for_config(draw, config) for draw in per_draw]
+        all_nums = [n for draw in per_draw for n in draw]
     freq = _frequency_counter(all_nums)
 
     universe = [
@@ -863,6 +912,8 @@ def analizar_loteria_por_tanda(lottery_id, draw_name, max_results=None):
         "_freq": freq,
         "_config": config,
     }
+    if _is_illinois_lotto(lottery):
+        payload["_illinois_lotto"] = True
     if lottery.get("country") == "USA":
         print(f"{USA_ANALYSIS_LOG_PREFIX} cálculo frecuencia OK")
     return payload
@@ -1267,6 +1318,17 @@ def generar_jugada_inteligente(lottery_id, draw_name):
     generated, was_regenerated = _generate_recommendation(stats, config)
     if _is_pick4_strict(config) and not es_combinacion_valida_pick4(generated):
         generated = _pick4_safe_mix(stats, config)
+        was_regenerated = True
+    if _is_illinois_lotto(lottery) and not es_combinacion_valida_illinois_lotto(generated):
+        generated, was_regenerated = _generate_recommendation(stats, config, max_attempts=12)
+        if not es_combinacion_valida_illinois_lotto(generated):
+            pad = config.get("pad", 2)
+            pool = [
+                _normalize_number(i, pad)
+                for i in range(1, 51)
+                if _normalize_number(i, pad) not in set(stats.get("last_draw_numbers") or [])
+            ]
+            generated = _fallback_unique_numbers(pool, [], 6, pad)
         was_regenerated = True
     duplicates = _reportable_duplicates(generated, config)
     warning = None

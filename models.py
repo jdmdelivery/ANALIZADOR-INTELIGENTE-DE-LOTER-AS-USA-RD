@@ -985,7 +985,7 @@ LOTTERY_CONFIG = {
     },
     "quiniela": {"count": 3, "min": 0, "max": 99, "allow_repeat": True, "pad": 2},
     "lucky_day": {"count": 5, "min": 1, "max": 45, "allow_repeat": False, "pad": 2},
-    "lotto": {"count": 6, "min": 1, "max": 52, "allow_repeat": False, "pad": 2, "bonus_min": 1, "bonus_max": 25},
+    "lotto": {"count": 6, "min": 1, "max": 50, "allow_repeat": False, "pad": 2, "bonus_min": 1, "bonus_max": 25},
     "powerball": {"count": 5, "min": 1, "max": 69, "allow_repeat": False, "pad": 2, "bonus_min": 1, "bonus_max": 26},
     "mega_millions": {"count": 5, "min": 1, "max": 70, "allow_repeat": False, "pad": 2, "bonus_min": 1, "bonus_max": 25},
 }

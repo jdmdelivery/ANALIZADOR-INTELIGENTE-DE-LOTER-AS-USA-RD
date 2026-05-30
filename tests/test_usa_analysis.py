@@ -16,11 +16,13 @@ os.environ["DATABASE_PATH"] = _test_db
 
 from analysis import (  # noqa: E402
     _fallback_unique_numbers,
+    _resolve_analysis_config,
     _sanitize_recommendation,
+    es_combinacion_valida_illinois_lotto,
     es_combinacion_valida_pick4,
     generar_jugada_inteligente,
 )
-from models import init_db, get_all_lotteries, get_draw_times  # noqa: E402
+from models import init_db, get_all_lotteries, get_draw_times, get_lottery_config  # noqa: E402
 
 
 class UsaAnalysisTests(unittest.TestCase):
@@ -104,6 +106,25 @@ class UsaAnalysisTests(unittest.TestCase):
                 dominant = Counter(nums).most_common(1)[0][0]
                 self.assertNotEqual(bonus, dominant, f"Bonus = dominante: {nums} + {bonus}")
             self.assertEqual(result.get("duplicates_found"), [])
+
+    def test_illinois_lotto_config_max_50(self):
+        cfg = get_lottery_config("lotto")
+        self.assertEqual(cfg["max"], 50)
+        self.assertEqual(cfg["count"], 6)
+
+    def test_es_combinacion_valida_illinois_lotto(self):
+        self.assertFalse(es_combinacion_valida_illinois_lotto(["12", "52", "49", "19", "50", "44"]))
+        self.assertFalse(es_combinacion_valida_illinois_lotto(["51", "02", "03", "04", "05", "06"]))
+        self.assertFalse(es_combinacion_valida_illinois_lotto(["01", "02", "03", "04", "05"]))
+        self.assertTrue(es_combinacion_valida_illinois_lotto(["12", "49", "19", "50", "44", "01"]))
+
+    def test_illinois_lotto_resolve_config(self):
+        lot = {"name": "Illinois Lotto", "country": "USA", "type": "lotto"}
+        cfg = _resolve_analysis_config(lot)
+        self.assertEqual(cfg["max"], 50)
+        self.assertEqual(cfg["count"], 6)
+        pb = {"name": "Powerball", "country": "USA", "type": "powerball"}
+        self.assertEqual(_resolve_analysis_config(pb)["max"], 69)
 
 
 if __name__ == "__main__":
