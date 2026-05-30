@@ -8,12 +8,12 @@ import logging
 
 from models import count_results_for_lottery, get_all_lotteries, get_max_draw_date
 from services.lottery_normalize import find_lottery_in_list
-from services.rd_lottery_config import get_rd_lottery_config
 
 logger = logging.getLogger(__name__)
 
 LOG_RD = "[RD]"
 LOG_USA = "[USA]"
+ALT_RD_MSG = "No se pudo actualizar desde una fuente, se usó fuente alternativa."
 
 
 def es_pais_do(pais: str) -> bool:
@@ -90,26 +90,17 @@ def actualizar_resultados_rd(
     refresh_all: bool = False,
 ) -> dict:
     """
-    Solo scrapers RD: LEIDSA (parser leidsa) y Conectate.
-    Sin Illinois Results Hub.
+    RD multi-fuente: Conectate → LD → LotDom → EnLoteria → caché BD.
+    LEIDSA mantiene scraper oficial + mismos fallbacks.
     """
     days = int(days or 30)
     logger.info("%s Actualizando resultados RD — lotería=%s", LOG_RD, loteria or "TODAS")
 
-    if refresh_all or not loteria:
-        from services.history_fetch import fetch_all_rd_history
+    from services.rd_results_service import actualizar_rd_loteria, actualizar_rd_todas
 
-        logger.info("%s Historial completo RD (%s días)", LOG_RD, days)
-        out = fetch_all_rd_history(days=days)
-        out["pais"] = "DO"
-        if not out.get("ok"):
-            fb = _rd_respuesta_cache()
-            if fb:
-                fb["message"] = (
-                    "⚠️ Actualización parcial; se mantienen resultados guardados en BD."
-                )
-                return fb
-        return out
+    if refresh_all or not loteria:
+        logger.info("%s Historial completo RD (%s días) — multi-fuente", LOG_RD, days)
+        return actualizar_rd_todas(days=days)
 
     lot = _find_rd_lottery(loteria)
     if not lot:
@@ -119,81 +110,19 @@ def actualizar_resultados_rd(
             "message": f"Lotería RD no encontrada: {loteria}",
         }
 
-    lot_type = (lot.get("type") or "").lower()
-    cfg = get_rd_lottery_config(lot["name"])
-    es_leidsa = (
-        lot_type.startswith("leidsa_")
-        or (cfg and cfg.get("source") == "leidsa")
-        or "leidsa" in (loteria or "").lower()
-    )
+    result = actualizar_rd_loteria(lot["name"], days=days)
+    if result.get("ok"):
+        return _finalize_rd_scrape(lot, result, days)
 
-    try:
-        if es_leidsa:
-            logger.info("%s Actualizando LEIDSA", LOG_RD)
-            from services.leidsa_service import update_leidsa_now
-
-            scrape = update_leidsa_now()
-            parser = scrape.get("parser") or "leidsa"
-            found = scrape.get("results_found") or scrape.get("games") or 0
-            if isinstance(found, list):
-                found = len(found)
-            logger.info("%s Parser usado: %s", LOG_RD, parser)
-            logger.info("%s Resultados encontrados: %s", LOG_RD, found)
-
-            scrape["pais"] = "DO"
-            scrape["parser"] = parser
-            if scrape.get("ok"):
-                return scrape
-
-            fb = _rd_respuesta_cache(lot, parser="leidsa")
-            if fb:
-                logger.info("%s LEIDSA en vivo falló; BD tiene %s registros", LOG_RD, fb["saved_count"])
-                return fb
-            return scrape
-
-        from services.history_fetch import fetch_history_for_source
-        from services.new_lotteries import is_new_rd_lottery
-
-        if is_new_rd_lottery(lot):
-            from scrapers.conectate_rd import import_conectate_lottery_bulk_style
-
-            logger.info("%s Conectate (nueva) — %s", LOG_RD, lot["name"])
-            scrape = import_conectate_lottery_bulk_style(lot["name"], days_back=days)
-        else:
-            logger.info("%s Conectate — %s", LOG_RD, lot["name"])
-            scrape = fetch_history_for_source(
-                "conectate", days=days, lottery_name=lot["name"]
-            )
-
-        scrape["pais"] = "DO"
-        scrape["parser"] = scrape.get("parser") or "conectate"
-
-        if scrape.get("ok"):
-            logger.info(
-                "%s Parser usado: %s — importados=%s",
-                LOG_RD,
-                scrape["parser"],
-                scrape.get("imported", scrape.get("inserted", 0)),
-            )
-            return _finalize_rd_scrape(lot, scrape, days)
-
-        fb = _rd_respuesta_cache(lot, parser="conectate")
-        if fb:
-            return fb
-        return scrape
-
-    except Exception as exc:
-        logger.exception("%s Error actualizando %s", LOG_RD, loteria)
-        fb = _rd_respuesta_cache(lot)
-        if fb:
-            fb["errors"] = [str(exc)]
-            return fb
-        return {
-            "ok": False,
-            "pais": "DO",
-            "message": f"Error temporal en {loteria}: {exc}",
-            "errors": [str(exc)],
-        }
+    fb = _rd_respuesta_cache(lot, parser=result.get("parser") or "rd_multi")
+    if fb:
+        fb["sources_tried"] = result.get("sources_tried", [])
+        fb["errors"] = result.get("errors", [])
+        fb["mensaje"] = ALT_RD_MSG + " Se mantienen resultados guardados."
+        fb["message"] = fb["mensaje"]
+        fb["warning"] = True
+        return fb
+    return result
 
 
 def _finalize_rd_scrape(lot: dict, scrape: dict, days: int) -> dict:
@@ -204,6 +133,7 @@ def _finalize_rd_scrape(lot: dict, scrape: dict, days: int) -> dict:
     saved = imported + updated
 
     base = {
+        **{k: v for k, v in scrape.items() if k not in ("message", "mensaje")},
         "ok": True,
         "pais": "DO",
         "lottery_id": lottery_id,
@@ -213,15 +143,21 @@ def _finalize_rd_scrape(lot: dict, scrape: dict, days: int) -> dict:
         "latest_date": latest_date,
         "parser": scrape.get("parser"),
         "errors": scrape.get("errors", []),
+        "fuente_usada": scrape.get("fuente_usada") or scrape.get("fuente_label"),
+        "sources_tried": scrape.get("sources_tried", []),
+        "warning": scrape.get("warning", False),
     }
 
     if saved == 0:
         base["status"] = "no_new"
-        base["message"] = scrape.get("message") or "No hay resultados nuevos en el rango"
+        base["message"] = scrape.get("mensaje") or scrape.get("message") or "No hay resultados nuevos en el rango"
     else:
         base["status"] = "updated"
-        base["message"] = scrape.get("message") or f"✅ RD actualizado ({saved} registros)."
-
+        if scrape.get("warning"):
+            base["message"] = ALT_RD_MSG
+        else:
+            base["message"] = scrape.get("mensaje") or scrape.get("message") or f"✅ RD actualizado ({saved} registros)."
+    base["mensaje"] = base["message"]
     return base
 
 

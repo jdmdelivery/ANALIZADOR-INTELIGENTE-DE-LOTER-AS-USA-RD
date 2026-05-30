@@ -106,10 +106,12 @@ LOTTERY_CONFIG: dict[str, dict] = {
         "draws": ["2:30 PM", "6:00 PM", "9:00 PM"],
         "draw_map": {"tarde": "2:30 PM", "tardía": "6:00 PM", "noche": "9:00 PM"},
         "enabled": True,
+        "fallback_conectate_path": "/loterias/nacional/quiniela",
+        "fallback_ld_path": "/loteria-nacional",
         "conectate_pages": [
             {"path": "/loterias/nacional/quiniela", "draw_name": "tarde", "draw_time": "14:30"},
         ],
-        "logo_keys": ["loteria-nacional"],
+        "logo_keys": ["loteria-nacional", "gana-mas-loteria-nacional", "juega-mas-pega-mas-loteria-nacional"],
     },
     "New York": {
         "source": "conectate",
@@ -129,6 +131,8 @@ LOTTERY_CONFIG: dict[str, dict] = {
         "draws": ["12:55 PM", "8:00 PM"],
         "draw_map": {"tarde": "12:55 PM", "noche": "8:00 PM"},
         "enabled": True,
+        "fallback_conectate_path": "/loterias/loto-real",
+        "fallback_ld_path": "/loto-real",
         "conectate_pages": [
             {"path": "/loterias/loto-real/quiniela", "draw_name": "tarde", "draw_time": "12:55"},
         ],
@@ -204,13 +208,20 @@ _LOGO_MAIN_EXPLICIT: dict[str, tuple[str, str]] = {
     "quiniela-la-suerte": ("Suerte Dominicana", "tarde"),
     "la-primera-dia": ("La Primera", "mañana"),
     "la-primera-noche": ("La Primera", "noche"),
-    "quiniela-loteka": ("Loteka", "noche"),
+    "quiniela-loteka": ("Loteka", "tarde"),
+    "mega-chances-loteka": ("Loteka", "noche"),
     "quiniela-lotedom": ("Lotedom", "tarde"),
+    "el-quemaito-mayor-lotedom": ("Lotedom", "tarde"),
     "gana-mas-loteria-nacional": ("Gana Más", "tarde"),
     "loteria-nacional": ("Lotería Nacional", "tarde"),
+    "juega-mas-pega-mas-loteria-nacional": ("Lotería Nacional", "tardía"),
     "quiniela-real": ("Lotería Real", "tarde"),
-    "loto-real": ("Lotería Real", "tarde"),
+    "loto-real": ("Lotería Real", "noche"),
     "quiniela-leidsa": ("Leidsa", "noche"),
+    "loto-leidsa": ("Leidsa", "noche"),
+    "loto-pool-leidsa": ("Leidsa", "noche"),
+    "pega-3-mas-leidsa": ("Leidsa", "noche"),
+    "super-kino-leidsa": ("Leidsa", "noche"),
 }
 
 
