@@ -16,7 +16,12 @@ LOG = "[USA SCRAPER]"
 FALLBACK_LABELS = {
     "lotteryusa": "LotteryUSA",
     "lotterypost": "LotteryPost",
+    "illinoislotterynumbers": "IllinoisLotteryNumbers",
 }
+
+
+def _is_lucky_day_lotto_request(loteria: str | None) -> bool:
+    return (loteria or "").strip().lower() == "lucky day lotto"
 
 
 def _count_usa_saved(lottery_name: str | None = None, state: str = "Illinois") -> int:
@@ -281,6 +286,28 @@ def actualizar_resultados_usa_profesional(
     errors: list[str] = []
     sources_tried: list[dict] = []
     logger.info("%s === Inicio actualización USA | lotería=%s ===", LOG, loteria or "TODAS")
+
+    if _is_lucky_day_lotto_request(loteria):
+        from scrapers.lucky_day_lotto_service import actualizar_lucky_day_lotto
+
+        result = actualizar_lucky_day_lotto()
+        from scrapers.cache.usa_meta import save_last_run
+
+        try:
+            save_last_run(
+                fuente=result.get("fuente", "lucky_day"),
+                status=result.get("status") or ("ok" if result.get("ok") else "error"),
+                cantidad_resultados=int(result.get("rows_parsed") or result.get("saved_count") or _count_usa_saved(loteria, state)),
+                imported=int(result.get("imported") or 0),
+                updated=int(result.get("updated") or 0),
+                sources_tried=result.get("sources_tried", []),
+                url=result.get("url") or "",
+                warning=bool(result.get("warning")),
+                cache_used=bool(result.get("cache")),
+            )
+        except Exception as exc:
+            logger.warning("%s meta Lucky Day: %s", LOG, exc)
+        return result
 
     # 1 — Illinois Lottery (oficial)
     illinois = _run_illinois(loteria, refresh_all)
