@@ -1,0 +1,222 @@
+
+L102 c:\Users\thene\OneDrive\Desktop\analizador inteligente de loteria USA Y RD\importers.py
+class WebScraperImporter:
+    """Importador para páginas oficiales: Conectate RD e Illinois Lottery."""
+
+    SOURCES = {
+        "illinois_lottery": "https://www.illinoislottery.com/",
+        "conectate_rd": "https://www.conectate.com.do/",
+    }
+
+    def __init__(self, source_key):
+        self.source_key = source_key
+        self.base_url = self.SOURCES.get(source_key, "")
+
+    def fetch_page(self, path=""):
+        if self.source_key == "conectate_rd":
+            from scrapers.conectate_rd import ConectateRDScraper
+            return ConectateRDScraper().fetch_page(path)
+        if self.source_key == "illinois_lottery":
+            from scrapers.illinois_lottery import IllinoisLotteryScraper
+            return IllinoisLotteryScraper().fetch_page(path)
+        if not self.base_url:
+            return {"ok": False, "message": "Fuente no configurada"}
+        url = self.base_url.rstrip("/") + "/" + path.lstrip("/")
+        try:
+            resp = requests.get(
+                url,
+                timeout=15,
+                headers={"User-Agent": "LotteryAnalyzer/1.0 (statistical analysis tool)"},
+            )
+            resp.raise_for_status()
+            return {"ok": True, "html": resp.text, "url": url}
+        except requests.RequestException as e:
+            return {"ok": False, "message": f"Error al obtener página: {str(e)}"}
+
+    def test_connection(self):
+        if self.source_key == "conectate_rd":
+            page = self.fetch_page("/loterias/")
+            if page.get("ok"):
+                return {
+                    "ok": True,
+                    "message": "Conexión exitosa con Conectate.com.do (RD).",
+                    "url": page["url"],
+                }
+            return page
+        if self.source_key == "illinois_lottery":
+            from scrapers.illinois_lottery import IllinoisLotteryScraper
+            return IllinoisLotteryScraper().test_connection()
+        return {"ok": False, "message": "Fuente no configurada"}
+
+    def import_all(self, days_back=60, max_pages=5):
+        if self.source_key == "conectate_rd":
+            from scrapers.conectate_rd import import_conectate_rd
+            return import_conectate_rd(days_back=days_back)
+        if self.source_key == "illinois_lottery":
+            from scrapers.illinois_lottery import import_illinois_lottery
+            return import_illinois_lottery(max_pages=max_pages)
+        return {"ok": False, "message": "Fuente no configurada para importación automática"}
+
+    def parse_and_import(self, lottery_id=None, draw_name=None, html_content=None):
+        return self.import_all()
+
+L103 c:\Users\thene\OneDrive\Desktop\analizador inteligente de loteria USA Y RD\templates\admin.html
+                        <div class="card-body">
+                            <h4>Scraper / Importador web</h4>
+                            <p class="text-muted">
+                                Fuentes: <a href="https://www.conectate.com.do/loterias/" target="_blank" rel="noopener">Conectate RD</a>
+                                · <a href="https://www.illinoislottery.com/" target="_blank" rel="noopener">Illinois Lottery</a>
+                            </p>
+                            <form method="POST" action="{{ url_for('admin_scraper_test') }}" class="mb-3">
+                                <select name="source_key" class="form-select mb-2">
+                                    <option value="conectate_rd">Conectate RD — República Dominicana</option>
+                                    <option value="illinois_lottery">Illinois Lottery — USA</option>
+                                </select>
+                                <button type="submit" class="btn btn-outline-warning w-100">Probar conexión</button>
+                            </form>
+                            <form method="POST" action="{{ url_for('admin_scraper_import') }}">
+                                <select name="source_key" class="form-select mb-2">
+                                    <option value="conectate_rd">Importar desde Conectate RD</option>
+                                    <option value="illinois_lottery">Importar desde Illinois Lottery</option>
+                                </select>
+                                <div class="row g-2 mb-2">
+                                    <div class="col-6">
+                                        <label class="form-label small">Días atrás (RD)</label>
+                                        <input type="number" name="days_back" class="form-control" value="60" min="7" max="365">
+                                    </div>
+                                    <div class="col-6">
+                                        <label class="form-label small">Páginas (USA)</label>
+                                        <input type="number" name="max_pages" class="form-control" value="5" min="1" max="20">
+                                    </div>
+                                </div>
+                                <button type="submit" class="btn btn-gold w-100">Importar resultados reales</button>
+                            </form>
+                            <p class="text-muted small mt-3 mb-0">
+                                Los resultados importados quedan sin confirmar hasta que los revise en la pestaña Resultados.
+                            </p>
+                        </div>
+
+L193 c:\Users\thene\OneDrive\Desktop\analizador inteligente de loteria USA Y RD\importers.py
+        if self.source_key == "illinois_lottery":
+            from services.resultados.illinois_scraper import IllinoisResultsHubScraper
+            return IllinoisResultsHubScraper().fetch_results_hub()
+
+L193 c:\Users\thene\OneDrive\Desktop\analizador inteligente de loteria USA Y RD\importers.py
+        if self.source_key == "illinois_lottery":
+            from services.resultados.illinois_scraper import IllinoisResultsHubScraper
+            return IllinoisResultsHubScraper().test_connection()
+
+L193 c:\Users\thene\OneDrive\Desktop\analizador inteligente de loteria USA Y RD\importers.py
+        if self.source_key == "illinois_lottery":
+            from services.resultados.illinois_scraper import import_illinois_results_hub
+            return import_illinois_results_hub()
+
+L193 c:\Users\thene\OneDrive\Desktop\analizador inteligente de loteria USA Y RD\importers.py
+    SOURCES = {
+        "illinois_lottery": "https://www.illinoislottery.com/results-hub",
+        "conectate_rd": "https://www.conectate.com.do/",
+    }
+
+L201 c:\Users\thene\OneDrive\Desktop\analizador inteligente de loteria USA Y RD\seed.py
+    {"country": "USA", "state": "Illinois", "name": "Lucky Day Lotto", "type": "lucky_day",
+     "draws": [("Midday", "12:40"), ("Evening", "21:22")]},
+
+L204 c:\Users\thene\OneDrive\Desktop\analizador inteligente de loteria USA Y RD\templates\admin.html
+                                Fuentes: <a href="https://www.conectate.com.do/loterias/" target="_blank" rel="noopener">Conectate RD</a> (solo RD)
+                                · <a href="https://www.illinoislottery.com/results-hub" target="_blank" rel="noopener">Illinois Results Hub</a> (solo USA)
+
+L204 c:\Users\thene\OneDrive\Desktop\analizador inteligente de loteria USA Y RD\templates\admin.html
+                                    <option value="illinois_lottery">Illinois Results Hub — USA / Illinois</option>
+
+L207 c:\Users\thene\OneDrive\Desktop\analizador inteligente de loteria USA Y RD\templates\admin.html
+                                    <option value="illinois_lottery">Importar desde Illinois Results Hub</option>
+
+L212 c:\Users\thene\OneDrive\Desktop\analizador inteligente de loteria USA Y RD\services\resultados\illinois_scraper.py
+            rows.append({
+                "country": "USA",
+                "state": "Illinois",
+                "game_name": game_cfg["game_name"],
+                "lottery_name": game_cfg["lottery_name"],
+                "draw_name": draw_name,
+                "draw_date": draw_date,
+                "draw_time": "",
+                "main_numbers": main_numbers,
+                "bonus_numbers": bonus_numbers,
+                "bonus_label": bonus_label,
+                "source_url": RESULTS_HUB_URL,
+            })
+
+            print("Juego detectado:", game_cfg["game_name"])
+            print("Fecha:", draw_date)
+            print("Draw:", draw_name)
+            print("Números principales:", main_numbers)
+            if bonus_numbers:
+                print("Bonus:", bonus_numbers, f"({bonus_label})")
+            else:
+                print("Bonus: —")
+
+    return rows
+
+L212 c:\Users\thene\OneDrive\Desktop\analizador inteligente de loteria USA Y RD\services\resultados\illinois_scraper.py
+def import_illinois_results_hub():
+    """Importa/actualiza resultados desde results-hub oficial."""
+    print("Illinois Results Hub — iniciando importación")
+    print("Fuente:", RESULTS_HUB_URL)
+    scraper = IllinoisResultsHubScraper()
+    rows = scraper.scrape_all()
+    if not rows and not scraper.fetch_results_hub().get("ok"):
+        print("Illinois Results Hub import FAILED — sin conexión")
+        return {
+            "ok": False,
+            "message": "No se pudo conectar con Illinois Results Hub.",
+            "imported": 0,
+            "updated": 0,
+        }
+
+    lotteries = get_all_lotteries()
+    imported = 0
+    updated = 0
+    errors = []
+
+    for row in rows:
+        lottery_id = _find_lottery_id(lotteries, row["lottery_name"])
+        if not lottery_id:
+            errors.append(f"Lotería no registrada: {row['lottery_name']}")
+            continue
+        try:
+            bonus_single = row["bonus_numbers"][0] if row["bonus_numbers"] else None
+            fireball = bonus_single if row.get("bonus_label") == "Fireball" else None
+            bonus_num = bonus_single if row.get("bonus_label") != "Fireball" else None
+
+            _, action = upsert_result(
+                lottery_id,
+                row["draw_name"],
+                row.get("draw_time", ""),
+                row["draw_date"],
+                format_numbers(row["main_numbers"]),
+                bonus_number=bonus_num,
+                fireball_number=fireball,
+                source_url=row["source_url"],
+                confirmed=1,
+                main_numbers=format_numbers(row["main_numbers"]),
+                bonus_numbers=format_numbers(row["bonus_numbers"]) if row["bonus_numbers"] else None,
+                bonus_label=row.get("bonus_label"),
+                game_name=row.get("game_name"),
+            )
+            if action == "updated":
+                updated += 1
+                print(f"  → UPDATE {row['lottery_name']} | {row['draw_date']} | {row['draw_name']}")
+            else:
+                imported += 1
+                print(f"  → INSERT {row['lottery_name']} | {row['draw_date']} | {row['draw_name']}")
+        except Exception as e:
+            errors.append(f"{row['lottery_name']} {row['draw_date']}: {e}")
+
+    print(f"Illinois Results Hub import OK — {imported} nuevos, {updated} actualizados")
+    return {
+
+L217 c:\Users\thene\OneDrive\Desktop\analizador inteligente de loteria USA Y RD\_verify_illinois.py
+if "conectate.com.do" not in open("services/resultados/illinois_scraper.py", encoding="utf-8").read():
+    ok("illinois_scraper.py no usa Conectate")
+else:
+    bad("illinois_scraper importa Conectate")

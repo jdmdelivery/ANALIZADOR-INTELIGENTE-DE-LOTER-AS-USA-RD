@@ -1,0 +1,564 @@
+
+======================================================================
+LINE 229 Write
+c:\Users\thene\OneDrive\Desktop\analizador inteligente de loteria USA Y RD\_debug_anguila_hist.py
+======================================================================
+import re
+import requests
+
+HEADERS = {"User-Agent": "Mozilla/5.0"}
+
+# Individual draw page - multiple sessions?
+for path in ["/loterias/anguilla/anguila-10-am", "/loterias/anguilla/anguila-6-pm"]:
+    r = requests.get(f"https://www.conectate.com.do{path}", headers=HEADERS, timeout=20)
+    html = r.text
+    blocks = list(re.finditer(r"game-block", html))
+    print("===", path, "blocks:", len(blocks), "===")
+    for i, m in enumerate(blocks[:10]):
+        start = m.start()
+        end = blocks[i + 1].start() if i + 1 < len(blocks) else start + 800
+        chunk = html[start:end]
+        date = re.search(r'session-date[^>]*>\s*([^<]+)', chunk)
+        nums = re.findall(r'class="score[^"]*"[^>]*>\s*(\d{1,2})\s*<', chunk)
+        if nums:
+            print(" ", date.group(1).strip() if date else "?", nums[:3])
+
+# Main page - scan all anguila blocks with ALL occurrences of label
+r2 = requests.get(
+    "https://www.conectate.com.do/loterias/",
+    params={"date": "24-05-2026"},
+    headers=HEADERS,
+    timeout=20,
+)
+html2 = r2.text
+print("\n=== Main page ALL Anguila 10:00 AM occurrences ===")
+label = "Anguila 10:00 AM"
+pos = 0
+while True:
+    idx = html2.find(label, pos)
+    if idx == -1:
+        break
+    start = html2.rfind("game-block", 0, idx)
+    end = html2.find("game-block", idx + 1)
+    chunk = html2[start : end if end > 0 else idx + 900]
+    date = re.search(r'session-date[^>]*>\s*([^<]+)', chunk)
+    nums = re.findall(r'class="score[^"]*"[^>]*>\s*(\d{1,2})\s*<', chunk)
+    print(" at", idx, "date", date.group(1).strip() if date else "?", "nums", nums[:3])
+    pos = idx + len(label)
+
+======================================================================
+LINE 230 Write
+c:\Users\thene\OneDrive\Desktop\analizador inteligente de loteria USA Y RD\_debug_anguila_hist.py
+======================================================================
+import re
+import requests
+
+HEADERS = {"User-Agent": "Mozilla/5.0"}
+paths = {
+    "10-am": "mañana",
+    "1-pm": "tarde",
+    "6-pm": "tardía",
+    "9-pm": "noche",
+}
+for slug in paths:
+    url = f"https://www.conectate.com.do/loterias/anguilla/anguila-{slug}"
+    r = requests.get(url, headers=HEADERS, timeout=20)
+    blocks = list(re.finditer(r"game-block", r.text))
+    print(f"\n=== anguila-{slug} status={r.status_code} blocks={len(blocks)} ===")
+    for i, m in enumerate(blocks[:6]):
+        start = m.start()
+        end = blocks[i + 1].start() if i + 1 < len(blocks) else start + 800
+        chunk = r.text[start:end]
+        date = re.search(r'session-date[^>]*>\s*([^<]+)', chunk)
+        nums = re.findall(r'class="score[^"]*"[^>]*>\s*(\d{1,2})\s*<', chunk)
+        if len(nums) == 3:
+            print(f"  {date.group(1).strip() if date else '?'} -> {nums}")
+
+======================================================================
+LINE 232 StrReplace
+c:\Users\thene\OneDrive\Desktop\analizador inteligente de loteria USA Y RD\_debug_anguila_hist.py
+======================================================================
+--- OLD ---
+import re
+import requests
+
+HEADERS = {"User-Agent": "Mozilla/5.0"}
+paths = {
+    "10-am": "mañana",
+    "1-pm": "tarde",
+    "6-pm": "tardía",
+    "9-pm": "noche",
+}
+for slug in paths:
+    url = f"https://www.conectate.com.do/loterias/anguilla/anguila-{slug}"
+    r = requests.get(url, headers=HEADERS, timeout=20)
+    blocks = list(re.finditer(r"game-block", r.text))
+    print(f"\n=== anguila-{slug} status={r.status_code} blocks={len(blocks)} ===")
+    for i, m in enumerate(blocks[:6]):
+        start = m.start()
+        end = blocks[i + 1].start() if i + 1 < len(blocks) else start + 800
+        chunk = r.text[start:end]
+        date = re.search(r'session-date[^>]*>\s*([^<]+)', chunk)
+        nums = re.findall(r'class="score[^"]*"[^>]*>\s*(\d{1,2})\s*<', chunk)
+        if len(nums) == 3:
+            print(f"  {date.group(1).strip() if date else '?'} -> {nums}")
+
+--- NEW ---
+import re
+import requests
+
+HEADERS = {"User-Agent": "Mozilla/5.0"}
+
+r = requests.get(
+    "https://www.conectate.com.do/loterias/",
+    params={"date": "24-05-2026"},
+    headers=HEADERS,
+    timeout=20,
+)
+links = re.findall(r'href="(/loterias/anguilla/[^"]+)"', r.text)
+print("Anguila links:", sorted(set(links)))
+
+for path in sorted(set(links)):
+    url = "https://www.conectate.com.do" + path
+    resp = requests.get(url, headers=HEADERS, timeout=20)
+    blocks = list(re.finditer(r"game-block", resp.text))
+    print(f"\n{path} status={resp.status_code} blocks={len(blocks)}")
+    for i, m in enumerate(blocks[:4]):
+        start = m.start()
+        end = blocks[i + 1].start() if i + 1 < len(blocks) else start + 800
+        chunk = resp.text[start:end]
+        date = re.search(r'session-date[^>]*>\s*([^<]+)', chunk)
+        nums = re.findall(r'class="score[^"]*"[^>]*>\s*(\d{1,2})\s*<', chunk)
+        if len(nums) == 3:
+            print(f"  {date.group(1).strip() if date else '?'} -> {nums}")
+
+======================================================================
+LINE 233 StrReplace
+c:\Users\thene\OneDrive\Desktop\analizador inteligente de loteria USA Y RD\scrapers\conectate_rd.py
+======================================================================
+--- OLD ---
+# Anguila: buscar bloque por texto exacto (NO logos ni índices)
+ANGUILA_BLOCKS = [
+--- NEW ---
+# Anguila: páginas con historial visible por tanda
+ANGUILA_DRAW_PAGES = [
+    {"path": "/loterias/anguilla/anguila-10-am", "draw_name": "mañana", "draw_time": "10:00", "time_display": "10:00 AM"},
+    {"path": "/loterias/anguilla/anguila-12-pm", "draw_name": "tarde", "draw_time": "13:00", "time_display": "1:00 PM"},
+    {"path": "/loterias/anguilla/anguila-5-pm", "draw_name": "tardía", "draw_time": "18:00", "time_display": "6:00 PM"},
+    {"path": "/loterias/anguilla/anguila-9-pm", "draw_name": "noche", "draw_time": "21:00", "time_display": "9:00 PM"},
+]
+
+# Bloques por texto en portada /loterias/?date=DD-MM-YYYY
+ANGUILA_BLOCKS = [
+======================================================================
+LINE 233 StrReplace
+c:\Users\thene\OneDrive\Desktop\analizador inteligente de loteria USA Y RD\scrapers\conectate_rd.py
+======================================================================
+--- OLD ---
+def parse_anguila_blocks(html, year_hint, source_url, page_date=None):
+--- NEW ---
+def parse_anguila_history_page(html, cfg, year_hint, source_url):
+    """Lee TODOS los game-block visibles en la página de una tanda (historial)."""
+    results = []
+    blocks = list(re.finditer(r'<motion></motion></motion></motion></div>', html))
+======================================================================
+LINE 235 StrReplace
+c:\Users\thene\OneDrive\Desktop\analizador inteligente de loteria USA Y RD\scrapers\conectate_rd.py
+======================================================================
+--- OLD ---
+def parse_anguila_history_page(html, cfg, year_hint, source_url):
+    """Lee TODOS los game-block visibles en la página de una tanda (historial)."""
+    results = []
+    blocks = list(re.finditer(r'<motion></motion></motion></motion></motion></motion></div>', html))
+    """
+    Parsea resultados de Anguila buscando bloques por texto:
+    'Anguila 10:00 AM', 'Anguila 1:00 PM', etc.
+    Solo guarda si encuentra exactamente 3 números.
+    """
+    print("SCRAPER ANGUILA")
+    results = []
+
+    for cfg in ANGUILA_BLOCKS:
+        label = cfg["block_text"]
+        chunk = _extract_block_chunk(html, label)
+        if not chunk:
+            print(f"Bloque no encontrado: {label}")
+            continue
+
+        numbers = _extract_three_numbers(chunk)
+        if not numbers:
+            print(f"Resultado aún no disponible — {label} (no hay 3 números)")
+            continue
+
+        date_m = re.search(r'class="session-date[^"]*"[^>]*>\s*([^<]+)', chunk)
+        if page_date:
+            draw_date = page_date
+        else:
+            draw_date = _normalize_date(date_m.group(1).strip() if date_m else "", year_hint)
+        if not draw_date:
+            print(f"Fecha no detectada para bloque: {label}")
+            continue
+
+        print("Fecha detectada:", draw_date)
+        print("Bloque:", label)
+        print("Hora:", cfg["time_display"])
+        print("Draw:", cfg["draw_name"])
+        print("Números:", numbers)
+
+        results.append({
+            "lottery_name": "Anguila",
+            "draw_name": cfg["draw_name"],
+            "draw_time": cfg["draw_time"],
+            "time_display": cfg["time_display"],
+            "draw_date": draw_date,
+            "numbers": numbers,
+            "source_url": source_url,
+        })
+
+    return results
+
+--- NEW ---
+def parse_anguila_history_page(html, cfg, year_hint, source_url):
+    """Lee TODOS los game-block visibles en la página de una tanda (historial)."""
+    results = []
+    blocks = list(re.finditer(r'<div class="game-block[^"]*"', html))
+    for i, m in enumerate(blocks):
+        start = m.start()
+        end = blocks[i + 1].start() if i + 1 < len(blocks) else start + 1500
+        chunk = html[start:end]
+        numbers = _extract_three_numbers(chunk)
+        if not numbers:
+            continue
+        date_m = re.search(r'class="session-date[^"]*"[^>]*>\s*([^<]+)', chunk)
+        draw_date = _normalize_date(date_m.group(1).strip() if date_m else "", year_hint)
+        if not draw_date:
+            continue
+        row = {
+            "lottery_name": "Anguila",
+            "draw_name": cfg["draw_name"],
+            "draw_time": cfg["draw_time"],
+            "time_display": cfg["time_display"],
+            "draw_date": draw_date,
+            "numbers": numbers,
+            "source_url": source_url,
+        }
+        print("Guardando:", draw_date, cfg["draw_name"], cfg["time_display"], numbers)
+        results.append(row)
+    return results
+
+
+def parse_anguila_blocks(html, year_hint, source_url, page_date=None):
+    """
+    Parsea resultados de Anguila en portada buscando bloques por texto:
+    'Anguila 10:00 AM', 'Anguila 1:00 PM', etc.
+    Usa page_date como fecha principal cuando se navega por ?date=
+    """
+    results = []
+
+    for cfg in ANGUILA_BLOCKS:
+        label = cfg["block_text"]
+        chunk = _extract_block_chunk(html, label)
+        if not chunk:
+            continue
+
+        numbers = _extract_three_numbers(chunk)
+        if not numbers:
+            print(f"Resultado aún no disponible — {label} (no hay 3 números)")
+            continue
+
+        date_m = re.search(r'class="session-date[^"]*"[^>]*>\s*([^<]+)', chunk)
+        if page_date:
+            draw_date = page_date
+        else:
+            draw_date = _normalize_date(date_m.group(1).strip() if date_m else "", year_hint)
+        if not draw_date:
+            continue
+
+        row = {
+            "lottery_name": "Anguila",
+            "draw_name": cfg["draw_name"],
+            "draw_time": cfg["draw_time"],
+            "time_display": cfg["time_display"],
+            "draw_date": draw_date,
+            "numbers": numbers,
+            "source_url": source_url,
+        }
+        print("Guardando:", draw_date, cfg["draw_name"], cfg["time_display"], numbers)
+        results.append(row)
+
+    return results
+
+
+def scrape_anguila_all_visible(scraper, year_hint, days_back=60):
+    """Lee todo el historial visible de Anguila (páginas por tanda + portada por fecha)."""
+    print("Leyendo TODO el historial visible")
+    all_rows = []
+
+    for cfg in ANGUILA_DRAW_PAGES:
+        page = scraper.fetch_page(cfg["path"])
+        if not page.get("ok"):
+            print(f"Página no disponible: {cfg['path']}")
+            continue
+        rows = parse_anguila_history_page(page["html"], cfg, year_hint, page["url"])
+        all_rows.extend(rows)
+
+    for days_ago in range(days_back):
+        dt = datetime.now() - timedelta(days=days_ago)
+        date_param = dt.strftime("%d-%m-%Y")
+        page = scraper.fetch_page("/loterias/", params={"date": date_param})
+        if not page.get("ok"):
+            continue
+        page_date = _date_param_to_iso(date_param)
+        rows = parse_anguila_blocks(page["html"], str(dt.year), page["url"], page_date=page_date)
+        all_rows.extend(rows)
+
+    dates = [r["draw_date"] for r in all_rows if r.get("draw_date")]
+    fecha_max = max(dates) if dates else None
+    print("Fecha más nueva detectada:", fecha_max)
+    print("Mostrando en últimos resultados solo:", fecha_max)
+    return all_rows, fecha_max
+
+======================================================================
+LINE 236 StrReplace
+c:\Users\thene\OneDrive\Desktop\analizador inteligente de loteria USA Y RD\scrapers\conectate_rd.py
+======================================================================
+--- OLD ---
+def parse_anguila_history_page(html, cfg, year_hint, source_url):
+    """Lee TODOS los game-block visibles en la página de una tanda (historial)."""
+    results = []
+    blocks = list(re.finditer(r'<motion></motion></motion></motion></div>', html))
+--- NEW ---
+def parse_anguila_history_page(html, cfg, year_hint, source_url):
+    """Lee TODOS los game-block visibles en la página de una tanda (historial)."""
+    results = []
+    blocks = list(re.finditer(r'<motion></motion></motion></motion></div>', html))
+======================================================================
+LINE 238 StrReplace
+c:\Users\thene\OneDrive\Desktop\analizador inteligente de loteria USA Y RD\scrapers\conectate_rd.py
+======================================================================
+--- OLD ---
+def parse_anguila_history_page(html, cfg, year_hint, source_url):
+    """Lee TODOS los game-block visibles en la página de una tanda (historial)."""
+    results = []
+    blocks = list(re.finditer(r'<motion></motion></motion></motion></motion></div>', html))
+    """
+    Parsea resultados de Anguila buscando bloques por texto:
+    'Anguila 10:00 AM', 'Anguila 1:00 PM', etc.
+    Solo guarda si encuentra exactamente 3 números.
+    """
+    print("SCRAPER ANGUILA")
+    results = []
+
+    for cfg in ANGUILA_BLOCKS:
+        label = cfg["block_text"]
+        chunk = _extract_block_chunk(html, label)
+        if not chunk:
+            print(f"Bloque no encontrado: {label}")
+            continue
+
+        numbers = _extract_three_numbers(chunk)
+        if not numbers:
+            print(f"Resultado aún no disponible — {label} (no hay 3 números)")
+            continue
+
+        date_m = re.search(r'class="session-date[^"]*"[^>]*>\s*([^<]+)', chunk)
+        if page_date:
+            draw_date = page_date
+        else:
+            draw_date = _normalize_date(date_m.group(1).strip() if date_m else "", year_hint)
+        if not draw_date:
+            print(f"Fecha no detectada para bloque: {label}")
+            continue
+
+        print("Fecha detectada:", draw_date)
+        print("Bloque:", label)
+        print("Hora:", cfg["time_display"])
+        print("Draw:", cfg["draw_name"])
+        print("Números:", numbers)
+
+        results.append({
+            "lottery_name": "Anguila",
+            "draw_name": cfg["draw_name"],
+            "draw_time": cfg["draw_time"],
+            "time_display": cfg["time_display"],
+            "draw_date": draw_date,
+            "numbers": numbers,
+            "source_url": source_url,
+        })
+
+    return results
+
+
+def _parse_session_blocks(html):
+--- NEW ---
+def parse_anguila_history_page(html, cfg, year_hint, source_url):
+    """Lee TODOS los game-block visibles en la página de una tanda (historial)."""
+    results = []
+    blocks = list(re.finditer(r'<div class="game-block[^"]*"', html))
+    for i, m in enumerate(blocks):
+        start = m.start()
+        end = blocks[i + 1].start() if i + 1 < len(blocks) else start + 1500
+        chunk = html[start:end]
+        numbers = _extract_three_numbers(chunk)
+        if not numbers:
+            continue
+        date_m = re.search(r'class="session-date[^"]*"[^>]*>\s*([^<]+)', chunk)
+        draw_date = _normalize_date(date_m.group(1).strip() if date_m else "", year_hint)
+        if not draw_date:
+            continue
+        print("Guardando:", draw_date, cfg["draw_name"], cfg["time_display"], numbers)
+        results.append({
+            "lottery_name": "Anguila",
+            "draw_name": cfg["draw_name"],
+            "draw_time": cfg["draw_time"],
+            "time_display": cfg["time_display"],
+            "draw_date": draw_date,
+            "numbers": numbers,
+            "source_url": source_url,
+        })
+    return results
+
+
+def parse_anguila_blocks(html, year_hint, source_url, page_date=None):
+    """Parsea Anguila en portada por bloques de texto (fecha = page_date si existe)."""
+    results = []
+    for block_cfg in ANGUILA_BLOCKS:
+        label = block_cfg["block_text"]
+        chunk = _extract_block_chunk(html, label)
+        if not chunk:
+            continue
+        numbers = _extract_three_numbers(chunk)
+        if not numbers:
+            print(f"Resultado aún no disponible — {label} (no hay 3 números)")
+            continue
+        date_m = re.search(r'class="session-date[^"]*"[^>]*>\s*([^<]+)', chunk)
+        if page_date:
+            draw_date = page_date
+        else:
+            draw_date = _normalize_date(date_m.group(1).strip() if date_m else "", year_hint)
+        if not draw_date:
+            continue
+        print("Guardando:", draw_date, block_cfg["draw_name"], block_cfg["time_display"], numbers)
+        results.append({
+            "lottery_name": "Anguila",
+            "draw_name": block_cfg["draw_name"],
+            "draw_time": block_cfg["draw_time"],
+            "time_display": block_cfg["time_display"],
+            "draw_date": draw_date,
+            "numbers": numbers,
+            "source_url": source_url,
+        })
+    return results
+
+
+def scrape_anguila_all_visible(scraper, year_hint, days_back=60):
+    """Lee todo el historial visible de Anguila."""
+    print("Leyendo TODO el historial visible")
+    all_rows = []
+    for cfg in ANGUILA_DRAW_PAGES:
+        page = scraper.fetch_page(cfg["path"])
+        if not page.get("ok"):
+            continue
+        all_rows.extend(parse_anguila_history_page(page["html"], cfg, year_hint, page["url"]))
+    for days_ago in range(days_back):
+        dt = datetime.now() - timedelta(days=days_ago)
+        date_param = dt.strftime("%d-%m-%Y")
+        page = scraper.fetch_page("/loterias/", params={"date": date_param})
+        if not page.get("ok"):
+            continue
+        page_date = _date_param_to_iso(date_param)
+        all_rows.extend(parse_anguila_blocks(page["html"], str(dt.year), page["url"], page_date=page_date))
+    dates = [r["draw_date"] for r in all_rows if r.get("draw_date")]
+    fecha_max = max(dates) if dates else None
+    print("Fecha más nueva detectada:", fecha_max)
+    print("Mostrando en últimos resultados solo:", fecha_max)
+    return all_rows, fecha_max
+
+
+def _parse_session_blocks(html):
+======================================================================
+LINE 241 StrReplace
+c:\Users\thene\OneDrive\Desktop\analizador inteligente de loteria USA Y RD\scrapers\conectate_rd.py
+======================================================================
+--- OLD ---
+    blocks = list(re.finditer(r'<motion></motion></motion></motion></motion></div>', html))
+--- NEW ---
+    blocks = list(re.finditer(r'<div class="game-block[^"]*"', html))
+    for i, m in enumerate(blocks):
+        start = m.start()
+        end = blocks[i + 1].start() if i + 1 < len(blocks) else start + 1500
+        chunk = html[start:end]
+        numbers = _extract_three_numbers(chunk)
+        if not numbers:
+            continue
+        date_m = re.search(r'class="session-date[^"]*"[^>]*>\s*([^<]+)', chunk)
+        draw_date = _normalize_date(date_m.group(1).strip() if date_m else "", year_hint)
+        if not draw_date:
+            continue
+        print("Guardando:", draw_date, cfg["draw_name"], cfg["time_display"], numbers)
+        results.append({
+            "lottery_name": "Anguila",
+            "draw_name": cfg["draw_name"],
+            "draw_time": cfg["draw_time"],
+            "time_display": cfg["time_display"],
+            "draw_date": draw_date,
+            "numbers": numbers,
+            "source_url": source_url,
+        })
+    return results
+
+
+def parse_anguila_blocks(html, year_hint, source_url, page_date=None):
+    """Parsea Anguila en portada por bloques de texto."""
+    results = []
+    for block_cfg in ANGUILA_BLOCKS:
+        label = block_cfg["block_text"]
+        chunk = _extract_block_chunk(html, label)
+        if not chunk:
+            continue
+        numbers = _extract_three_numbers(chunk)
+        if not numbers:
+            print(f"Resultado aún no disponible — {label} (no hay 3 números)")
+            continue
+        date_m = re.search(r'class="session-date[^"]*"[^>]*>\s*([^<]+)', chunk)
+        draw_date = page_date or _normalize_date(date_m.group(1).strip() if date_m else "", year_hint)
+        if not draw_date:
+            continue
+        print("Guardando:", draw_date, block_cfg["draw_name"], block_cfg["time_display"], numbers)
+        results.append({
+            "lottery_name": "Anguila",
+            "draw_name": block_cfg["draw_name"],
+            "draw_time": block_cfg["draw_time"],
+            "time_display": block_cfg["time_display"],
+            "draw_date": draw_date,
+            "numbers": numbers,
+            "source_url": source_url,
+        })
+    return results
+
+
+def scrape_anguila_all_visible(scraper, year_hint, days_back=60):
+    print("Leyendo TODO el historial visible")
+    all_rows = []
+    for cfg in ANGUILA_DRAW_PAGES:
+        page = scraper.fetch_page(cfg["path"])
+        if page.get("ok"):
+            all_rows.extend(parse_anguila_history_page(page["html"], cfg, year_hint, page["url"]))
+        time.sleep(0.3)
+    for days_ago in range(days_back):
+        dt = datetime.now() - timedelta(days=days_ago)
+        date_param = dt.strftime("%d-%m-%Y")
+        page = scraper.fetch_page("/loterias/", params={"date": date_param})
+        if page.get("ok"):
+            page_date = _date_param_to_iso(date_param)
+            all_rows.extend(parse_anguila_blocks(page["html"], str(dt.year), page["url"], page_date=page_date))
+        time.sleep(0.3)
+    dates = [r["draw_date"] for r in all_rows if r.get("draw_date")]
+    fecha_max = max(dates) if dates else None
+    print("Fecha más nueva detectada:", fecha_max)
+    print("Mostrando en últimos resultados solo:", fecha_max)
+    return all_rows, fecha_max
+
+
+PLACEHOLDER_REMOVE_START
+    blocks = list(re.finditer(r'<motion></motion></motion></motion></div>', html))

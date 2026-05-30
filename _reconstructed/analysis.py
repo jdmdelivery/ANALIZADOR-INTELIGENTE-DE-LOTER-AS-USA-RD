@@ -1,0 +1,372 @@
+import random
+from collections import Counter, defaultdict
+from itertools import combinations
+
+from models import (
+    DISCLAIMER,
+    MIN_RESULTS_FOR_ANALYSIS,
+    create_prediction,
+    get_lottery,
+    get_lottery_config,
+    get_results_for_analysis,
+    parse_numbers,
+)
+
+
+def _normalize_number(n, pad=2):
+    try:
+        return str(int(n)).zfill(pad)
+    except (ValueError, TypeError):
+        return str(n).zfill(pad)
+
+
+def _extract_all_numbers(results):
+    all_nums = []
+    per_draw = []
+    for r in results:
+        nums = parse_numbers(r["numbers"])
+        per_draw.append(nums)
+        all_nums.extend(nums)
+    return all_nums, per_draw
+
+
+def _frequency_counter(numbers):
+    return Counter(numbers)
+
+
+def _hot_numbers(freq, top_n=5):
+    return [n for n, _ in freq.most_common(top_n)]
+
+
+def _cold_numbers(freq, universe, top_n=5):
+    cold = sorted(universe, key=lambda n: freq.get(n, 0))
+    return cold[:top_n]
+
+
+def _overdue_numbers(results, per_draw, universe):
+    last_seen = {}
+    for idx, nums in enumerate(reversed(per_draw)):
+        for n in nums:
+            if n not in last_seen:
+                last_seen[n] = idx
+    overdue = sorted(universe, key=lambda n: last_seen.get(n, len(results)), reverse=True)
+    return overdue[:5]
+
+
+def _pair_frequency(per_draw):
+    pairs = Counter()
+    for nums in per_draw:
+        unique = list(dict.fromkeys(nums))
+        for pair in combinations(sorted(unique), 2):
+            pairs[pair] += 1
+    return pairs
+
+
+def _triple_frequency(per_draw):
+    triples = Counter()
+    for nums in per_draw:
+        unique = list(dict.fromkeys(nums))
+        if len(unique) >= 3:
+            for triple in combinations(sorted(unique), 3):
+                triples[triple] += 1
+    return triples
+
+
+def _repeated_combinations(per_draw):
+    combo_counter = Counter()
+    for nums in per_draw:
+        key = tuple(sorted(nums))
+        combo_counter[key] += 1
+    return {k: v for k, v in combo_counter.items() if v > 1}
+
+
+def _position_frequency(per_draw):
+    pos_freq = defaultdict(Counter)
+    for nums in per_draw:
+        for i, n in enumerate(nums):
+            pos_freq[i][n] += 1
+    return {k: dict(v) for k, v in pos_freq.items()}
+
+
+def _recent_trend(per_draw, window=10):
+    recent = per_draw[:window]
+    recent_flat = [n for d in recent for n in d]
+    return dict(_frequency_counter(recent_flat).most_common(10))
+
+
+def _numbers_together(per_draw, top_n=5):
+    together = Counter()
+    for nums in per_draw:
+        unique = list(dict.fromkeys(nums))
+        for pair in combinations(sorted(unique), 2):
+            together[pair] += 1
+    return together.most_common(top_n)
+
+
+def analizar_loteria_por_tanda(lottery_id, draw_name):
+    lottery = get_lottery(lottery_id)
+    if not lottery:
+        return None
+
+    results = get_results_for_analysis(lottery_id, draw_name)
+    config = get_lottery_config(lottery["type"])
+
+    if len(results) < MIN_RESULTS_FOR_ANALYSIS:
+        return {
+            "ok": False,
+            "message": "No hay suficientes resultados históricos para analizar esta tanda.",
+            "total_results": len(results),
+        }
+
+    all_nums, per_draw = _extract_all_numbers(results)
+    freq = _frequency_counter(all_nums)
+
+    universe = [
+        _normalize_number(i, config.get("pad", 2))
+        for i in range(config["min"], config["max"] + 1)
+    ]
+
+    last_30 = results[:30]
+    last_60 = results[:60]
+    last_90 = results[:90]
+
+    _, per_30 = _extract_all_numbers(last_30)
+    _, per_60 = _extract_all_numbers(last_60)
+
+    hot = _hot_numbers(freq)
+    cold = _cold_numbers(freq, universe)
+    overdue = _overdue_numbers(results, per_draw, universe)
+    pairs = _pair_frequency(per_draw)
+    triples = _triple_frequency(per_draw)
+    repeated = _repeated_combinations(per_draw)
+    position_freq = _position_frequency(per_draw)
+    trend = _recent_trend(per_draw)
+    together = _numbers_together(per_draw)
+
+    return {
+        "ok": True,
+        "lottery_id": lottery_id,
+        "lottery_name": lottery["name"],
+        "draw_name": draw_name,
+        "total_results": len(results),
+        "last_30_count": len(last_30),
+        "last_60_count": len(last_60),
+        "last_90_count": len(last_90),
+        "hot_numbers": hot,
+        "cold_numbers": cold,
+        "overdue_numbers": overdue,
+        "top_pairs": [{"pair": list(p), "count": c} for p, c in pairs.most_common(5)],
+        "top_triples": [{"triple": list(t), "count": c} for t, c in triples.most_common(5)],
+        "repeated_combinations": [
+            {"numbers": list(k), "count": v} for k, v in list(repeated.items())[:5]
+        ],
+        "position_frequency": position_freq,
+        "recent_trend": trend,
+        "numbers_together": [{"pair": list(p), "count": c} for p, c in together],
+        "frequency_30": dict(_frequency_counter([n for d in per_30 for n in d]).most_common(10)),
+        "frequency_60": dict(_frequency_counter([n for d in per_60 for n in d]).most_common(10)),
+        "_all_nums": all_nums,
+        "_freq": freq,
+        "_config": config,
+    }
+
+
+def _score_number(n, stats, position=None):
+    score = 0.0
+    freq = stats.get("_freq", Counter())
+    total = max(len(stats.get("_all_nums", [])), 1)
+
+    if n in stats.get("hot_numbers", []):
+        score += 25
+    if n in stats.get("overdue_numbers", []):
+        score += 20
+    if n in stats.get("cold_numbers", []):
+        score += 10
+
+    freq_ratio = freq.get(n, 0) / total
+    score += freq_ratio * 100
+
+    trend = stats.get("recent_trend", {})
+    if n in trend:
+        score += trend[n] * 3
+
+    if position is not None:
+        pos_freq = stats.get("position_frequency", {}).get(position, {})
+        if n in pos_freq:
+            score += pos_freq[n] * 2
+
+    for pair_info in stats.get("numbers_together", []):
+        pair = pair_info["pair"]
+        if n in pair:
+            score += pair_info["count"] * 1.5
+
+    return score
+
+
+def _pick_numbers(stats, config):
+    count = config["count"]
+    allow_repeat = config.get("allow_repeat", False)
+    pad = config.get("pad", 2)
+
+    universe = [_normalize_number(i, pad) for i in range(config["min"], config["max"] + 1)]
+    selected = []
+
+    for i in range(count):
+        candidates = universe if allow_repeat else [n for n in universe if n not in selected]
+        if not candidates:
+            candidates = universe
+
+        scored = []
+        for n in candidates:
+            s = _score_number(n, stats, position=i)
+            s += random.uniform(0, 8)
+            scored.append((s, n))
+
+        scored.sort(reverse=True)
+        top = scored[: min(5, len(scored))]
+        weights = [t[0] for t in top]
+        chosen = random.choices([t[1] for t in top], weights=weights, k=1)[0]
+        selected.append(chosen)
+
+    return selected
+
+
+def _build_explanation(numbers, stats):
+    parts = []
+    hot = stats.get("hot_numbers", [])
+    overdue = stats.get("overdue_numbers", [])
+    together = stats.get("numbers_together", [])
+
+    for n in numbers:
+        reasons = []
+        if n in hot:
+            reasons.append(f"{n} muestra tendencia caliente en el histórico reciente")
+        if n in overdue:
+            reasons.append(f"{n} aparece atrasado según el análisis")
+        if not reasons:
+            freq = stats.get("_freq", Counter())
+            if freq.get(n, 0) > 0:
+                reasons.append(f"{n} tiene frecuencia moderada en sorteos anteriores")
+            else:
+                reasons.append(f"{n} es una opción sugerida por balance estadístico")
+
+        parts.append(f"{n}: {reasons[0]}")
+
+    pair_notes = []
+    for pair_info in together[:3]:
+        pair = pair_info["pair"]
+        if all(p in numbers for p in pair):
+            pair_notes.append(
+                f"{' y '.join(pair)} aparecen frecuentemente juntos en el histórico"
+            )
+
+    explanation = ". ".join(parts[:3])
+    if pair_notes:
+        explanation += ". " + pair_notes[0]
+    explanation += "."
+    return explanation
+
+
+def _calculate_confidence(score, total_results):
+    if total_results >= 60 and score >= 75:
+        return "alto"
+    if total_results >= 30 and score >= 55:
+        return "medio"
+    return "bajo"
+
+
+def _calculate_overall_score(numbers, stats):
+    total = 0
+    for i, n in enumerate(numbers):
+        total += _score_number(n, stats, position=i)
+    avg = total / max(len(numbers), 1)
+    bonus = min(stats.get("total_results", 0) / 2, 25)
+    return min(round(avg + bonus), 99)
+
+
+def _pick_bonus_number(stats, config):
+    bonus_min = config.get("bonus_min")
+    bonus_max = config.get("bonus_max")
+    if bonus_min is None or bonus_max is None:
+        return None
+    pad = 1 if config.get("max", 99) <= 9 else config.get("pad", 2)
+    universe = [_normalize_number(i, pad) for i in range(bonus_min, bonus_max + 1)]
+    if not universe:
+        return None
+    freq = stats.get("_freq", Counter())
+    scored = []
+    for n in universe:
+        s = freq.get(n, 0) + random.uniform(0, 5)
+        scored.append((s, n))
+    scored.sort(reverse=True)
+    top = scored[: min(5, len(scored))]
+    weights = [t[0] + 0.1 for t in top]
+    return random.choices([t[1] for t in top], weights=weights, k=1)[0]
+
+
+def _bonus_label_for_type(lottery_type):
+    return {
+        "powerball": "Powerball",
+        "mega_millions": "Mega Ball",
+        "lotto": "Extra Shot",
+        "pick3": "Fireball",
+        "pick4": "Fireball",
+    }.get(lottery_type)
+
+
+def generar_jugada_inteligente(lottery_id, draw_name):
+    lottery = get_lottery(lottery_id)
+    if not lottery:
+        return {"ok": False, "message": "Lotería no encontrada."}
+
+    stats = analizar_loteria_por_tanda(lottery_id, draw_name)
+    if not stats or not stats.get("ok"):
+        return {
+            "ok": False,
+            "message": "No hay suficientes resultados históricos para analizar esta tanda.",
+        }
+
+    config = get_lottery_config(lottery["type"])
+    generated = _pick_numbers(stats, config)
+    generated_bonus = _pick_bonus_number(stats, config)
+    bonus_label = _bonus_label_for_type(lottery["type"])
+
+    analysis_text = _build_explanation(generated, stats)
+    if generated_bonus and bonus_label:
+        analysis_text += f" {bonus_label} sugerido: {generated_bonus}."
+    score = _calculate_overall_score(generated, stats)
+    confidence = _calculate_confidence(score, stats["total_results"])
+
+    create_prediction(
+        lottery_id,
+        draw_name,
+        generated,
+        analysis_text,
+        confidence,
+        score,
+    )
+
+    state_label = lottery.get("state") or (
+        "Dominican Republic" if lottery["country"] == "RD" else lottery["country"]
+    )
+
+    from datetime import datetime
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    return {
+        "ok": True,
+        "country": lottery["country"],
+        "state": state_label,
+        "lottery": lottery["name"],
+        "draw_name": draw_name,
+        "generated_numbers": generated,
+        "generated_bonus": generated_bonus,
+        "bonus_numbers": [generated_bonus] if generated_bonus else [],
+        "bonus_label": bonus_label,
+        "confidence_level": confidence,
+        "score": score,
+        "analysis_text": analysis_text,
+        "disclaimer": DISCLAIMER,
+        "created_at": now,
+    }

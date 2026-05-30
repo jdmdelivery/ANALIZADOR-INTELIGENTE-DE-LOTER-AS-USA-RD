@@ -1,0 +1,907 @@
+
+============================================================
+L22 Write
+============================================================
+(function () {
+    'use strict';
+
+    const selectCountry = document.getElementById('selectCountry');
+    const selectState = document.getElementById('selectState');
+    const selectLottery = document.getElementById('selectLottery');
+    const stateGroup = document.getElementById('stateGroup');
+    const resultsSection = document.getElementById('resultsSection');
+    const buttonsSection = document.getElementById('buttonsSection');
+    const predictionSection = document.getElementById('predictionSection');
+    const recentResults = document.getElementById('recentResults');
+    const drawButtons = document.getElementById('drawButtons');
+    const loadingOverlay = document.getElementById('loadingOverlay');
+
+  if (!selectCountry) return;
+
+    let currentLotteryId = null;
+
+    selectCountry.addEventListener('change', onCountryChange);
+    selectState.addEventListener('change', loadLotteries);
+    selectLottery.addEventListener('change', onLotteryChange);
+
+    function onCountryChange() {
+        const country = selectCountry.value;
+        resetLotterySelect();
+        hideSections();
+
+        if (country === 'USA') {
+            stateGroup.style.display = 'block';
+            loadStates(country);
+        } else if (country === 'RD') {
+            stateGroup.style.display = 'none';
+            loadLotteries();
+        } else {
+            stateGroup.style.display = 'none';
+        }
+    }
+
+    async function loadStates(country) {
+        selectState.innerHTML = '<option value="">-- Elegir estado --</option>';
+        try {
+            const res = await fetch(`/api/states?country=${country}`);
+            const data = await res.json();
+            data.states.forEach(s => {
+                const opt = document.createElement('option');
+                opt.value = s;
+                opt.textContent = s;
+                selectState.appendChild(opt);
+            });
+        } catch (e) {
+            console.error('Error loading states', e);
+        }
+    }
+
+    async function loadLotteries() {
+        const country = selectCountry.value;
+        if (!country) return;
+
+        let url = `/api/lotteries?country=${country}`;
+        if (country === 'USA' && selectState.value) {
+            url += `&state=${encodeURIComponent(selectState.value)}`;
+        }
+
+        resetLotterySelect();
+        try {
+            const res = await fetch(url);
+            const data = await res.json();
+            data.lotteries.forEach(lot => {
+                const opt = document.createElement('option');
+                opt.value = lot.id;
+                opt.textContent = lot.name;
+                selectLottery.appendChild(opt);
+            });
+            selectLottery.disabled = data.lotteries.length === 0;
+        } catch (e) {
+            console.error('Error loading lotteries', e);
+        }
+    }
+
+    function resetLotterySelect() {
+        selectLottery.innerHTML = '<option value="">-- Elegir lotería --</option>';
+        selectLottery.disabled = true;
+        currentLotteryId = null;
+    }
+
+    function hideSections() {
+        resultsSection.style.display = 'none';
+        buttonsSection.style.display = 'none';
+        predictionSection.style.display = 'none';
+    }
+
+    async function onLotteryChange() {
+        currentLotteryId = selectLottery.value;
+        hideSections();
+
+        if (!currentLotteryId) return;
+
+        await Promise.all([loadRecentResults(), loadDrawButtons()]);
+        resultsSection.style.display = 'block';
+        buttonsSection.style.display = 'block';
+    }
+
+    async function loadRecentResults() {
+        recentResults.innerHTML = '<p class="text-muted">Cargando...</p>';
+        try {
+            const res = await fetch(`/api/results?lottery_id=${currentLotteryId}&limit=8`);
+            const data = await res.json();
+
+            if (!data.results.length) {
+                recentResults.innerHTML = '<p class="text-muted">No hay resultados registrados aún.</p>';
+                return;
+            }
+
+            recentResults.innerHTML = data.results.map(r => `
+                <div class="result-item">
+                    <div class="result-meta">
+                        <strong>${r.draw_name}</strong> · ${r.draw_date}
+                    </motion></motion></div>
+                    <div class="result-numbers">
+                        ${r.numbers.map(n => `<span class="lottery-ball mini-ball">${n}</span>`).join('')}
+                    </div>
+                </div>
+            `).join('');
+        } catch (e) {
+            recentResults.innerHTML = '<p class="text-muted">Error al cargar resultados.</p>';
+        }
+    }
+
+    async function loadDrawButtons() {
+        drawButtons.innerHTML = '';
+        try {
+            const res = await fetch(`/api/draw-times?lottery_id=${currentLotteryId}`);
+            const data = await res.json();
+
+            data.buttons.forEach(btn => {
+                const button = document.createElement('button');
+                button.className = `btn-draw ${btn.css || 'btn-default'}`;
+                button.textContent = btn.label;
+                button.addEventListener('click', () => getPrediction(btn.draw_name, btn.label));
+                drawButtons.appendChild(button);
+            });
+        } catch (e) {
+            console.error('Error loading draw buttons', e);
+        }
+    }
+
+    function showLoading(show) {
+        loadingOverlay.style.display = show ? 'flex' : 'none';
+    }
+
+    async function getPrediction(drawName, drawLabel) {
+        showLoading(true);
+        predictionSection.style.display = 'none';
+
+        try {
+            const res = await fetch(
+                `/api/prediction?lottery_id=${currentLotteryId}&draw_name=${encodeURIComponent(drawName)}`
+            );
+            const data = await res.json();
+
+            if (!data.ok) {
+                predictionSection.style.display = 'block';
+                document.getElementById('predictionTitle').textContent = 'Sin datos suficientes';
+                document.getElementById('predictionBalls').innerHTML = '';
+                document.getElementById('predictionReason').textContent = data.message;
+                document.getElementById('predictionConfidence').textContent = '';
+                document.getElementById('predictionScore').textContent = '';
+                document.getElementById('predictionDate').textContent = '';
+                return;
+            }
+
+            document.getElementById('predictionTitle').textContent =
+                `Recomendación para ${drawLabel.replace(/^[^\s]+\s/, '')}`;
+
+            document.getElementById('predictionBalls').innerHTML = data.generated_numbers
+                .map(n => `<span class="lottery-ball">${n}</span>`)
+                .join('');
+
+            document.getElementById('predictionReason').textContent = data.analysis_text;
+
+            const confEl = document.getElementById('predictionConfidence');
+            confEl.textContent = data.confidence_level;
+            confEl.className = `confidence-badge confidence-${data.confidence_level}`;
+
+            document.getElementById('predictionScore').textContent = data.score;
+            document.getElementById('predictionDate').textContent = data.created_at;
+
+            predictionSection.style.display = 'block';
+            predictionSection.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        } catch (e) {
+            console.error('Error getting prediction', e);
+        } finally {
+            showLoading(false);
+        }
+    }
+})();
+
+============================================================
+L121 Write
+============================================================
+(function () {
+    'use strict';
+
+    const $ = (id) => document.getElementById(id);
+
+    const selectCountry = $('selectCountry');
+    const selectState = $('selectState');
+    const selectLottery = $('selectLottery');
+    const stateGroup = $('stateGroup');
+    const mainSplit = $('mainSplit');
+    const recentResults = $('recentResults');
+    const drawButtons = $('drawButtons');
+    const loadingOverlay = $('loadingOverlay');
+    const liveIndicator = $('liveIndicator');
+
+    if (!selectCountry) return;
+
+    let currentLotteryId = null;
+    let currentLotteryName = '';
+    let refreshTimer = null;
+    let activeDrawBtn = null;
+
+    const TANDA_CSS = {
+        'mañana': 'rc-manana',
+        'tarde': 'rc-tarde',
+        'tardía': 'rc-tardia',
+        'noche': 'rc-noche',
+        'Midday': 'rc-midday',
+        'Evening': 'rc-evening',
+        'Powerball draw': 'rc-default',
+        'Mega Millions draw': 'rc-default',
+    };
+
+    initSidebar();
+    initNavShortcuts();
+
+    selectCountry.addEventListener('change', onCountryChange);
+    selectState.addEventListener('change', loadLotteries);
+    selectLottery.addEventListener('change', onLotteryChange);
+
+    function initSidebar() {
+        const sidebar = $('sidebar');
+        const overlay = $('sidebarOverlay');
+        const toggle = $('sidebarToggle');
+        if (!toggle) return;
+        toggle.addEventListener('click', () => {
+            sidebar.classList.toggle('open');
+            overlay.classList.toggle('open');
+        });
+        overlay.addEventListener('click', () => {
+            sidebar.classList.remove('open');
+            overlay.classList.remove('open');
+        });
+    }
+
+    function initNavShortcuts() {
+        document.querySelectorAll('.nav-link[data-nav="usa"]').forEach(el => {
+            el.addEventListener('click', (e) => {
+                e.preventDefault();
+                selectCountry.value = 'USA';
+                onCountryChange();
+                scrollToEl('filtros');
+            });
+        });
+        document.querySelectorAll('.nav-link[data-nav="rd"]').forEach(el => {
+            el.addEventListener('click', (e) => {
+                e.preventDefault();
+                selectCountry.value = 'RD';
+                onCountryChange();
+                scrollToEl('filtros');
+            });
+        });
+    }
+
+    function scrollToEl(id) {
+        document.getElementById(id)?.scrollIntoView({ behavior: 'smooth' });
+    }
+
+    function onCountryChange() {
+        const country = selectCountry.value;
+        resetLotterySelect();
+        hideMain();
+
+        if (country === 'USA') {
+            stateGroup.style.display = 'block';
+            loadStates(country);
+        } else if (country === 'RD') {
+            stateGroup.style.display = 'none';
+            loadLotteries();
+        } else {
+            stateGroup.style.display = 'none';
+        }
+    }
+
+    async function loadStates(country) {
+        selectState.innerHTML = '<option value="">— Seleccionar estado —</option>';
+        try {
+            const res = await fetch(`/api/states?country=${country}`);
+            const data = await res.json();
+            data.states.forEach(s => {
+                const opt = document.createElement('option');
+                opt.value = s;
+                opt.textContent = s;
+                selectState.appendChild(opt);
+            });
+        } catch (e) {
+            console.error(e);
+        }
+    }
+
+    async function loadLotteries() {
+        const country = selectCountry.value;
+        if (!country) return;
+
+        let url = `/api/lotteries?country=${country}`;
+        if (country === 'USA' && selectState.value) {
+            url += `&state=${encodeURIComponent(selectState.value)}`;
+        }
+
+        resetLotterySelect();
+        try {
+            const res = await fetch(url);
+            const data = await res.json();
+            data.lotteries.forEach(lot => {
+                const opt = document.createElement('option');
+                opt.value = lot.id;
+                opt.textContent = lot.name;
+                opt.dataset.name = lot.name;
+                selectLottery.appendChild(opt);
+            });
+            selectLottery.disabled = data.lotteries.length === 0;
+        } catch (e) {
+            console.error(e);
+        }
+    }
+
+    function resetLotterySelect() {
+        selectLottery.innerHTML = '<option value="">— Seleccionar lotería —</option>';
+        selectLottery.disabled = true;
+        currentLotteryId = null;
+        stopAutoRefresh();
+    }
+
+    function hideMain() {
+        mainSplit.style.display = 'none';
+        liveIndicator.style.display = 'none';
+        resetAnalysisPanel();
+    }
+
+    function stopAutoRefresh() {
+        if (refreshTimer) {
+            clearInterval(refreshTimer);
+            refreshTimer = null;
+        }
+    }
+
+    function startAutoRefresh() {
+        stopAutoRefresh();
+        liveIndicator.style.display = 'flex';
+        refreshTimer = setInterval(() => {
+            if (currentLotteryId) loadRecentResults(true);
+        }, 60000);
+    }
+
+    async function onLotteryChange() {
+        currentLotteryId = selectLottery.value;
+        const opt = selectLottery.options[selectLottery.selectedIndex];
+        currentLotteryName = opt?.dataset?.name || opt?.textContent || '';
+        hideMain();
+
+        if (!currentLotteryId) return;
+
+        mainSplit.style.display = 'grid';
+        resetAnalysisPanel();
+        await Promise.all([loadRecentResults(), loadDrawButtons()]);
+        startAutoRefresh();
+        scrollToEl('resultados');
+    }
+
+    function tandaClass(drawName) {
+        return TANDA_CSS[drawName] || 'rc-default';
+    }
+
+    async function loadRecentResults(silent) {
+        if (!silent) {
+            recentResults.innerHTML = '<p class="empty-msg">Cargando resultados...</p>';
+        }
+        try {
+            const res = await fetch(`/api/results?lottery_id=${currentLotteryId}&limit=12`);
+            const data = await res.json();
+
+            if (!data.results?.length) {
+                recentResults.innerHTML = '<p class="empty-msg">No hay resultados registrados aún.</p>';
+                return;
+            }
+
+            recentResults.innerHTML = data.results.map(r => `
+                <div class="result-card-hd ${tandaClass(r.draw_name)} animate-fade-in">
+                    <motion></motion>
+                    <div class="rc-tanda">${escapeHtml(r.draw_name)}</motion></div>
+                    <div class="rc-date">${escapeHtml(r.draw_date)}${r.draw_time ? ' · ' + escapeHtml(r.draw_time) : ''}</div>
+                    <div class="rc-balls">
+                        ${r.numbers.slice(0, 3).map((n, i) =>
+                            `<span class="ball-hd mini" style="animation-delay:${i * 0.08}s">${escapeHtml(n)}</span>`
+                        ).join('')}
+                    </div>
+                </div>
+            `).join('');
+
+            recentResults.querySelectorAll('motion').forEach(el => el.remove());
+        } catch (e) {
+            if (!silent) recentResults.innerHTML = '<p class="empty-msg">Error al cargar resultados.</p>';
+        }
+    }
+
+    async function loadDrawButtons() {
+        drawButtons.innerHTML = '';
+        try {
+            const res = await fetch(`/api/draw-times?lottery_id=${currentLotteryId}`);
+            const data = await res.json();
+
+            data.buttons.forEach(btn => {
+                const button = document.createElement('button');
+                button.type = 'button';
+                button.className = `btn-tanda ${btn.css || 'tanda-default'}`;
+                button.innerHTML = `
+                    <span class="tanda-emoji">${btn.emoji || '🎱'}</span>
+                    ${escapeHtml(btn.label || btn.draw_name)}
+                `;
+                button.dataset.drawName = btn.draw_name;
+                button.title = btn.schedule_label || btn.draw_name;
+                button.addEventListener('click', () => {
+                    if (activeDrawBtn) activeDrawBtn.classList.remove('active');
+                    button.classList.add('active');
+                    activeDrawBtn = button;
+                    getPrediction(btn);
+                });
+                drawButtons.appendChild(button);
+            });
+        } catch (e) {
+            console.error(e);
+        }
+    }
+
+    function resetAnalysisPanel() {
+        $('analysisPlaceholder').style.display = 'block';
+        $('analysisContent').style.display = 'none';
+        $('analysisError').style.display = 'none';
+        if (activeDrawBtn) {
+            activeDrawBtn.classList.remove('active');
+            activeDrawBtn = null;
+        }
+    }
+
+    function showLoading(show) {
+        loadingOverlay.style.display = show ? 'flex' : 'none';
+    }
+
+    function renderStatNumbers(containerId, numbers) {
+        const el = $(containerId);
+        if (!numbers?.length) {
+            el.innerHTML = '<span class="stat-chip">—</span>';
+            return;
+        }
+        el.innerHTML = numbers.map(n => `<span class="stat-chip">${escapeHtml(n)}</span>`).join('');
+    }
+
+    async function getPrediction(btn) {
+        showLoading(true);
+        $('analysisPlaceholder').style.display = 'none';
+        $('analysisContent').style.display = 'none';
+        $('analysisError').style.display = 'none';
+
+        try {
+            const res = await fetch(
+                `/api/prediction?lottery_id=${currentLotteryId}&draw_name=${encodeURIComponent(btn.draw_name)}`
+            );
+            const data = await res.json();
+
+            if (!data.ok) {
+                $('analysisError').style.display = 'block';
+                $('analysisErrorMsg').textContent = data.message || 'No hay suficientes datos históricos.';
+                return;
+            }
+
+            const drawLabel = (data.draw_display || btn.label || btn.draw_name).toUpperCase();
+            $('predictionDraw').textContent = drawLabel;
+
+            const schedule = data.schedule_label
+                ? `📌 Recomendado para: ${data.schedule_label}`
+                : `🕘 ${currentLotteryName} — ${drawLabel}`;
+            $('predictionSchedule').textContent = schedule;
+
+            $('predictionBalls').innerHTML = data.generated_numbers
+                .map((n, i) => `<span class="ball-hd large" style="animation-delay:${i * 0.12}s">${escapeHtml(n)}</span>`)
+                .join('');
+
+            $('predictionReason').textContent = data.analysis_text || '';
+
+            const confEl = $('predictionConfidence');
+            confEl.textContent = data.confidence_level || '—';
+            confEl.className = `confidence-badge confidence-${data.confidence_level || 'bajo'}`;
+
+            $('predictionScore').textContent = data.score ?? '—';
+            $('predictionHistoric').textContent = data.total_results ? `${data.total_results} sorteos` : '—';
+            $('predictionDate').textContent = data.created_at ? `Generado: ${data.created_at}` : '';
+
+            renderStatNumbers('statHot', data.hot_numbers);
+            renderStatNumbers('statCold', data.cold_numbers);
+            renderStatNumbers('statOverdue', data.overdue_numbers);
+
+            $('analysisContent').style.display = 'block';
+            scrollToEl('analisis');
+        } catch (e) {
+            $('analysisError').style.display = 'block';
+            $('analysisErrorMsg').textContent = 'Error al obtener el análisis.';
+            console.error(e);
+        } finally {
+            showLoading(false);
+        }
+    }
+
+    function escapeHtml(str) {
+        const d = document.createElement('motion></motion></div>');
+        d.textContent = str;
+        return d.innerHTML;
+    }
+})();
+
+============================================================
+L122 StrReplace
+============================================================
+--- OLD ---
+            recentResults.innerHTML = data.results.map(r => `
+                <div class="result-card-hd ${tandaClass(r.draw_name)} animate-fade-in">
+                    <motion></motion>
+                    <motion></motion>
+                    <div class="rc-tanda">${escapeHtml(r.draw_name)}</motion></div>
+                    <div class="rc-date">${escapeHtml(r.draw_date)}${r.draw_time ? ' · ' + escapeHtml(r.draw_time) : ''}</div>
+                    <div class="rc-balls">
+                        ${r.numbers.slice(0, 3).map((n, i) =>
+                            `<span class="ball-hd mini" style="animation-delay:${i * 0.08}s">${escapeHtml(n)}</span>`
+                        ).join('')}
+                    </div>
+                </div>
+            `).join('');
+
+            recentResults.querySelectorAll('motion').forEach(el => el.remove());
+--- NEW ---
+            recentResults.innerHTML = data.results.map(r => `
+                <motion></motion>
+                <div class="result-card-hd ${tandaClass(r.draw_name)} animate-fade-in">
+                    <div class="rc-tanda">${escapeHtml(r.draw_name)}</div>
+                    <div class="rc-date">${escapeHtml(r.draw_date)}${r.draw_time ? ' · ' + escapeHtml(r.draw_time) : ''}</p></div>
+                    <div class="rc-balls">
+                        ${r.numbers.slice(0, 3).map((n, i) =>
+                            `<span class="ball-hd mini" style="animation-delay:${i * 0.08}s">${escapeHtml(n)}</span>`
+                        ).join('')}
+                    </div>
+                </div>
+            `).join('');
+============================================================
+L124 StrReplace
+============================================================
+--- OLD ---
+            recentResults.innerHTML = data.results.map(r => `
+                <div class="result-card-hd ${tandaClass(r.draw_name)} animate-fade-in">
+                    <motion></motion>
+                    <div class="rc-tanda">${escapeHtml(r.draw_name)}</motion></div>
+                    <div class="rc-date">${escapeHtml(r.draw_date)}${r.draw_time ? ' · ' + escapeHtml(r.draw_time) : ''}</motion></div>
+                    <div class="rc-balls">
+                        ${r.numbers.slice(0, 3).map((n, i) =>
+                            `<span class="ball-hd mini" style="animation-delay:${i * 0.08}s">${escapeHtml(n)}</span>`
+                        ).join('')}
+                    </div>
+                </div>
+            `).join('');
+
+            recentResults.querySelectorAll('motion').forEach(el => el.remove());
+--- NEW ---
+            recentResults.innerHTML = data.results.map(r => `
+                <div class="result-card-hd ${tandaClass(r.draw_name)} animate-fade-in">
+                    <motion></motion>
+                    <div class="rc-tanda">${escapeHtml(r.draw_name)}</div>
+                    <div class="rc-date">${escapeHtml(r.draw_date)}${r.draw_time ? ' · ' + escapeHtml(r.draw_time) : ''}</div>
+                    <div class="rc-balls">
+                        ${r.numbers.slice(0, 3).map((n, i) =>
+                            `<span class="ball-hd mini" style="animation-delay:${i * 0.08}s">${escapeHtml(n)}</span>`
+                        ).join('')}
+                    </div>
+                </div>
+            `).join('');
+============================================================
+L124 StrReplace
+============================================================
+--- OLD ---
+    function escapeHtml(str) {
+        const d = document.createElement('motion></motion></motion></div>');
+        d.textContent = str;
+        return d.innerHTML;
+    }
+--- NEW ---
+    function escapeHtml(str) {
+        const d = document.createElement('motion></motion></div>');
+        d.textContent = str;
+        return d.innerHTML;
+    }
+============================================================
+L128 StrReplace
+============================================================
+--- OLD ---
+            recentResults.innerHTML = data.results.map(r => `
+                <motion></motion>
+                <div class="result-card-hd ${tandaClass(r.draw_name)} animate-fade-in">
+                    <motion></motion>
+                    <div class="rc-tanda">${escapeHtml(r.draw_name)}</motion></div>
+                    <div class="rc-date">${escapeHtml(r.draw_date)}${r.draw_time ? ' · ' + escapeHtml(r.draw_time) : ''}</div>
+                    <div class="rc-balls">
+                        ${r.numbers.slice(0, 3).map((n, i) =>
+                            `<span class="ball-hd mini" style="animation-delay:${i * 0.08}s">${escapeHtml(n)}</span>`
+                        ).join('')}
+                    </div>
+                </div>
+            `).join('');
+
+            recentResults.querySelectorAll('motion').forEach(el => el.remove());
+        } catch (e) {
+--- NEW ---
+            recentResults.innerHTML = data.results.map(r => `
+                <div class="result-card-hd ${tandaClass(r.draw_name)} animate-fade-in">
+                    <div class="rc-tanda">${escapeHtml(r.draw_name)}</div>
+                    <div class="rc-date">${escapeHtml(r.draw_date)}${r.draw_time ? ' · ' + escapeHtml(r.draw_time) : ''}</div>
+                    <div class="rc-balls">
+                        ${r.numbers.slice(0, 3).map((n, i) =>
+                            `<span class="ball-hd mini" style="animation-delay:${i * 0.08}s">${escapeHtml(n)}</span>`
+                        ).join('')}
+                    </div>
+                </div>
+            `).join('');
+        } catch (e) {
+============================================================
+L128 StrReplace
+============================================================
+--- OLD ---
+        const d = document.createElement('motion></motion></motion></div>');
+--- NEW ---
+        const d = document.createElement('div');
+============================================================
+L140 StrReplace
+============================================================
+--- OLD ---
+        const d = document.createElement('motion></motion></div>');
+--- NEW ---
+        const d = document.createElement('motion></div>');
+============================================================
+L141 StrReplace
+============================================================
+--- OLD ---
+    function escapeHtml(str) {
+        const d = document.createElement('motion></div>');
+        d.textContent = str;
+        return d.innerHTML;
+    }
+--- NEW ---
+    function escapeHtml(str) {
+        const d = document.createElement('div');
+        d.textContent = str;
+        return d.innerHTML;
+    }
+============================================================
+L148 StrReplace
+============================================================
+--- OLD ---
+    initSidebar();
+    initNavShortcuts();
+--- NEW ---
+    initSidebar();
+    initNavShortcuts();
+    initNavActive();
+============================================================
+L148 StrReplace
+============================================================
+--- OLD ---
+
+--- NEW ---
+    function initNavActive() {
+        const links = document.querySelectorAll('.sidebar-nav .nav-link[href^="/#"]');
+        links.forEach(link => {
+            link.addEventListener('click', () => {
+                document.querySelectorAll('.sidebar-nav .nav-link.active').forEach(el => {
+                    if (el.dataset.nav !== 'inicio') el.classList.remove('active');
+                });
+                link.classList.add('active');
+                const sidebar = $('sidebar');
+                const overlay = $('sidebarOverlay');
+                sidebar?.classList.remove('open');
+                overlay?.classList.remove('open');
+            });
+        });
+    }
+
+    ^(?!.*function initNavActive)
+============================================================
+L149 StrReplace
+============================================================
+--- OLD ---
+        });
+    }
+
+    function scrollToEl(id) {
+--- NEW ---
+        });
+    }
+
+    function initNavActive() {
+        const links = document.querySelectorAll('.sidebar-nav .nav-link[href^="/#"]');
+        links.forEach(link => {
+            link.addEventListener('click', () => {
+                document.querySelectorAll('.sidebar-nav .nav-link.active').forEach(el => {
+                    if (el.dataset.nav !== 'inicio') el.classList.remove('active');
+                });
+                link.classList.add('active');
+                $('sidebar')?.classList.remove('open');
+                $('sidebarOverlay')?.classList.remove('open');
+            });
+        });
+    }
+
+    function scrollToEl(id) {
+============================================================
+L165 StrReplace
+============================================================
+--- OLD ---
+                    <div class="rc-tanda">${escapeHtml(r.draw_name)}</div>
+                    <div class="rc-date">${escapeHtml(r.draw_date)}${r.draw_time ? ' · ' + escapeHtml(r.draw_time) : ''}</div>
+--- NEW ---
+                    <div class="rc-tanda">${escapeHtml(r.draw_name)}</div>
+                    <div class="rc-date">${escapeHtml(r.draw_date)}${r.time_display ? ' · ' + escapeHtml(r.time_display) : (r.draw_time ? ' · ' + escapeHtml(r.draw_time) : '')}</div>
+============================================================
+L165 StrReplace
+============================================================
+--- OLD ---
+            data.buttons.forEach(btn => {
+                const button = document.createElement('button');
+                button.type = 'button';
+                button.className = `btn-tanda ${btn.css || 'tanda-default'}`;
+                button.innerHTML = `
+                    <span class="tanda-emoji">${btn.emoji || '🎱'}</span>
+                    ${escapeHtml(btn.label || btn.draw_name)}
+                `;
+                button.dataset.drawName = btn.draw_name;
+                button.title = btn.schedule_label || btn.draw_name;
+--- NEW ---
+            data.buttons.forEach(btn => {
+                const button = document.createElement('button');
+                button.type = 'button';
+                button.className = `btn-tanda ${btn.css || 'tanda-default'}`;
+                const timeLine = btn.time_display || '';
+                button.innerHTML = `
+                    <span class="tanda-emoji">${btn.emoji || '🎱'}</span>
+                    <span class="tanda-label">${escapeHtml(btn.label || btn.draw_name)}</span>
+                    ${timeLine ? `<span class="tanda-time">${escapeHtml(timeLine)}</span>` : ''}
+                `;
+                button.dataset.drawName = btn.draw_name;
+                button.title = btn.schedule_label || btn.draw_name;
+============================================================
+L165 StrReplace
+============================================================
+--- OLD ---
+            const drawLabel = (data.draw_display || btn.label || btn.draw_name).toUpperCase();
+            $('predictionDraw').textContent = drawLabel;
+
+            const schedule = data.schedule_label
+                ? `📌 Recomendado para: ${data.schedule_label}`
+                : `🕘 ${currentLotteryName} — ${drawLabel}`;
+            $('predictionSchedule').textContent = schedule;
+--- NEW ---
+            const drawLabel = (data.draw_display || btn.label || btn.draw_name);
+            $('predictionDraw').textContent = drawLabel;
+
+            const scheduleEl = $('predictionSchedule');
+            if (data.schedule_label) {
+                scheduleEl.innerHTML = `
+                    <span class="schedule-prefix">📌 Recomendado para:</span>
+                    <span class="schedule-value">${escapeHtml(data.schedule_label)}</span>
+                `;
+            } else {
+                scheduleEl.textContent = `🕘 ${currentLotteryName} — ${drawLabel}`;
+            }
+============================================================
+L194 StrReplace
+============================================================
+--- OLD ---
+    async function loadRecentResults(silent) {
+--- NEW ---
+    function renderBallSet(main, bonus, sizeClass = 'mini') {
+        const mainHtml = (main || []).map((n, i) =>
+            `<span class="ball-hd ${sizeClass}" style="animation-delay:${i * 0.08}s">${escapeHtml(n)}</span>`
+        ).join('');
+        if (!bonus?.length) return mainHtml;
+        const bonusHtml = bonus.map((n, i) =>
+            `<span class="ball-hd ${sizeClass} ball-bonus" style="animation-delay:${(main.length + i + 1) * 0.08}s">${escapeHtml(n)}</span>`
+        ).join('');
+        return `${mainHtml}<span class="ball-plus">+</span>${bonusHtml}`;
+    }
+
+    async function loadRecentResults(silent) {
+============================================================
+L194 StrReplace
+============================================================
+--- OLD ---
+                    <div class="rc-balls">
+                        ${r.numbers.slice(0, 3).map((n, i) =>
+                            `<span class="ball-hd mini" style="animation-delay:${i * 0.08}s">${escapeHtml(n)}</span>`
+                        ).join('')}
+                    </motion></motion></div>
+--- NEW ---
+                    <motion></motion>
+                    <motion></motion>
+                    <div class="rc-balls">
+                        ${renderBallSet(r.main_numbers || r.numbers, r.bonus_numbers)}
+                    </div>
+============================================================
+L195 StrReplace
+============================================================
+--- OLD ---
+                    <motion></motion>
+                    <div class="rc-balls">
+                        ${r.numbers.slice(0, 3).map((n, i) =>
+                            `<span class="ball-hd mini" style="animation-delay:${i * 0.08}s">${escapeHtml(n)}</span>`
+                        ).join('')}
+                    </div>
+--- NEW ---
+                    <motion></motion>
+                    <div class="rc-balls">
+                        ${renderBallSet(r.main_numbers || r.numbers, r.bonus_numbers)}
+                    </div>
+============================================================
+L196 StrReplace
+============================================================
+--- OLD ---
+                    <div class="rc-balls">
+                        ${r.numbers.slice(0, 3).map((n, i) =>
+                            `<span class="ball-hd mini" style="animation-delay:${i * 0.08}s">${escapeHtml(n)}</span>`
+                        ).join('')}
+                    </div>
+--- NEW ---
+                    <div class="rc-balls">
+                        ${renderBallSet(r.main_numbers || r.numbers, r.bonus_numbers)}
+                    </motion></div>
+============================================================
+L197 StrReplace
+============================================================
+--- OLD ---
+                    <motion></motion>
+                    <div class="rc-balls">
+                        ${renderBallSet(r.main_numbers || r.numbers, r.bonus_numbers)}
+                    </motion></div>
+--- NEW ---
+                    <div class="rc-balls">
+                        ${renderBallSet(r.main_numbers || r.numbers, r.bonus_numbers)}
+                    </div>
+============================================================
+L197 StrReplace
+============================================================
+--- OLD ---
+            $('predictionBalls').innerHTML = data.generated_numbers
+                .map((n, i) => `<span class="ball-hd large" style="animation-delay:${i * 0.12}s">${escapeHtml(n)}</span>`)
+                .join('');
+--- NEW ---
+            const bonus = data.bonus_numbers || (data.generated_bonus ? [data.generated_bonus] : []);
+            $('predictionBalls').innerHTML = renderBallSet(data.generated_numbers, bonus, 'large');
+============================================================
+L198 StrReplace
+============================================================
+--- OLD ---
+                    <div class="rc-balls">
+                        ${renderBallSet(r.main_numbers || r.numbers, r.bonus_numbers)}
+                    </motion></div>
+--- NEW ---
+                    <div class="rc-balls">
+                        ${renderBallSet(r.main_numbers || r.numbers, r.bonus_numbers)}
+                    </motion></div>
+============================================================
+L200 StrReplace
+============================================================
+--- OLD ---
+                        ${renderBallSet(r.main_numbers || r.numbers, r.bonus_numbers)}
+                    </motion></motion></div>
+--- NEW ---
+                        ${renderBallSet(r.main_numbers || r.numbers, r.bonus_numbers)}
+                    </div>
+============================================================
+L201 StrReplace
+============================================================
+--- OLD ---
+                    </motion></div>
+                </div>
+            `).join('');
+--- NEW ---
+                    </div>
+                </div>
+            `).join('');

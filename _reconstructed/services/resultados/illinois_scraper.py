@@ -1,0 +1,321 @@
+"""
+Scraper oficial Illinois Lottery — Results Hub.
+Fuente: https://www.illinoislottery.com/results-hub
+
+Solo USA / Illinois. No usar Conectate para USA.
+"""
+
+import re
+import time
+from datetime import datetime
+
+import cloudscraper
+from bs4 import BeautifulSoup
+
+from models import format_numbers, get_all_lotteries, upsert_result
+
+RESULTS_HUB_URL = "https://www.illinoislottery.com/results-hub"
+
+MONTHS = {
+    "january": "01", "february": "02", "march": "03", "april": "04",
+    "may": "05", "june": "06", "july": "07", "august": "08",
+    "september": "09", "october": "10", "november": "11", "december": "12",
+}
+
+# slug en HTML -> configuración del juego
+ILLINOIS_GAMES = {
+    "powerball": {
+        "game_name": "Powerball",
+        "lottery_name": "Powerball",
+        "draw_name_default": "Powerball draw",
+        "bonus_label": "Powerball",
+        "type": "powerball",
+    },
+    "megamillions": {
+        "game_name": "Mega Millions",
+        "lottery_name": "Mega Millions",
+        "draw_name_default": "Mega Millions draw",
+        "bonus_label": "Mega Ball",
+        "type": "mega_millions",
+    },
+    "lotto": {
+        "game_name": "Lotto",
+        "lottery_name": "Illinois Lotto",
+        "draw_name_default": "Evening",
+        "bonus_label": "Extra Shot",
+        "type": "lotto",
+    },
+    "luckydaylotto": {
+        "game_name": "Lucky Day Lotto",
+        "lottery_name": "Lucky Day Lotto",
+        "draw_name_default": "Evening",
+        "bonus_label": None,
+        "type": "lucky_day",
+        "has_midday_evening": True,
+    },
+    "pick3": {
+        "game_name": "Pick 3",
+        "lottery_name": "Illinois Pick 3",
+        "draw_name_default": "Evening",
+        "bonus_label": "Fireball",
+        "type": "pick3",
+        "has_midday_evening": True,
+    },
+    "pick4": {
+        "game_name": "Pick 4",
+        "lottery_name": "Illinois Pick 4",
+        "draw_name_default": "Evening",
+        "bonus_label": "Fireball",
+        "type": "pick4",
+        "has_midday_evening": True,
+    },
+}
+
+
+def _pad_number(n, game_type):
+    try:
+        val = int(n)
+    except (ValueError, TypeError):
+        return str(n).strip()
+    if game_type in ("pick3", "pick4"):
+        return str(val)
+    return str(val).zfill(2)
+
+
+def _parse_date_text(date_text):
+    """May 23 2026 -> 2026-05-23"""
+    m = re.match(r"(\w+)\s+(\d{1,2})\s+(\d{4})", (date_text or "").strip())
+    if not m:
+        return None
+    month, day, year = m.groups()
+    return f"{year}-{MONTHS.get(month.lower(), '01')}-{int(day):02d}"
+
+
+def _parse_draw_name(schedule_el, game_cfg):
+    if game_cfg.get("has_midday_evening"):
+        time_el = schedule_el.select_one(".results-content__time")
+        if time_el:
+            t = time_el.get_text(" ", strip=True).lower()
+            if "midday" in t:
+                return "Midday"
+            if "evening" in t:
+                return "Evening"
+    return game_cfg["draw_name_default"]
+
+
+def _parse_balls(balls_container, game_type):
+    """Extrae main-ball y last-ball (bonus/fireball/extra shot)."""
+    primary = balls_container.select_one(
+        ".results-content__primary-container, .latest-results__primary-container"
+    )
+    if not primary:
+        return [], []
+
+    main = []
+    for el in primary.select(".main-ball"):
+        txt = el.get_text(strip=True)
+        if txt.isdigit() or txt:
+            main.append(_pad_number(txt, game_type))
+
+    bonus = []
+    for el in primary.select(".last-ball"):
+        txt = el.get_text(strip=True)
+        if txt.isdigit() or txt:
+            bonus.append(_pad_number(txt, game_type))
+
+    return main, bonus
+
+
+def parse_results_hub_html(html):
+    """
+    Parsea la página results-hub y devuelve lista de filas normalizadas.
+    Solo guarda si hay al menos los números principales esperados.
+    """
+    soup = BeautifulSoup(html, "lxml")
+    rows = []
+
+    containers = soup.select(".results-container[class*='results-container--']")
+    if not containers:
+        containers = soup.select("[class*='results-container--']")
+
+    for container in containers:
+        slug = None
+        for cls in container.get("class", []):
+            if cls.startswith("results-container--"):
+                slug = cls.replace("results-container--", "")
+                break
+        if not slug or slug not in ILLINOIS_GAMES:
+            continue
+
+        game_cfg = ILLINOIS_GAMES[slug]
+        game_type = game_cfg["type"]
+
+        for content in container.select(".results-content"):
+            schedule = content.select_one(".results-content__schedule")
+            if not schedule:
+                continue
+
+            date_el = schedule.select_one(".results-content__date")
+            draw_date = _parse_date_text(date_el.get_text(strip=True) if date_el else "")
+            if not draw_date:
+                continue
+
+            draw_name = _parse_draw_name(schedule, game_cfg)
+            balls_wrap = content.select_one(".results-content__balls")
+            if not balls_wrap:
+                continue
+
+            main_numbers, bonus_numbers = _parse_balls(balls_wrap, game_type)
+            if not main_numbers:
+                print(f"ILLINOIS SCRAPER: sin números para {game_cfg['game_name']} {draw_date} {draw_name}")
+                continue
+
+            min_main = {"pick3": 3, "pick4": 4, "lucky_day": 5, "lotto": 6,
+                        "powerball": 5, "mega_millions": 5}.get(game_type, 3)
+            if len(main_numbers) < min_main:
+                print(
+                    f"ILLINOIS SCRAPER: Resultado aún no disponible — "
+                    f"{game_cfg['game_name']} {draw_name} ({len(main_numbers)}/{min_main})"
+                )
+                continue
+
+            bonus_label = game_cfg.get("bonus_label") if bonus_numbers else None
+
+            rows.append({
+                "country": "USA",
+                "state": "Illinois",
+                "game_name": game_cfg["game_name"],
+                "lottery_name": game_cfg["lottery_name"],
+                "draw_name": draw_name,
+                "draw_date": draw_date,
+                "draw_time": "",
+                "main_numbers": main_numbers,
+                "bonus_numbers": bonus_numbers,
+                "bonus_label": bonus_label,
+                "source_url": RESULTS_HUB_URL,
+            })
+
+            print("Juego detectado:", game_cfg["game_name"])
+            print("Fecha:", draw_date)
+            print("Draw:", draw_name)
+            print("Números principales:", main_numbers)
+            if bonus_numbers:
+                print("Bonus:", bonus_numbers, f"({bonus_label})")
+            else:
+                print("Bonus: —")
+
+    return rows
+
+
+def _find_lottery_id(lotteries, name):
+    for lot in lotteries:
+        if lot["country"] == "USA" and lot["name"].lower() == name.lower():
+            return lot["id"]
+    return None
+
+
+class IllinoisResultsHubScraper:
+    source_key = "illinois_lottery"
+    base_url = "https://www.illinoislottery.com"
+
+    def __init__(self):
+        self.session = cloudscraper.create_scraper(
+            browser={"browser": "chrome", "platform": "windows", "mobile": False}
+        )
+
+    def fetch_results_hub(self):
+        try:
+            resp = self.session.get(RESULTS_HUB_URL, timeout=30)
+            resp.raise_for_status()
+            html = resp.text or ""
+            if len(html) < 1000 or "results-container" not in html:
+                return {"ok": False, "message": "Página sin contenido de resultados."}
+            return {"ok": True, "html": html, "url": resp.url}
+        except Exception as e:
+            return {"ok": False, "message": f"Error al obtener Results Hub: {e}"}
+
+    def test_connection(self):
+        page = self.fetch_results_hub()
+        if page.get("ok"):
+            rows = parse_results_hub_html(page["html"])
+            return {
+                "ok": True,
+                "message": f"Conexión exitosa con Illinois Results Hub ({len(rows)} sorteos detectados).",
+                "url": page["url"],
+            }
+        return page
+
+    def scrape_all(self):
+        page = self.fetch_results_hub()
+        if not page.get("ok"):
+            return []
+        return parse_results_hub_html(page["html"])
+
+
+def import_illinois_results_hub():
+    """Importa/actualiza resultados desde results-hub oficial."""
+    print("Illinois Results Hub — iniciando importación")
+    print("Fuente:", RESULTS_HUB_URL)
+    scraper = IllinoisResultsHubScraper()
+    rows = scraper.scrape_all()
+    if not rows and not scraper.fetch_results_hub().get("ok"):
+        print("Illinois Results Hub import FAILED — sin conexión")
+        return {
+            "ok": False,
+            "message": "No se pudo conectar con Illinois Results Hub.",
+            "imported": 0,
+            "updated": 0,
+        }
+
+    lotteries = get_all_lotteries()
+    imported = 0
+    updated = 0
+    errors = []
+
+    for row in rows:
+        lottery_id = _find_lottery_id(lotteries, row["lottery_name"])
+        if not lottery_id:
+            errors.append(f"Lotería no registrada: {row['lottery_name']}")
+            continue
+        try:
+            bonus_single = row["bonus_numbers"][0] if row["bonus_numbers"] else None
+            fireball = bonus_single if row.get("bonus_label") == "Fireball" else None
+            bonus_num = bonus_single if row.get("bonus_label") != "Fireball" else None
+
+            _, action = upsert_result(
+                lottery_id,
+                row["draw_name"],
+                row.get("draw_time", ""),
+                row["draw_date"],
+                format_numbers(row["main_numbers"]),
+                bonus_number=bonus_num,
+                fireball_number=fireball,
+                source_url=row["source_url"],
+                confirmed=1,
+                main_numbers=format_numbers(row["main_numbers"]),
+                bonus_numbers=format_numbers(row["bonus_numbers"]) if row["bonus_numbers"] else None,
+                bonus_label=row.get("bonus_label"),
+                game_name=row.get("game_name"),
+            )
+            if action == "updated":
+                updated += 1
+                print(f"  → UPDATE {row['lottery_name']} | {row['draw_date']} | {row['draw_name']}")
+            else:
+                imported += 1
+                print(f"  → INSERT {row['lottery_name']} | {row['draw_date']} | {row['draw_name']}")
+        except Exception as e:
+            errors.append(f"{row['lottery_name']} {row['draw_date']}: {e}")
+
+    print(f"Illinois Results Hub import OK — {imported} nuevos, {updated} actualizados")
+    return {
+        "ok": True,
+        "source": "illinois_results_hub",
+        "imported": imported,
+        "updated": updated,
+        "errors": errors[:20],
+        "message": (
+            f"Illinois Results Hub: {imported} nuevos, {updated} actualizados."
+            if imported or updated
+            else "No se importaron resultados nuevos desde Results Hub."
+        ),
+    }

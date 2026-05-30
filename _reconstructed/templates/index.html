@@ -1,0 +1,154 @@
+{% extends "base.html" %}
+
+{% block content %}
+<!-- HEADER PREMIUM -->
+<header class="premium-header" id="inicio">
+    
+    <div class="header-orbs">
+        <span class="float-ball b1">8</span>
+        <span class="float-ball b2">23</span>
+        <span class="float-ball b3">41</span>
+        <span class="float-ball b4">07</span>
+    </div>
+    <div class="header-content animate-fade-in">
+        <div class="header-badge">🎱 CASINO ANALYTICS HD</div>
+        <h1 class="header-title">
+            <span class="title-glow">ANALIZADOR INTELIGENTE</span>
+            <span class="title-sub">DE LOTERÍAS USA + RD</span>
+        </h1>
+        <p class="header-disclaimer">{{ disclaimer }}</p>
+    </div>
+</header>
+
+<!-- FILTROS -->
+<section class="premium-section" id="filtros">
+    <div class="glass-panel filters-panel animate-slide-up">
+        <h2 class="panel-title"><span class="title-icon">🔍</span> Filtros de búsqueda</h2>
+        
+        <div class="filters-grid">
+            <div class="filter-group">
+                <label class="filter-label">PAÍS</label>
+                <select id="selectCountry" class="premium-select">
+                    <option value="">— Seleccionar país —</option>
+                    <option value="USA">🇺🇸 USA</option>
+                    <option value="RD">🇩🇴 República Dominicana</option>
+                </select>
+            </div>
+            <div class="filter-group" id="stateGroup" style="display:none;">
+                <label class="filter-label">ESTADO</label>
+                <select id="selectState" class="premium-select">
+                    <option value="">— Seleccionar estado —</option>
+                </select>
+            </div>
+            <div class="filter-group">
+                <label class="filter-label">LOTERÍA</label>
+                <select id="selectLottery" class="premium-select" disabled>
+                    <option value="">— Seleccionar lotería —</option>
+                </select>
+            </div>
+        </div>
+        <div class="live-indicator" id="liveIndicator" style="display:none;">
+            <span class="pulse-dot"></span> Actualización automática cada 60s
+        </div>
+    </div>
+</section>
+
+<!-- CONTENIDO PRINCIPAL: resultados + análisis -->
+<div class="content-split" id="mainSplit" style="display:none;">
+    <div class="content-left">
+        <!-- RESULTADOS -->
+        <section class="premium-section" id="resultados">
+            <div class="glass-panel animate-slide-up">
+                <h2 class="panel-title"><span class="title-icon">🕘</span> Últimos resultados</h2>
+                <div id="recentResults" class="results-grid"></div>
+            </div>
+        </section>
+
+        <!-- TANDAS -->
+        <section class="premium-section" id="tandas">
+            <div class="glass-panel animate-slide-up">
+                <h2 class="panel-title panel-title-center">
+                    <span class="title-icon">🎯</span> Elige la tanda para tu análisis
+                </h2>
+                <div id="drawButtons" class="tanda-buttons-grid"></div>
+            </div>
+        </section>
+    </div>
+
+    <!-- PANEL ANÁLISIS (derecha) -->
+    <aside class="content-right" id="analisis">
+        <div class="glass-panel analysis-panel animate-fade-in" id="predictionPanel">
+            
+            <div class="analysis-placeholder" id="analysisPlaceholder">
+                <div class="placeholder-icon">🎯</div>
+                <h3>Análisis inteligente</h3>
+                <p>Selecciona una lotería y una tanda para ver la recomendación estadística sugerida.</p>
+            </div>
+
+            <div class="analysis-content" id="analysisContent" style="display:none;">
+                <div class="analysis-header">
+                    <span class="analysis-badge">RECOMENDACIÓN PARA</span>
+                    <h3 id="predictionDraw" class="analysis-draw-name">TARDÍA</h3>
+                    <p id="predictionSchedule" class="analysis-schedule">📌 Recomendado para: —</p>
+                </div>
+
+                
+                <div id="predictionBalls" class="lottery-balls-hd"></div>
+
+                <div class="stats-blocks">
+                    <div class="stat-block stat-hot">
+                        <h4>🔥 Calientes</h4>
+                        <div id="statHot" class="stat-numbers"></div>
+                    </div>
+                    <div class="stat-block stat-cold">
+                        <h4>❄️ Fríos</h4>
+                        <div id="statCold" class="stat-numbers"></div>
+                    </div>
+                    <div class="stat-block stat-overdue">
+                        <h4>⏳ Atrasados</h4>
+                        
+                        
+                        <div id="statOverdue" class="stat-numbers"></div>
+                    </div>
+                </div>
+
+                <div class="analysis-reason">
+                    <h4>📊 Análisis estadístico</h4>
+                    <p id="predictionReason"></p>
+                </div>
+
+                <div class="analysis-meta">
+                    <div class="meta-item">
+                        <span class="meta-label">Confianza</span>
+                        <span id="predictionConfidence" class="confidence-badge"></span>
+                    </div>
+                    <div class="meta-item">
+                        <span class="meta-label">Score</span>
+                        <span id="predictionScore" class="score-value">—</span>
+                    </div>
+                    <div class="meta-item">
+                        <span class="meta-label">Histórico</span>
+                        <span id="predictionHistoric" class="score-value">—</span>
+                    </div>
+                </div>
+                <p class="analysis-date" id="predictionDate"></p>
+                <p class="disclaimer-inline">{{ disclaimer }}</p>
+            </div>
+
+            
+            <div class="analysis-error" id="analysisError" style="display:none;">
+                <p id="analysisErrorMsg"></p>
+            </div>
+        </div>
+    </aside>
+</div>
+
+<!-- LOADING -->
+<div id="loadingOverlay" class="loading-overlay" style="display:none;">
+    <div class="loader-premium">
+        <div class="loader-ring"></div>
+        <div class="loader-ball">🎱</div>
+    </div>
+    <p>Analizando histórico...</p>
+</div>
+{% endblock %}
