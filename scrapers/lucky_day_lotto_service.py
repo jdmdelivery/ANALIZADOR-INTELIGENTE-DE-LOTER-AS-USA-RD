@@ -1,5 +1,5 @@
 """
-Actualización Lucky Day Lotto — fuentes dedicadas + fallback ILN + caché.
+Actualización Lucky Day Lotto — 7 fuentes + caché BD.
 No afecta otras loterías USA.
 """
 from __future__ import annotations
@@ -13,14 +13,20 @@ logger = logging.getLogger(__name__)
 LOG = "[USA SCRAPER]"
 LOTTERY_NAME = "Lucky Day Lotto"
 
-SOURCE_LABELS = {
-    "illinoislottery": "Illinois Lottery",
-    "lotteryusa": "LotteryUSA",
-    "illinoislotterynumbers": "IllinoisLotteryNumbers",
+SOURCE_CHAIN: list[tuple[str, str, str]] = [
+    ("illinois_dbg", "import_illinois_dbg_luckyday", "Illinois Lottery DBG"),
+    ("illinois_hub", "import_illinois_hub_luckyday", "Illinois Results Hub"),
+    ("lotteryusa", "import_lotteryusa_luckyday", "LotteryUSA"),
+    ("lotterypost", "import_lotterypost_luckyday_past", "LotteryPost"),
+    ("illinoislotterynumbers", "import_iln_luckyday_past", "IllinoisLotteryNumbers"),
+    ("lottery_net", "import_lottery_net_luckyday", "Lottery.net"),
+]
+
+SOURCE_LABELS = {k: label for k, _, label in SOURCE_CHAIN}
+SOURCE_LABELS.update({
     "cache_json": "Cache Local",
-    "cache": "Cache Local",
     "database": "Cache Local",
-}
+})
 
 
 def _is_lucky_day_request(loteria: str | None) -> bool:
@@ -31,19 +37,19 @@ def _saved(res: dict) -> bool:
     return int(res.get("imported") or 0) + int(res.get("updated") or 0) > 0
 
 
-def _illinois_live_ok(res: dict) -> bool:
+def _rows_parsed(res: dict) -> int:
+    return int(res.get("rows_parsed") or res.get("rows_found") or 0)
+
+
+def _source_ok(res: dict) -> bool:
+    """Éxito si guardó filas o parseó sorteos válidos en vivo."""
     if not res or not res.get("ok"):
         return False
-    if res.get("from_cache"):
-        return False
-    if res.get("status") == "hub_unreachable":
-        return False
-    if res.get("hub_error"):
-        return False
-    live_status = res.get("live_status_code")
-    if live_status and int(live_status) >= 400:
-        return False
-    return True
+    if _saved(res):
+        return True
+    if _rows_parsed(res) > 0:
+        return True
+    return False
 
 
 def _count_lucky_day_db() -> int:
@@ -55,25 +61,32 @@ def _count_lucky_day_db() -> int:
     return 0
 
 
-def _record(sources: list, key: str, res: dict, url: str = "") -> None:
+def _record(sources: list, key: str, res: dict) -> None:
     sources.append({
         "fuente": key,
-        "fuente_label": SOURCE_LABELS.get(key, key),
+        "fuente_label": res.get("fuente_label") or SOURCE_LABELS.get(key, key),
         "ok": bool(res.get("ok")),
         "status_code": res.get("status_code"),
         "elapsed": res.get("elapsed"),
-        "sorteos": res.get("rows_parsed") or 0,
+        "sorteos": _rows_parsed(res),
         "imported": res.get("imported", 0),
         "updated": res.get("updated", 0),
         "error": (res.get("errors") or [res.get("message") or res.get("error")])[0]
         if not res.get("ok")
         else None,
-        "url": url or res.get("url") or "",
+        "url": res.get("url") or "",
     })
 
 
-def _log_fuente(label: str) -> None:
-    logger.info("%s Lucky Day Lotto | Fuente usada: %s", LOG, label)
+def _log_fuente(label: str, res: dict) -> None:
+    logger.info(
+        "%s Lucky Day Lotto | Fuente usada: %s | imp=%s upd=%s sorteos=%s",
+        LOG,
+        label,
+        res.get("imported", 0),
+        res.get("updated", 0),
+        _rows_parsed(res),
+    )
 
 
 def _import_lucky_day_cache() -> dict:
@@ -89,24 +102,23 @@ def _import_lucky_day_cache() -> dict:
         return {"ok": False, "message": "Sin caché JSON para Lucky Day Lotto"}
 
     imported, updated, errors, _ = _import_rows_grouped(rows)
-    fuente = snap.get("fuente") or "cache"
     return {
         "ok": imported + updated > 0 or bool(rows),
         "imported": imported,
         "updated": updated,
         "errors": errors,
-        "fuente": fuente,
-        "fuente_label": SOURCE_LABELS.get("cache_json", "Cache Local"),
+        "fuente": "cache_json",
+        "fuente_label": "Cache Local",
         "cache": True,
-        "saved": imported + updated,
         "rows_parsed": len(rows),
         "message": f"Caché local Lucky Day ({imported} nuevos, {updated} actualizados).",
     }
 
 
-def _success(res: dict, *, fuente_key: str, warning: bool = False, cache: bool = False, sources_tried: list | None = None) -> dict:
+def _success(res: dict, *, fuente_key: str, sources_tried: list, cache: bool = False) -> dict:
     label = res.get("fuente_label") or SOURCE_LABELS.get(fuente_key, fuente_key)
-    _log_fuente(label)
+    _log_fuente(label, res)
+    live_alt = fuente_key not in ("illinoislottery", "illinois_dbg", "illinois_hub") and not cache
     out = {
         **res,
         "ok": True,
@@ -115,99 +127,69 @@ def _success(res: dict, *, fuente_key: str, warning: bool = False, cache: bool =
         "fuente": fuente_key,
         "fuente_label": label,
         "fuente_usada": label,
-        "warning": warning or cache,
+        "warning": cache,
         "cache": cache,
         "lottery_name": LOTTERY_NAME,
+        "sources_tried": sources_tried,
     }
-    if sources_tried is not None:
-        out["sources_tried"] = sources_tried
     if cache:
         out["mensaje"] = res.get("message") or "Mostrando resultados guardados (caché local)."
-    elif warning:
-        out["mensaje"] = res.get("message") or f"Fuente principal falló. Se usó {label}."
+    elif live_alt and _saved(res):
+        out["mensaje"] = f"✅ Lucky Day actualizado desde {label} ({res.get('imported', 0)} nuevos, {res.get('updated', 0)} actualizados)."
+    elif _saved(res):
+        out["mensaje"] = f"✅ {res.get('message') or 'Lucky Day Lotto actualizado correctamente.'}"
+    elif _rows_parsed(res) > 0:
+        out["mensaje"] = f"✅ Lucky Day al día ({_rows_parsed(res)} sorteos verificados, sin cambios nuevos)."
+        out["status"] = "no_new"
     else:
-        out["mensaje"] = res.get("message") or "Resultados actualizados correctamente"
+        out["mensaje"] = res.get("message") or "Resultados actualizados."
     out["message"] = out["mensaje"]
     return out
 
 
 def actualizar_lucky_day_lotto() -> dict:
     """
-    1. Illinois Lottery (oficial)
-    2. LotteryUSA (fuente actual en Render si Illinois falla)
-    3. IllinoisLotteryNumbers.net
-    4. Caché JSON
-    5. BD (nunca error si hay datos)
+    Cadena dedicada Lucky Day Lotto:
+    1 Illinois DBG → 2 Results Hub → 3 LotteryUSA → 4 LotteryPost →
+    5 IllinoisLotteryNumbers → 6 Lottery.net → caché JSON → BD
     """
+    from scrapers import lucky_day_sources as lds
+
     sources_tried: list[dict] = []
     errors: list[str] = []
-    t0 = time.monotonic()
-    illinois: dict = {}
 
-    logger.info("%s === Lucky Day Lotto — inicio actualización dedicada ===", LOG)
+    logger.info("%s === Lucky Day Lotto — inicio (7 fuentes) ===", LOG)
 
-    # 1 — Illinois Lottery
-    try:
-        from scrapers.illinois_scraper import import_illinois_lottery_now
+    for fuente_key, fn_name, _label in SOURCE_CHAIN:
+        logger.info("%s Lucky Day — probando %s", LOG, SOURCE_LABELS.get(fuente_key, fuente_key))
+        t0 = time.monotonic()
+        try:
+            fn = getattr(lds, fn_name)
+            res = fn()
+            res["elapsed"] = round(time.monotonic() - t0, 2)
+            _record(sources_tried, fuente_key, res)
+            if _source_ok(res):
+                return _success(res, fuente_key=fuente_key, sources_tried=sources_tried)
+            msg = res.get("message") or res.get("error") or f"{fuente_key} sin datos"
+            errors.append(msg)
+            if res.get("errors"):
+                errors.extend(res["errors"][:2])
+        except Exception as exc:
+            logger.exception("%s Lucky Day %s error", LOG, fuente_key)
+            errors.append(str(exc))
 
-        illinois = import_illinois_lottery_now(LOTTERY_NAME)
-        illinois["elapsed"] = round(time.monotonic() - t0, 2)
-        _record(sources_tried, "illinoislottery", illinois, "https://www.illinoislottery.com/results-hub")
-        if illinois.get("ok") and _illinois_live_ok(illinois) and _saved(illinois):
-            return _success(illinois, fuente_key="illinoislottery", sources_tried=sources_tried)
-        if not illinois.get("ok"):
-            errors.append(illinois.get("message") or "Illinois Lottery falló")
-        else:
-            errors.append(illinois.get("message") or "Illinois sin datos en vivo para Lucky Day")
-    except Exception as exc:
-        logger.exception("%s Lucky Day Illinois error", LOG)
-        errors.append(str(exc))
-
-    # 2 — LotteryUSA (fuente actual alternativa)
-    logger.info("%s Lucky Day — probando LotteryUSA", LOG)
-    try:
-        from scrapers.lotteryusa_scraper import import_lotteryusa_results
-
-        usa = import_lotteryusa_results(LOTTERY_NAME)
-        _record(sources_tried, "lotteryusa", usa)
-        if usa.get("ok") and (_saved(usa) or int(usa.get("rows_parsed") or 0) > 0):
-            return _success(usa, fuente_key="lotteryusa", warning=not _illinois_live_ok(illinois), sources_tried=sources_tried)
-        if usa.get("message"):
-            errors.append(usa["message"])
-    except Exception as exc:
-        logger.exception("%s Lucky Day LotteryUSA error", LOG)
-        errors.append(str(exc))
-
-    # 3 — IllinoisLotteryNumbers.net
-    logger.info("%s Lucky Day — probando IllinoisLotteryNumbers.net", LOG)
-    try:
-        from scrapers.illinoislotterynumbers_luckyday import import_iln_luckyday_results
-
-        iln = import_iln_luckyday_results()
-        _record(sources_tried, "illinoislotterynumbers", iln)
-        if iln.get("ok") and (_saved(iln) or int(iln.get("rows_parsed") or 0) > 0):
-            return _success(iln, fuente_key="illinoislotterynumbers", warning=True, sources_tried=sources_tried)
-        if iln.get("message"):
-            errors.append(iln["message"])
-    except Exception as exc:
-        logger.exception("%s Lucky Day ILN error", LOG)
-        errors.append(str(exc))
-
-    # 4 — Caché JSON
-    logger.info("%s Lucky Day — probando caché JSON local", LOG)
+    logger.info("%s Lucky Day — probando caché JSON", LOG)
     try:
         cached = _import_lucky_day_cache()
         _record(sources_tried, "cache_json", cached)
-        if cached.get("ok") and int(cached.get("saved") or 0) > 0:
-            return _success(cached, fuente_key="cache_json", cache=True, sources_tried=sources_tried)
+        if cached.get("ok") and _saved(cached):
+            return _success(cached, fuente_key="cache_json", sources_tried=sources_tried, cache=True)
     except Exception as exc:
-        logger.exception("%s Lucky Day caché JSON error", LOG)
         errors.append(str(exc))
 
-    # 5 — BD
     saved_db = _count_lucky_day_db()
     if saved_db > 0:
-        _log_fuente("Cache Local")
+        _log_fuente("Cache Local", {"imported": 0, "updated": 0, "rows_parsed": saved_db})
         return {
             "ok": True,
             "pais": "US",
@@ -217,13 +199,14 @@ def actualizar_lucky_day_lotto() -> dict:
             "fuente_usada": "Cache Local",
             "warning": True,
             "cache": True,
+            "used_db_fallback": True,
             "saved_count": saved_db,
             "imported": 0,
             "updated": 0,
             "sources_tried": sources_tried,
             "errors": errors[:10],
-            "mensaje": "Mostrando resultados guardados (última actualización en BD).",
-            "message": "Mostrando resultados guardados (última actualización en BD).",
+            "mensaje": "⚠️ No se pudo actualizar en vivo. Se mantienen los últimos resultados guardados.",
+            "message": "⚠️ No se pudo actualizar en vivo. Se mantienen los últimos resultados guardados.",
         }
 
     logger.error("%s Lucky Day — todas las fuentes fallaron", LOG)
