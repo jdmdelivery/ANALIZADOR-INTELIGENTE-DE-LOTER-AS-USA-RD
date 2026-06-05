@@ -476,6 +476,7 @@ def api_results():
         latest_date = results[0].get("draw_date") if results else None
     else:
         results = get_results(lottery_id, draw_name, limit)
+        latest_date = get_max_draw_date(lottery_id)
 
     schedule = get_lottery_schedule(lottery["name"]) if lottery else None
     allowed_draws = None
@@ -506,8 +507,9 @@ def api_results():
     if lottery and lottery.get("country") == "USA":
         results.sort(
             key=lambda r: (
-                0 if "results-hub" in (r.get("source_url") or "") else 1,
                 r.get("draw_date", ""),
+                r.get("draw_time", ""),
+                int(r.get("id") or 0),
             ),
             reverse=True,
         )

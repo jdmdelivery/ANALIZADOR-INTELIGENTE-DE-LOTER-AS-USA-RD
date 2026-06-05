@@ -135,6 +135,15 @@ def fetch_url(
                     reset_usa_session()
                 continue
 
+            lower = html.lower()
+            if "problem loading" in lower and "results-container--" not in lower:
+                last_error = "Illinois: problem loading game data"
+                continue
+            if source == "illinoislottery" and "problem loading" in lower:
+                # Hub SPA sin datos reales — forzar fallback
+                last_error = "Illinois Hub: problem loading (sin resultados en vivo)"
+                continue
+
             return {
                 "ok": True,
                 "html": html,

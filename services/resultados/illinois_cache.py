@@ -28,12 +28,29 @@ def save_hub_cache(html: str, *, url: str, status_code: int) -> None:
     META_FILE.write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
 
-def load_hub_cache():
+def is_hub_cache_stale(max_age_hours: int = 36) -> bool:
+    meta = cache_meta_summary()
+    saved_at = meta.get("saved_at")
+    if not saved_at:
+        return True
+    try:
+        ts = datetime.fromisoformat(saved_at.replace("Z", "+00:00"))
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        age_h = (datetime.now(timezone.utc) - ts).total_seconds() / 3600
+        return age_h > max_age_hours
+    except (TypeError, ValueError):
+        return True
+
+
+def load_hub_cache(*, max_age_hours: int = 36):
     """
     Devuelve dict {ok, html, url, status_code, saved_at, from_cache} o {ok: False}.
     """
     if not HTML_FILE.is_file():
         return {"ok": False, "message": "Sin caché local de Illinois Results Hub."}
+    if is_hub_cache_stale(max_age_hours):
+        return {"ok": False, "message": "Caché Illinois Hub expirada (demasiado antigua)."}
     html = HTML_FILE.read_text(encoding="utf-8", errors="replace")
     if len(html) < 200:
         return {"ok": False, "message": "Caché local vacío o inválido."}

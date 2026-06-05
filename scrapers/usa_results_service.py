@@ -9,6 +9,7 @@ import logging
 import time
 
 from models import count_results_for_lottery, get_all_lotteries, get_max_draw_date
+from services.lottery_dates import max_draw_date_in_rows, recent_cutoff
 
 logger = logging.getLogger(__name__)
 LOG = "[USA SCRAPER]"
@@ -59,6 +60,49 @@ def _illinois_live_ok(res: dict) -> bool:
 
 def _source_saved(res: dict) -> bool:
     return bool(res) and (int(res.get("imported") or 0) + int(res.get("updated") or 0)) > 0
+
+
+def _find_usa_lottery_id(lottery_name: str, state: str = "Illinois") -> int | None:
+    for lot in get_all_lotteries(active_only=True):
+        if lot.get("country") != "USA":
+            continue
+        if lot["name"].lower() != (lottery_name or "").lower():
+            continue
+        if state and (lot.get("state") or "").lower() != state.lower():
+            continue
+        return lot["id"]
+    return None
+
+
+def _source_has_fresh_data(res: dict, lottery_name: str | None, state: str = "Illinois") -> bool:
+    """True si la fuente trajo filas nuevas o fechas más recientes que la BD."""
+    imported = int(res.get("imported") or 0)
+    if imported > 0:
+        return True
+    if not lottery_name:
+        return _source_saved(res)
+
+    lid = _find_usa_lottery_id(lottery_name, state)
+    if not lid:
+        return _source_saved(res)
+
+    db_max = get_max_draw_date(lid) or ""
+    rows = res.get("rows") or []
+    if rows:
+        src_max = max_draw_date_in_rows(
+            [r for r in rows if (r.get("lottery_name") or "").lower() == lottery_name.lower()]
+        ) or ""
+    else:
+        src_max = res.get("latest_date") or res.get("max_draw_date") or ""
+
+    if src_max and (not db_max or src_max > db_max):
+        return True
+
+    # Sin filas parseadas: aceptar solo si hubo importados
+    cutoff = recent_cutoff(7)
+    if db_max and db_max >= cutoff and imported == 0 and int(res.get("updated") or 0) > 0:
+        return False
+    return imported > 0
 
 
 def _record_try(sources_tried: list, fuente: str, res: dict, url: str = "") -> None:
@@ -275,6 +319,148 @@ def _try_fallback_source(fuente: str, loteria: str | None, sources_tried: list) 
     return None
 
 
+def _actualizar_una_loteria_usa(
+    loteria: str,
+    *,
+    state: str = "Illinois",
+) -> dict:
+    """Actualiza una lotería USA con fallbacks; no bloquea otras."""
+    errors: list[str] = []
+    sources_tried: list[dict] = []
+
+    if _is_lucky_day_lotto_request(loteria):
+        from scrapers.lucky_day_lotto_service import actualizar_lucky_day_lotto
+        return actualizar_lucky_day_lotto()
+
+    illinois = _run_illinois(loteria, refresh_all=False)
+    _record_try(sources_tried, "illinoislottery", illinois, "https://www.illinoislottery.com/results-hub")
+
+    if (
+        illinois.get("ok")
+        and _illinois_live_ok(illinois)
+        and _source_has_fresh_data(illinois, loteria, state)
+    ):
+        result = _normalize_success(illinois, fuente="illinoislottery", warning=bool(illinois.get("partial")))
+        result["sources_tried"] = sources_tried
+        return result
+
+    if illinois.get("ok") and not _illinois_live_ok(illinois):
+        errors.append(illinois.get("message") or "Illinois sin respuesta en vivo")
+    elif illinois.get("ok"):
+        errors.append(illinois.get("message") or f"Illinois sin datos nuevos para {loteria}")
+    else:
+        errors.append(illinois.get("message") or "Illinois Lottery falló")
+
+    for fuente in ("lotteryusa", "lotterypost"):
+        logger.info("%s %s — fallback para %s", LOG, fuente, loteria)
+        alt = _try_fallback_source(fuente, loteria, sources_tried)
+        if alt and _source_has_fresh_data(alt, loteria, state):
+            result = _normalize_success(alt, fuente=fuente, fallback_fuente=fuente)
+            result["sources_tried"] = sources_tried
+            return result
+        if alt and _source_saved(alt):
+            result = _normalize_success(alt, fuente=fuente, fallback_fuente=fuente)
+            result["sources_tried"] = sources_tried
+            result["warning"] = True
+            result["mensaje"] = (
+                f"⚠️ {loteria}: sin fechas nuevas; se sincronizaron datos existentes desde {FALLBACK_LABELS.get(fuente, fuente)}."
+            )
+            result["message"] = result["mensaje"]
+            return result
+
+    try:
+        cached = _import_from_json_cache(loteria)
+        _record_try(sources_tried, "cache_json", cached)
+        if cached.get("ok") and int(cached.get("saved") or 0) > 0:
+            result = _normalize_success(cached, fuente=cached.get("fuente", "cache"), cache=True)
+            result["sources_tried"] = sources_tried
+            return result
+    except Exception as exc:
+        errors.append(str(exc))
+
+    saved_db = _count_usa_saved(loteria, state)
+    if saved_db > 0:
+        return {
+            "ok": True,
+            "pais": "US",
+            "lottery_name": loteria,
+            "parser": "usa_multi",
+            "fuente": "database",
+            "warning": True,
+            "cache": True,
+            "used_db_fallback": True,
+            "saved_count": saved_db,
+            "imported": 0,
+            "updated": 0,
+            "sources_tried": sources_tried,
+            "errors": errors[:5],
+            "mensaje": f"⚠️ {loteria}: no se pudo actualizar en vivo; se mantienen resultados guardados.",
+            "message": f"⚠️ {loteria}: no se pudo actualizar en vivo; se mantienen resultados guardados.",
+        }
+
+    return {
+        "ok": False,
+        "pais": "US",
+        "lottery_name": loteria,
+        "sources_tried": sources_tried,
+        "errors": errors,
+        "message": errors[0] if errors else f"No se pudo actualizar {loteria}",
+    }
+
+
+def _refresh_all_usa(state: str = "Illinois") -> dict:
+    """Actualiza cada lotería USA por separado — un fallo no bloquea las demás."""
+    total_imported = total_updated = 0
+    errors: list[str] = []
+    details: list[dict] = []
+    ok_count = 0
+
+    usa_lots = [
+        l for l in get_all_lotteries(active_only=True)
+        if l.get("country") == "USA" and (not state or (l.get("state") or "").lower() == state.lower())
+    ]
+    logger.info("%s === Actualización USA todas (%s loterías) ===", LOG, len(usa_lots))
+
+    for lot in usa_lots:
+        name = lot["name"]
+        try:
+            res = _actualizar_una_loteria_usa(name, state=state)
+            details.append({"name": name, **res})
+            if res.get("ok"):
+                ok_count += 1
+                total_imported += int(res.get("imported") or 0)
+                total_updated += int(res.get("updated") or 0)
+            else:
+                errors.append(f"{name}: {res.get('message', 'error')}")
+        except Exception as exc:
+            logger.exception("%s Error actualizando %s", LOG, name)
+            errors.append(f"{name}: {exc}")
+            details.append({"name": name, "ok": False, "message": str(exc)})
+
+    saved = total_imported + total_updated
+    msg = (
+        f"USA: {ok_count}/{len(usa_lots)} loterías OK — "
+        f"{saved} registros ({total_imported} nuevos, {total_updated} actualizados)."
+    )
+    if errors:
+        msg += f" Fallos: {'; '.join(errors[:4])}."
+
+    result = {
+        "ok": ok_count > 0,
+        "status": "updated" if saved else "no_new",
+        "pais": "US",
+        "parser": "usa_multi",
+        "imported": total_imported,
+        "updated": total_updated,
+        "details": details,
+        "errors": errors,
+        "mensaje": msg,
+        "message": msg,
+    }
+    _persist_meta(result, [])
+    return result
+
+
 def actualizar_resultados_usa_profesional(
     loteria: str | None = None,
     *,
@@ -286,6 +472,9 @@ def actualizar_resultados_usa_profesional(
     errors: list[str] = []
     sources_tried: list[dict] = []
     logger.info("%s === Inicio actualización USA | lotería=%s ===", LOG, loteria or "TODAS")
+
+    if refresh_all or not loteria:
+        return _refresh_all_usa(state)
 
     if _is_lucky_day_lotto_request(loteria):
         from scrapers.lucky_day_lotto_service import actualizar_lucky_day_lotto
@@ -309,81 +498,6 @@ def actualizar_resultados_usa_profesional(
             logger.warning("%s meta Lucky Day: %s", LOG, exc)
         return result
 
-    # 1 — Illinois Lottery (oficial)
-    illinois = _run_illinois(loteria, refresh_all)
-    _record_try(sources_tried, "illinoislottery", illinois, "https://www.illinoislottery.com/results-hub")
-
-    if illinois.get("ok") and _illinois_live_ok(illinois):
-        saved_il = _source_saved(illinois)
-        if saved_il or (not loteria and illinois.get("status") == "no_new"):
-            result = _normalize_success(
-                illinois,
-                fuente="illinoislottery",
-                warning=bool(illinois.get("partial")),
-            )
-            result["sources_tried"] = sources_tried
-            _persist_meta(result, sources_tried)
-            return result
-        if loteria:
-            logger.info(
-                "%s Illinois sin datos nuevos para %s; probando fallback",
-                LOG,
-                loteria,
-            )
-            errors.append(illinois.get("message") or f"Sin datos Illinois para {loteria}")
-
-    if not illinois.get("ok"):
-        errors.append(illinois.get("message") or "Illinois Lottery falló")
-    elif not _illinois_live_ok(illinois):
-        errors.append(illinois.get("message") or "Illinois sin respuesta en vivo (caché/bloqueo)")
-
-    # 2 — LotteryUSA
-    logger.info("%s Fallback 2/3: LotteryUSA", LOG)
-    usa = _try_fallback_source("lotteryusa", loteria, sources_tried)
-    if usa:
-        result = _normalize_success(usa, fuente="lotteryusa", fallback_fuente="lotteryusa")
-        result["sources_tried"] = sources_tried
-        _persist_meta(result, sources_tried)
-        return result
-
-    # 3 — LotteryPost
-    logger.info("%s Fallback 3/3: LotteryPost", LOG)
-    lp = _try_fallback_source("lotterypost", loteria, sources_tried)
-    if lp:
-        result = _normalize_success(lp, fuente="lotterypost", fallback_fuente="lotterypost")
-        result["sources_tried"] = sources_tried
-        _persist_meta(result, sources_tried)
-        return result
-
-    # 4 — Caché JSON
-    logger.info("%s Fallback: caché JSON local", LOG)
-    try:
-        cached = _import_from_json_cache(loteria)
-        _record_try(sources_tried, "cache_json", cached)
-        if cached.get("ok") and int(cached.get("saved") or 0) > 0:
-            result = _normalize_success(cached, fuente=cached.get("fuente", "cache"), cache=True)
-            result["sources_tried"] = sources_tried
-            _persist_meta(result, sources_tried)
-            return result
-    except Exception as exc:
-        logger.exception("%s Error caché JSON", LOG)
-        errors.append(str(exc))
-
-    # Illinois hub cache con datos en BD
-    if illinois.get("ok"):
-        saved_db = _count_usa_saved(loteria, state)
-        if saved_db > 0:
-            result = _normalize_success(
-                {**illinois, "saved_count": saved_db, "cantidad_resultados": saved_db},
-                fuente="illinoislottery",
-                cache=True,
-            )
-            result["sources_tried"] = sources_tried
-            _persist_meta(result, sources_tried)
-            return result
-
-    # 5 — BD (nunca error si hay datos)
-    logger.error("%s Todas las fuentes fallaron | intentos=%s", LOG, len(sources_tried))
-    result = _db_fallback(loteria, state, errors, sources_tried)
-    _persist_meta(result, sources_tried)
+    result = _actualizar_una_loteria_usa(loteria, state=state)
+    _persist_meta(result, result.get("sources_tried", sources_tried))
     return result

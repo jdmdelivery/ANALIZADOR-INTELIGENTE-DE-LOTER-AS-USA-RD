@@ -19,11 +19,12 @@ FETCH_RETRIES = 3
 BASE = "https://www.lotteryusa.com"
 HUB_URL = f"{BASE}/illinois/"
 
-MONTHS = {
-    "january": "01", "february": "02", "march": "03", "april": "04",
-    "may": "05", "june": "06", "july": "07", "august": "08",
-    "september": "09", "october": "10", "november": "11", "december": "12",
-}
+from services.lottery_dates import parse_card_date_text
+
+LUCKY_DAY_USA_PATHS = [
+    ("/illinois/lucky-day-lotto-evening/", "Evening"),
+    ("/illinois/midday-lucky-day-lotto/", "Midday"),
+]
 
 LOTTERYUSA_GAMES = {
     "powerball": {
@@ -119,16 +120,7 @@ def _parse_lotteryusa_date(time_el) -> str | None:
     if sub_el:
         sub = sub_el.get_text(" ", strip=True)
     text = f"{dow} {sub}".strip() or time_el.get_text(" ", strip=True)
-    # "Monday, May 25, 2026" or "May 25, 2026"
-    m = re.search(
-        r"(?:\w+day,?\s+)?(\w+)\s+(\d{1,2}),?\s+(\d{4})",
-        text,
-        re.I,
-    )
-    if not m:
-        return None
-    month, day, year = m.groups()
-    return f"{year}-{MONTHS.get(month.lower(), '01')}-{int(day):02d}"
+    return parse_card_date_text(text)
 
 
 def _parse_ball_list(ul, game_cfg: dict) -> tuple[list[str], list[str]]:
@@ -224,24 +216,51 @@ class LotteryUsaScraper:
         cfg = LOTTERYUSA_GAMES.get(slug)
         if not cfg:
             return {"ok": False, "message": f"Juego no configurado: {slug}", "rows": []}
-        page = self.fetch_page(cfg["path"])
-        if not page.get("ok"):
-            return {**page, "rows": [], "slug": slug}
-        try:
-            ensure_scraper_deps()
-            rows = parse_lotteryusa_html(page["html"], cfg, page["url"])
-        except Exception as exc:
-            logger.exception("%s LotteryUSA parse error %s: %s", LOG, slug, exc)
-            return {"ok": False, "message": str(exc), "rows": [], "slug": slug}
+
+        paths: list[tuple[str, str | None]] = [(cfg["path"], None)]
+        if slug == "luckyday":
+            paths = [(p, dn) for p, dn in LUCKY_DAY_USA_PATHS]
+
+        all_rows: list[dict] = []
+        last_page: dict = {}
+        urls: list[str] = []
+        for path, draw_override in paths:
+            page = self.fetch_page(path)
+            if not page.get("ok"):
+                continue
+            try:
+                ensure_scraper_deps()
+                game_cfg = cfg
+                if draw_override:
+                    game_cfg = {**cfg, "draw_name_default": draw_override}
+                chunk = parse_lotteryusa_html(page["html"], game_cfg, page["url"])
+                all_rows.extend(chunk)
+                last_page = page
+                urls.append(page["url"])
+            except Exception as exc:
+                logger.exception("%s LotteryUSA parse error %s: %s", LOG, slug, exc)
+
+        if not all_rows and slug == "luckyday":
+            return {"ok": False, "message": "LotteryUSA Lucky Day sin sorteos", "rows": [], "slug": slug}
+
+        # dedupe por fecha+tanda
+        seen: set[tuple] = set()
+        rows: list[dict] = []
+        for r in sorted(all_rows, key=lambda x: x.get("draw_date", ""), reverse=True):
+            key = (r.get("draw_date"), r.get("draw_name"), tuple(r.get("main_numbers") or []))
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append(r)
         rows = rows[:max_rows]
         logger.info("%s LotteryUSA %s | resultados=%s", LOG, slug, len(rows))
         return {
             "ok": bool(rows),
             "rows": rows,
             "slug": slug,
-            "url": page["url"],
-            "status_code": page.get("status_code"),
-            "elapsed": page.get("elapsed"),
+            "url": urls[0] if urls else cfg["path"],
+            "status_code": last_page.get("status_code"),
+            "elapsed": last_page.get("elapsed"),
             "count": len(rows),
             "message": f"{len(rows)} sorteos parseados" if rows else "Sin sorteos parseables",
         }
@@ -344,7 +363,12 @@ def import_lotteryusa_results(lottery_name: str | None = None) -> dict:
 
     save_results_snapshot(rows, fuente="lotteryusa", url=(scrape.get("urls") or [""])[0])
 
+    from services.lottery_dates import max_draw_date_in_rows
+
+    latest = max_draw_date_in_rows(rows)
     msg = f"Resultados desde LotteryUSA ({imported} nuevos, {updated} actualizados)."
+    if latest:
+        msg += f" Última fecha: {latest}."
     return {
         "ok": True,
         "status": "updated" if saved else "no_new",
@@ -356,5 +380,7 @@ def import_lotteryusa_results(lottery_name: str | None = None) -> dict:
         "game_stats": game_stats,
         "message": msg,
         "rows_parsed": len(rows),
+        "latest_date": latest,
+        "max_draw_date": latest,
         "url": (scrape.get("urls") or [HUB_URL])[0],
     }

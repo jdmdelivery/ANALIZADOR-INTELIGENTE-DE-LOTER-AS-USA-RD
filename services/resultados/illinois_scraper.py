@@ -411,10 +411,13 @@ def _upsert_illinois_row(row, lotteries):
     return action, None
 
 
-def _import_rows_grouped(rows, lotteries=None):
+def _import_rows_grouped(rows, lotteries=None, *, recent_days: int = 90):
     """Importa filas agrupadas; un fallo por juego no detiene los demás."""
+    from services.lottery_dates import filter_recent_rows
+
     lotteries = lotteries or get_all_lotteries()
-    imported = updated = 0
+    rows = filter_recent_rows(rows or [], days=recent_days)
+    imported = updated = failed = 0
     errors = []
     game_stats = {}
 
@@ -424,13 +427,15 @@ def _import_rows_grouped(rows, lotteries=None):
         by_game.setdefault(key, []).append(row)
 
     for game_name, game_rows in by_game.items():
-        g_imported = g_updated = 0
+        g_imported = g_updated = g_failed = 0
         try:
             for row in game_rows:
                 try:
                     action, err = _upsert_illinois_row(row, lotteries)
                     if err:
                         errors.append(err)
+                        g_failed += 1
+                        failed += 1
                         continue
                     if action == "updated":
                         updated += 1
@@ -438,12 +443,34 @@ def _import_rows_grouped(rows, lotteries=None):
                     else:
                         imported += 1
                         g_imported += 1
+                    logger.info(
+                        "%s guardado | lotería=%s | fecha=%s | tanda=%s | acción=%s",
+                        LOG_PREFIX,
+                        game_name,
+                        row.get("draw_date"),
+                        row.get("draw_name"),
+                        action,
+                    )
                 except Exception as e:
                     errors.append(f"{game_name} {row.get('draw_date')}: {e}")
+                    g_failed += 1
+                    failed += 1
         except Exception as e:
             errors.append(f"Error {game_name}: {e}")
-            print(f"Error {game_name}: {e}")
-        game_stats[game_name] = {"imported": g_imported, "updated": g_updated}
+            logger.exception("%s Error importando %s", LOG_PREFIX, game_name)
+        game_stats[game_name] = {
+            "imported": g_imported,
+            "updated": g_updated,
+            "failed": g_failed,
+        }
+        logger.info(
+            "%s resumen %s | nuevos=%s | actualizados=%s | fallidos=%s",
+            LOG_PREFIX,
+            game_name,
+            g_imported,
+            g_updated,
+            g_failed,
+        )
 
     return imported, updated, errors, game_stats
 
