@@ -52,3 +52,28 @@ def test_parse_lottery_net():
 
 def test_rejects_number_50():
     assert not valid_lucky_day_main(["01", "02", "03", "04", "50"])
+
+
+def test_hub_stale_rows_rejected(monkeypatch):
+    from scrapers import lucky_day_lotto_service as svc
+
+    monkeypatch.setattr(svc, "_lucky_day_lottery_id", lambda: 99)
+    monkeypatch.setattr(svc, "get_max_draw_date", lambda _lid: "2026-06-04")
+
+    stale = {
+        "ok": True,
+        "imported": 0,
+        "updated": 0,
+        "rows_parsed": 2,
+        "latest_date": "2026-01-04",
+    }
+    assert not svc._source_has_fresh_data(stale)
+
+    fresh = {
+        "ok": True,
+        "imported": 3,
+        "updated": 0,
+        "rows_parsed": 10,
+        "latest_date": "2026-06-04",
+    }
+    assert svc._source_has_fresh_data(fresh)

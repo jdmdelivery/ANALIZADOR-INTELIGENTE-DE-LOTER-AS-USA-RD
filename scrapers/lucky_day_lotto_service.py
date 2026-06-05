@@ -7,7 +7,8 @@ from __future__ import annotations
 import logging
 import time
 
-from models import count_results_for_lottery, get_all_lotteries
+from models import count_results_for_lottery, get_all_lotteries, get_max_draw_date
+from services.lottery_dates import max_draw_date_in_rows, recent_cutoff
 
 logger = logging.getLogger(__name__)
 LOG = "[USA SCRAPER]"
@@ -41,15 +42,47 @@ def _rows_parsed(res: dict) -> int:
     return int(res.get("rows_parsed") or res.get("rows_found") or 0)
 
 
-def _source_ok(res: dict) -> bool:
-    """Éxito si guardó filas o parseó sorteos válidos en vivo."""
+def _lucky_day_lottery_id() -> int | None:
+    for lot in get_all_lotteries(active_only=True):
+        if lot.get("country") != "USA":
+            continue
+        if lot["name"].lower() == LOTTERY_NAME.lower():
+            return lot["id"]
+    return None
+
+
+def _source_has_fresh_data(res: dict) -> bool:
+    """True si importó filas nuevas o las fechas parseadas son más recientes que la BD."""
     if not res or not res.get("ok"):
         return False
-    if _saved(res):
+    if int(res.get("imported") or 0) > 0:
         return True
-    if _rows_parsed(res) > 0:
+
+    lid = _lucky_day_lottery_id()
+    db_max = get_max_draw_date(lid) if lid else ""
+    src_max = res.get("latest_date") or max_draw_date_in_rows(res.get("rows") or []) or ""
+    if src_max and (not db_max or src_max > db_max):
         return True
-    return False
+
+    cutoff = recent_cutoff(14)
+    if src_max and src_max >= cutoff and _saved(res):
+        return True
+
+    # Solo actualizaciones sin fechas nuevas y BD ya al día → no aceptar fuente Illinois/caché
+    if int(res.get("updated") or 0) > 0 and db_max and db_max >= recent_cutoff(7):
+        return False
+
+    if db_max and src_max and src_max < db_max:
+        return False
+
+    return _rows_parsed(res) > 0 and bool(src_max) and src_max >= cutoff
+
+
+def _source_ok(res: dict) -> bool:
+    """Éxito solo si la fuente trae datos frescos o guardó filas nuevas."""
+    if not res or not res.get("ok"):
+        return False
+    return _source_has_fresh_data(res)
 
 
 def _count_lucky_day_db() -> int:

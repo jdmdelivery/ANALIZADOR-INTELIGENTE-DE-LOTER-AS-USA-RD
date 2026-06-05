@@ -375,7 +375,8 @@ def actualizar_rd_todas(days: int = 30) -> dict:
         refreshed.add(key)
         try:
             out = actualizar_rd_loteria(db_name, days=days)
-            lid = lot["id"] if lot else None
+            lot_row = find_lottery_in_list(get_all_lotteries(), db_name, country="RD")
+            lid = lot_row["id"] if lot_row else None
             latest = get_max_draw_date(lid) if lid else None
             logger.info(
                 "%s RD resumen %s | nuevos=%s | actualizados=%s | última_fecha=%s | fuente=%s",

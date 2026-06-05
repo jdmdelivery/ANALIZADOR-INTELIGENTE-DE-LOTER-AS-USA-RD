@@ -8,6 +8,12 @@ import logging
 import re
 
 from scrapers.usa_http import fetch_url
+from services.lottery_dates import (
+    filter_recent_rows,
+    max_draw_date_in_rows,
+    parse_card_date_text,
+    recent_cutoff,
+)
 from services.scraper_deps import ensure_scraper_deps, get_beautiful_soup
 
 logger = logging.getLogger(__name__)
@@ -95,20 +101,7 @@ def _dedupe_rows(rows: list[dict]) -> list[dict]:
 
 
 def _parse_date_text(text: str) -> str | None:
-    text = (text or "").strip()
-    m = re.search(
-        r"(?:\w+day,?\s+)?(\w+)\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4})",
-        text,
-        re.I,
-    )
-    if m:
-        month, day, year = m.groups()
-        return f"{year}-{MONTHS.get(month.lower(), '01')}-{int(day):02d}"
-    m = re.search(r"(\w+)\s+(\d{1,2})\s+(\d{4})", text)
-    if m:
-        month, day, year = m.groups()
-        return f"{year}-{MONTHS.get(month.lower(), '01')}-{int(day):02d}"
-    return None
+    return parse_card_date_text(text)
 
 
 def _import_rows(rows: list[dict], *, fuente: str, fuente_label: str, url: str, page: dict | None = None) -> dict:
@@ -116,6 +109,8 @@ def _import_rows(rows: list[dict], *, fuente: str, fuente_label: str, url: str, 
     from services.resultados.illinois_scraper import _import_rows_grouped
 
     rows = _dedupe_rows([r for r in rows if valid_lucky_day_main(r.get("main_numbers") or [])])
+    rows = filter_recent_rows(rows, days=90)
+    latest = max_draw_date_in_rows(rows)
     if not rows:
         return {
             "ok": False,
@@ -151,6 +146,8 @@ def _import_rows(rows: list[dict], *, fuente: str, fuente_label: str, url: str, 
         "imported": imported,
         "updated": updated,
         "rows_parsed": len(rows),
+        "rows": rows,
+        "latest_date": latest,
         "errors": errors[:10],
         "status_code": (page or {}).get("status_code"),
         "elapsed": (page or {}).get("elapsed"),
@@ -249,7 +246,20 @@ def import_illinois_hub_luckyday() -> dict:
     page = _fetch("illinois_hub", url, ("results-container", "luckyday"))
     if not page.get("ok"):
         return {**page, "ok": False, "fuente": "illinoislottery", "fuente_label": "Illinois Results Hub"}
-    rows = parse_illinois_hub_luckyday(page["html"], page.get("url", url))
+    rows = filter_recent_rows(parse_illinois_hub_luckyday(page["html"], page.get("url", url)), days=90)
+    latest = max_draw_date_in_rows(rows)
+    if not rows or (latest and latest < recent_cutoff(30)):
+        return {
+            "ok": False,
+            "fuente": "illinoislottery",
+            "fuente_label": "Illinois Results Hub",
+            "imported": 0,
+            "updated": 0,
+            "rows_parsed": 0,
+            "latest_date": latest,
+            "message": "Illinois Hub sin sorteos recientes (SPA/caché obsoleta)",
+            "url": url,
+        }
     return _import_rows(rows, fuente="illinoislottery", fuente_label="Illinois Results Hub", url=url, page=page)
 
 
