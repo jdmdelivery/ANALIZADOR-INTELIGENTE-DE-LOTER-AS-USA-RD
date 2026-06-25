@@ -927,7 +927,14 @@ def admin_actualizar_rd():
 @admin_required
 def api_actualizar_leidsa():
     result = _run_leidsa_update()
-    code = 200 if result.get("ok") else 400
+    if result.get("ok"):
+        code = 200
+    else:
+        code = 400
+        result.setdefault("error", result.get("message") or "Error LEIDSA")
+        result.setdefault("detalle", result.get("error"))
+        result.setdefault("fuente", "leidsa.com")
+        result.setdefault("status", 400)
     return jsonify(result), code
 
 

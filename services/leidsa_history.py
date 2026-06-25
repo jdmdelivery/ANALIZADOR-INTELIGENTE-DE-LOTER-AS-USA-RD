@@ -146,46 +146,33 @@ def fetch_page(url: str, use_cache: bool = True) -> dict[str, Any]:
         if cached:
             return _safe_response(ok=True, html=cached, method="cache", url=url, cached=True)
 
-    client = get_http_session()
-    last_err = None
-    status_code = None
-    for attempt in range(3):
-        try:
-            resp = client.get(url, headers=BROWSER_HEADERS, timeout=FETCH_TIMEOUT)
-            status_code = resp.status_code
-            if status_code != 200:
-                last_err = f"HTTP {status_code}"
-                _log_historial(url=url, status=status_code, juego="fetch", error=last_err)
-                continue
-            html = resp.text or ""
-            if len(html) < 5000:
-                last_err = f"HTML demasiado corto ({len(html)} bytes)"
-                _log_historial(url=url, status=status_code, juego="fetch", error=last_err)
-                continue
-            if "/results/" in url and "drawResults" not in html and "gameDrawId" not in html:
-                last_err = "HTML sin drawResults (posible bloqueo WAF o página vacía)"
-                _log_historial(url=url, status=status_code, juego="fetch", error=last_err)
-                continue
-            _write_page_cache(url, html)
-            if LEIDSA_TEST_MODE:
-                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-                safe = re.sub(r"[^a-z0-9]+", "_", url.split("/")[-2].lower())[:30]
-                with open(
-                    os.path.join(_cache_dir(), f"raw_{safe}_{ts}.html"),
-                    "w",
-                    encoding="utf-8",
-                ) as f:
-                    f.write(html)
-            return _safe_response(
-                ok=True,
-                html=html,
-                method="cloudscraper" if "cloudscraper" in type(client).__module__ else "requests",
-                url=url,
-                status_code=200,
-            )
-        except Exception as exc:
-            last_err = str(exc)
-    return _safe_response(ok=False, error=last_err or "fetch failed", url=url, status_code=status_code)
+    from services.leidsa_http import fetch_leidsa_page
+
+    out = fetch_leidsa_page(url, juego="historial", require_draw_data=True, min_bytes=5000)
+    if out.get("ok"):
+        _write_page_cache(url, out["html"])
+        if LEIDSA_TEST_MODE:
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            safe = re.sub(r"[^a-z0-9]+", "_", url.split("/")[-2].lower())[:30]
+            with open(
+                os.path.join(_cache_dir(), f"raw_{safe}_{ts}.html"),
+                "w",
+                encoding="utf-8",
+            ) as f:
+                f.write(out["html"])
+        return _safe_response(
+            ok=True,
+            html=out["html"],
+            method=out.get("method") or "cloudscraper",
+            url=url,
+            status_code=out.get("status_code"),
+        )
+    return _safe_response(
+        ok=False,
+        error=out.get("error") or "fetch failed",
+        url=url,
+        status_code=out.get("status_code"),
+    )
 
 
 def discover_latest_draw_ids() -> dict[str, str]:

@@ -1308,22 +1308,34 @@
         btnRefreshLeidsa.disabled = true;
         const prevLabel = btnRefreshLeidsa.textContent;
         btnRefreshLeidsa.textContent = '⏳ Actualizando...';
-        setLeidsaStatus('🔄 Conectando con leidsa.com...', 'loading');
+        setLeidsaStatus('🔄 Actualizando LEIDSA (fuente oficial + respaldos)...', 'loading');
         try {
-            const res = await fetch('/api/resultados/leidsa/actualizar', { method: 'POST' });
-            const data = await res.json();
-            if (!data.ok) {
-                let detail = data.message || 'Leidsa no respondió, intenta de nuevo';
-                if (data.status_code) detail += ` · HTTP ${data.status_code}`;
-                if (data.parser) detail += ` · ${data.parser}`;
-                if (data.error) detail += ` · ${data.error}`;
-                if (data.blocking_type) detail += ` · ${data.blocking_type}`;
-                setLeidsaStatus(detail, 'error');
+            const res = await fetch('/api/resultados/leidsa/actualizar', {
+                method: 'POST',
+                credentials: 'same-origin',
+            });
+            const data = await parseJsonResponse(res);
+            if (!data.ok || data.live_failed) {
+                let detail = data.message || data.error || 'LEIDSA no respondió en vivo';
+                if (data.used_db_fallback) {
+                    detail = data.message || 'No se pudo actualizar en vivo. Mostrando últimos resultados guardados.';
+                    if (data.latest_date) detail += ` Última fecha: ${data.latest_date}.`;
+                    if (data.saved_count) detail += ` (${data.saved_count} en BD)`;
+                } else {
+                    if (data.status_code) detail += ` · HTTP ${data.status_code}`;
+                    if (data.blocking_type) detail += ` · ${data.blocking_type}`;
+                    if (data.detalle && !detail.includes(data.detalle)) detail += ` · ${data.detalle}`;
+                    if (data.errors?.length) detail += ` · ${data.errors.slice(0, 3).join(' · ')}`;
+                }
+                setLeidsaStatus(detail.startsWith('❌') ? detail : `❌ ${detail}`, 'error');
+                console.error('[LEIDSA FALLBACK]', data);
                 await loadLeidsaBoard();
                 return;
             }
+            const fuente = data.fuente_label || data.fuente_usada || 'LEIDSA';
+            const fecha = data.latest_date ? ` · Última fecha: ${data.latest_date}` : '';
             setLeidsaStatus(
-                `✅ ${data.message || 'LEIDSA actualizada'} (${data.inserted || 0} nuevos, ${data.updated || 0} act.)`,
+                `✅ Actualizado desde: ${fuente} (${data.inserted || 0} nuevos, ${data.updated || 0} act.)${fecha}`,
                 'ok'
             );
             await loadLeidsaBoard();

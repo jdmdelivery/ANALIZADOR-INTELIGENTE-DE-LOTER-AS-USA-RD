@@ -59,35 +59,20 @@ class LeidsaServiceTests(unittest.TestCase):
         self.assertEqual(r["results"], [])
 
     def test_scraper_structure(self):
-        with patch.object(
-            leidsa_service,
-            "fetch_leidsa_html",
-            return_value=leidsa_service._safe_response(
-                ok=True, html=SAMPLE_HTML, method="test", status_code=200, html_length=len(SAMPLE_HTML)
-            ),
+        with patch(
+            "services.leidsa_fallback.orchestrator._fetch_official",
+            return_value={"ok": True, "html": SAMPLE_HTML, "status_code": 200, "method": "test"},
         ):
             out = leidsa_service.scrape_leidsa_results()
         self.assertTrue(out["ok"])
         self.assertGreater(len(out["results"]), 0)
-        self.assertEqual(out["source"], "leidsa.com")
+        self.assertEqual(out["source"], "LEIDSA.com")
 
     def test_fallback_requests(self):
-        class FakeResp:
-            status_code = 200
-            text = SAMPLE_HTML
-
-        class FakeSession:
-            def get(self, *a, **k):
-                return FakeResp()
-
-        with patch.object(leidsa_service, "fetch_leidsa_html") as mock_fetch:
-            mock_fetch.side_effect = lambda: leidsa_service._safe_response(
-                ok=True,
-                html=SAMPLE_HTML,
-                method="requests",
-                status_code=200,
-                html_length=len(SAMPLE_HTML),
-            )
+        with patch(
+            "services.leidsa_fallback.leidsa_official_parser.fetch_official_page",
+            return_value={"ok": True, "html": SAMPLE_HTML, "status_code": 200, "method": "requests"},
+        ):
             out = leidsa_service.scrape_leidsa_results()
         self.assertTrue(out["ok"])
 
@@ -110,10 +95,11 @@ class LeidsaServiceTests(unittest.TestCase):
                 (lot["id"],),
             ).fetchone()["c"]
         with patch.object(leidsa_service, "scrape_leidsa_results", return_value=leidsa_service._safe_response(
-            ok=False, error="timeout", message="Leidsa no respondió",
+            ok=False, error="HTTP 403", message="Leidsa no respondió", status_code=403,
         )):
             result = leidsa_service.update_leidsa_now()
-        self.assertTrue(result["ok"])
+        self.assertFalse(result["ok"])
+        self.assertTrue(result.get("live_failed"))
         self.assertTrue(result.get("used_db_fallback"))
         with models.get_db() as conn:
             after = conn.execute(
@@ -141,9 +127,10 @@ class LeidsaServiceTests(unittest.TestCase):
             self.assertTrue(item.get("numeros"))
 
     def test_debug_route_payload(self):
-        with patch.object(leidsa_service, "fetch_leidsa_html", return_value=leidsa_service._safe_response(
-            ok=True, html=SAMPLE_HTML, method="test", status_code=200, html_length=1000,
-        )):
+        with patch(
+            "services.leidsa_fallback.orchestrator._fetch_official",
+            return_value={"ok": True, "html": SAMPLE_HTML, "status_code": 200, "method": "test"},
+        ):
             dbg = leidsa_service.debug_leidsa()
         self.assertIn("connection_ok", dbg)
         self.assertIn("results_count", dbg)

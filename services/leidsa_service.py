@@ -259,95 +259,46 @@ def _html_has_embedded_results(html: str) -> bool:
     )
 
 
-def _build_fetch_clients() -> list[tuple[str, Any]]:
-    """cloudscraper primero — requests solo devuelve shell sin JSON embebido."""
-    clients: list[tuple[str, Any]] = []
-    try:
-        import cloudscraper  # noqa: WPS433
-
-        for _ in range(FETCH_RETRIES):
-            clients.append(
-                (
-                    "cloudscraper",
-                    cloudscraper.create_scraper(
-                        browser={
-                            "browser": "chrome",
-                            "platform": "windows",
-                            "mobile": False,
-                        }
-                    ),
-                )
-            )
-    except ImportError:
-        _log("cloudscraper no instalado — usando requests")
-    for _ in range(max(1, FETCH_RETRIES - len(clients))):
-        clients.append(("requests", requests.Session()))
-    return clients
-
-
 def fetch_leidsa_html() -> dict[str, Any]:
-    """Hasta 3 reintentos: cloudscraper y requests."""
+    """Descarga home leidsa.com — cloudscraper + reintentos."""
+    from services.leidsa_http import fetch_leidsa_page, log_leidsa_scraper
+
     _log(f"URL: {SOURCE_URL}")
-    clients = _build_fetch_clients()
-    last_error = None
-    last_status = None
-    last_html = ""
+    out = fetch_leidsa_page(SOURCE_URL, juego="home", min_bytes=5000)
+    if out.get("ok"):
+        html = out["html"]
+        _save_debug_html_file(html)
+        api_urls = detect_hidden_endpoints(html)
+        _save_debug_raw(html, {"api_urls": api_urls}, "html")
+        return _safe_response(
+            ok=True,
+            html=html,
+            method=out.get("method"),
+            status_code=out.get("status_code"),
+            html_length=len(html),
+            html_detected=True,
+            possible_api_urls=api_urls,
+            blocking_type=None,
+            elapsed=out.get("elapsed"),
+        )
 
-    for attempt, (method_name, client) in enumerate(clients, start=1):
-        try:
-            _log(f"Intento {attempt}/{len(clients)} — Método: {method_name}")
-            resp = client.get(SOURCE_URL, headers=BROWSER_HEADERS, timeout=FETCH_TIMEOUT)
-            last_status = resp.status_code
-            html = resp.text or ""
-            last_html = html
-            _log(f"STATUS: {resp.status_code}")
-            _log(f"HTML LENGTH: {len(html)}")
-            print(html[:3000])
-            _log(f"HTML PREVIEW (3000): ver consola")
-
-            has_embedded = _html_has_embedded_results(html)
-            blocking = detect_blocking(html, resp.status_code)
-            if resp.status_code != 200:
-                last_error = f"HTTP {resp.status_code}"
-                continue
-            if len(html) < 1000:
-                last_error = "HTML demasiado corto"
-                continue
-            if not has_embedded:
-                last_error = "HTML sin drawnValues (shell vacío — reintentar)"
-                _log(f"{LOG_PREFIX} HTML descargado pero sin JSON embebido ({method_name})")
-                continue
-            if blocking:
-                _log(f"Advertencia {blocking} — hay datos embebidos, parseando")
-
-            _log(f"{LOG_PREFIX} HTML descargado OK ({method_name})")
-            _save_debug_html_file(html)
-            api_urls = detect_hidden_endpoints(html)
-            _save_debug_raw(html, {"api_urls": api_urls}, "html")
-            return _safe_response(
-                ok=True,
-                html=html,
-                method=method_name,
-                status_code=resp.status_code,
-                html_length=len(html),
-                html_detected=True,
-                possible_api_urls=api_urls,
-                blocking_type=None,
-            )
-        except Exception as exc:
-            last_error = f"{method_name}: {exc}"
-            _log(f"ERROR: {last_error}")
-            logger.exception("LEIDSA fetch %s", method_name)
-
-    blocking = detect_blocking(last_html, last_status)
+    blocking = detect_blocking(out.get("html", ""), out.get("status_code"))
+    err = out.get("error") or "No se pudo conectar con leidsa.com"
+    log_leidsa_scraper(
+        url=SOURCE_URL,
+        status=out.get("status_code") or "error",
+        tiempo=out.get("elapsed"),
+        juego="home",
+        error=err,
+    )
     return _safe_response(
         ok=False,
-        error=last_error or "No se pudo conectar con leidsa.com",
-        status_code=last_status,
-        html_length=len(last_html),
-        html_detected=bool(last_html),
-        html_preview=last_html[:1500],
-        blocking_type=blocking,
+        error=err,
+        status_code=out.get("status_code"),
+        html_length=0,
+        html_detected=False,
+        blocking_type=blocking or ("forbidden" if out.get("status_code") == 403 else None),
+        elapsed=out.get("elapsed"),
     )
 
 
@@ -764,68 +715,81 @@ def parse_leidsa_html(html: str) -> dict[str, Any]:
     return _safe_response(ok=True, results=rows, parser=parser_label or "leidsa")
 
 
-def scrape_leidsa_results() -> dict[str, Any]:
-    fetch = fetch_leidsa_html()
-    if not fetch.get("ok"):
-        return _safe_response(
-            ok=False,
-            error=fetch.get("error") or "Leidsa no respondió, intenta de nuevo",
-            message="Leidsa no respondió, intenta de nuevo",
-            rows=[],
-            status_code=fetch.get("status_code"),
-            blocking_type=fetch.get("blocking_type"),
-            html_preview=fetch.get("html_preview", ""),
+def scrape_leidsa_via_results_pages() -> dict[str, Any]:
+    """Fallback: último sorteo por juego desde /results/Leidsa/{juego}/{drawId}."""
+    from services.leidsa_config import LEIDSA_HISTORY_GAMES
+    from services.leidsa_history import build_results_url, discover_latest_draw_ids, parse_draw_results_history
+    from services.leidsa_http import fetch_leidsa_page, log_leidsa_scraper
+
+    draw_ids = discover_latest_draw_ids()
+    rows: list[dict] = []
+    errors: list[str] = []
+    method = "results_pages"
+
+    for game in LEIDSA_HISTORY_GAMES:
+        url = build_results_url(game, draw_ids)
+        fetch = fetch_leidsa_page(url, juego=game["name"], require_draw_data=True, min_bytes=5000)
+        if not fetch.get("ok"):
+            err = fetch.get("error") or "fetch failed"
+            errors.append(f"{game['name']}: {err}")
+            continue
+        parsed = parse_draw_results_history(
+            fetch["html"],
+            game["family_name"],
+            days=7,
+            limit=2,
+            slug=game["slug"],
         )
-
-    html = fetch.get("html", "")
-    api_urls = fetch.get("possible_api_urls") or detect_hidden_endpoints(html)
-
-    if api_urls:
-        api_try = try_fetch_json_api(api_urls)
-        if api_try.get("ok") and api_try.get("results"):
-            return _safe_response(
-                ok=True,
-                rows=api_try["results"],
-                results=api_try["results"],
-                error=None,
-                message="OK",
-                parser=api_try.get("parser", "json_api"),
-                method=fetch.get("method"),
-                status_code=fetch.get("status_code"),
-                html_length=fetch.get("html_length"),
-                html_detected=True,
+        if not parsed:
+            parsed = parse_leidsa_html(fetch["html"]).get("results") or []
+            parsed = [r for r in parsed if r.get("lottery") == game["slug"]][:1]
+        if parsed:
+            rows.append(parsed[0])
+            log_leidsa_scraper(
+                url=url,
+                status=fetch.get("status_code"),
+                tiempo=fetch.get("elapsed"),
+                juego=game["name"],
+                resultados=1,
+            )
+        else:
+            errors.append(f"{game['name']}: parser sin filas")
+            log_leidsa_scraper(
+                url=url,
+                status=fetch.get("status_code"),
+                tiempo=fetch.get("elapsed"),
+                juego=game["name"],
+                resultados=0,
+                error="parser sin filas",
             )
 
-    parsed = parse_leidsa_html(html)
-    if not parsed.get("ok"):
-        js_urls = [u for u in api_urls if u.endswith(".js")]
-        if js_urls:
-            js_parsed = fetch_js_and_extract_json(js_urls)
-            if js_parsed.get("ok"):
-                parsed = js_parsed
-
-    if not parsed.get("ok"):
+    rows = _dedupe_rows(rows)
+    if rows:
         return _safe_response(
-            ok=False,
-            error=parsed.get("error"),
-            message="LEIDSA no respondió o cambió su formato.",
-            rows=[],
-            parser=parsed.get("parser"),
-            status_code=fetch.get("status_code"),
-            html_preview=html[:1500],
+            ok=True,
+            results=rows,
+            rows=rows,
+            parser="results_pages",
+            method=method,
+            errors=errors,
+            message=f"OK vía páginas de resultados ({len(rows)} juegos)",
         )
     return _safe_response(
-        ok=True,
-        rows=parsed["results"],
-        results=parsed["results"],
-        error=None,
-        message="OK",
-        parser=parsed.get("parser"),
-        method=fetch.get("method"),
-        status_code=fetch.get("status_code"),
-        html_length=fetch.get("html_length"),
-        html_detected=True,
+        ok=False,
+        error="; ".join(errors[:6]) if errors else "Sin resultados en páginas LEIDSA",
+        message="LEIDSA no respondió en home ni en páginas de resultados",
+        rows=[],
+        errors=errors,
+        parser="results_pages",
+        method=method,
     )
+
+
+def scrape_leidsa_results() -> dict[str, Any]:
+    """Cadena: LEIDSA oficial → EnLoteria → LD.us → Yelu → NacionalLoteria."""
+    from services.leidsa_fallback.orchestrator import scrape_leidsa_with_fallbacks
+
+    return scrape_leidsa_with_fallbacks()
 
 
 def fetch_leidsa_history(limit_days: int = 30) -> dict[str, Any]:
@@ -979,6 +943,17 @@ def _log_fetch_result(scrape: dict, fetch_extra: dict | None = None) -> None:
     )
 
 
+def _latest_saved_leidsa_date() -> str | None:
+    try:
+        from models import get_leidsa_history_from_db
+
+        hist = get_leidsa_history_from_db(limit_days=365)
+        dates = [r.get("draw_date") for r in hist if r.get("draw_date")]
+        return max(dates) if dates else None
+    except Exception:
+        return None
+
+
 def update_leidsa_now() -> dict[str, Any]:
     """Actualización manual — nunca lanza excepción."""
     try:
@@ -988,44 +963,86 @@ def update_leidsa_now() -> dict[str, Any]:
         _log_fetch_result(scrape)
 
         if not scrape.get("ok"):
-            msg = scrape.get("message") or "Leidsa no respondió, intenta de nuevo"
-            if scrape.get("blocking_type") == "cloudflare":
-                msg = "Cloudflare bloqueó acceso a leidsa.com"
-            log_leidsa_sync(ok=False, message=msg, error=scrape.get("error"))
+            err = scrape.get("error") or scrape.get("message") or "Leidsa no respondió"
+            if scrape.get("blocking_type") == "cloudflare" or scrape.get("status_code") == 403:
+                err = f"HTTP {scrape.get('status_code') or 403} — acceso bloqueado por leidsa.com/WAF"
             from models import get_leidsa_history_from_db
 
             saved = len(get_leidsa_history_from_db(limit_days=90))
+            latest_date = _latest_saved_leidsa_date()
             if saved > 0:
-                _log(f"LEIDSA en vivo falló; manteniendo {saved} resultados en BD")
-                return _safe_response(
-                    ok=True,
-                    status="cached_fallback",
-                    message="⚠️ No se pudo actualizar en vivo; se mantienen resultados guardados.",
-                    inserted=0,
-                    updated=0,
-                    skipped=0,
-                    parser="leidsa",
-                    results_found=saved,
-                    used_db_fallback=True,
-                    error=scrape.get("error"),
-                )
+                msg = "No se pudo actualizar en vivo. Mostrando últimos resultados guardados."
+                if latest_date:
+                    msg += f" Última fecha guardada: {latest_date}."
+                _log(f"LEIDSA en vivo falló; {saved} resultados previos en BD (no se borran)")
+            else:
+                msg = f"❌ LEIDSA en vivo falló: {err}"
+            log_leidsa_sync(ok=False, message=msg, error=err)
             return _safe_response(
                 ok=False,
+                live_failed=True,
+                used_db_fallback=bool(saved),
+                saved_count=saved,
+                latest_date=latest_date,
                 status="error",
                 message=msg,
                 inserted=0,
                 updated=0,
                 skipped=0,
-                error=scrape.get("error"),
-                status_code=scrape.get("status_code"),
                 parser=scrape.get("parser") or "leidsa",
+                results_found=0,
+                error=err,
+                detalle=err,
+                status_code=scrape.get("status_code"),
                 blocking_type=scrape.get("blocking_type"),
+                errors=scrape.get("errors") or [],
+                fuente=SOURCE_NAME,
+                attempts=scrape.get("attempts") or [],
             )
 
-        save = save_leidsa_rows(scrape.get("results") or scrape.get("rows") or [])
+        rows = scrape.get("results") or scrape.get("rows") or []
+        if not rows:
+            err = "Parser sin resultados — no se guardan filas vacías"
+            log_leidsa_sync(ok=False, message=err, error=err)
+            return _safe_response(
+                ok=False,
+                live_failed=True,
+                status="error",
+                message=err,
+                error=err,
+                detalle=err,
+                inserted=0,
+                updated=0,
+                skipped=0,
+                parser=scrape.get("parser") or "leidsa",
+                status_code=scrape.get("status_code"),
+                fuente=SOURCE_NAME,
+            )
+
+        save = save_leidsa_rows(rows)
+        saved_total = int(save.get("inserted") or 0) + int(save.get("updated") or 0)
+        if saved_total == 0 and not rows:
+            err = "Sin resultados válidos para guardar"
+            return _safe_response(ok=False, error=err, message=err, live_failed=True)
+
+        fuente_label = scrape.get("fuente_label") or scrape.get("source") or SOURCE_NAME
+        fuente_key = scrape.get("fuente_usada") or scrape.get("fuente") or "leidsa_official"
+        latest_date = scrape.get("latest_date") or _latest_saved_leidsa_date()
+
+        from services.leidsa_fallback.log import log_leidsa_fallback
+
+        log_leidsa_fallback(
+            fuente=fuente_key,
+            url=scrape.get("url") or "",
+            status=scrape.get("status_code") or 200,
+            juego="todos",
+            resultados_encontrados=len(rows),
+            nuevos=save.get("inserted", 0),
+            actualizados=save.get("updated", 0),
+        )
         msg = (
-            f"LEIDSA: {save.get('inserted', 0)} nuevos, "
-            f"{save.get('updated', 0)} actualizados."
+            f"Actualizado desde: {fuente_label} — "
+            f"{save.get('inserted', 0)} nuevos, {save.get('updated', 0)} actualizados."
         )
         log_leidsa_sync(
             ok=True,
@@ -1034,7 +1051,7 @@ def update_leidsa_now() -> dict[str, Any]:
             updated=save.get("updated", 0),
         )
         n_found = len(scrape.get("results") or [])
-        _log(f"Parser usado: leidsa — resultados encontrados: {n_found}")
+        _log(f"Parser usado: {scrape.get('parser')} — resultados encontrados: {n_found}")
         return _safe_response(
             ok=True,
             status="updated" if save.get("inserted", 0) + save.get("updated", 0) else "no_new",
@@ -1046,6 +1063,11 @@ def update_leidsa_now() -> dict[str, Any]:
             parser=scrape.get("parser") or "leidsa",
             results_found=n_found,
             error=None,
+            fuente=fuente_key,
+            fuente_usada=fuente_key,
+            fuente_label=fuente_label,
+            latest_date=latest_date,
+            fallback_used=bool(scrape.get("fallback_used")),
         )
     except Exception as exc:
         logger.exception("update_leidsa_now")
