@@ -210,7 +210,14 @@ def enforce_access():
         return
     if not current_user.is_authenticated:
         if request.path.startswith("/api/"):
-            return jsonify({"ok": False, "message": "No autenticado. Inicia sesión."}), 401
+            return jsonify({
+                "ok": False,
+                "error": "No autenticado. Inicia sesión.",
+                "detalle": "Sesión no válida o expirada",
+                "fuente": "api",
+                "status": 401,
+                "message": "No autenticado. Inicia sesión.",
+            }), 401
         return redirect(url_for("login", next=request.url))
     allowed, reason = current_user.check_access()
     if allowed:
@@ -958,7 +965,19 @@ def api_actualizar_leidsa_historial():
     data = request.get_json(silent=True) or {}
     days = data.get("days") or request.form.get("days", type=int) or 90
     result = update_leidsa_history(days=int(days))
-    code = 200 if result.get("ok") else 400
+    saved = int(result.get("inserted") or 0) + int(result.get("updated") or 0)
+    if result.get("ok"):
+        code = 200
+    elif saved > 0:
+        result["ok"] = True
+        result["partial"] = True
+        code = 200
+    else:
+        code = 400
+        result.setdefault("error", result.get("message") or "Error al actualizar historial LEIDSA")
+        result.setdefault("detalle", result.get("error"))
+        result.setdefault("fuente", "leidsa.com")
+        result.setdefault("status", 400)
     return jsonify(result), code
 
 

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import time
@@ -36,6 +37,39 @@ from services.leidsa_service import (
     utc_to_fecha_rd,
     utc_to_local_hm,
 )
+
+logger = logging.getLogger(__name__)
+LOG_HISTORIAL = "[LEIDSA HISTORIAL]"
+
+
+def _log_historial(
+    *,
+    url: str = "",
+    status: str | int = "",
+    juego: str = "",
+    resultados: int | str = "",
+    nuevos: int | str = "",
+    actualizados: int | str = "",
+    error: str | None = None,
+) -> None:
+    lines = [
+        LOG_HISTORIAL,
+        f"URL: {url}",
+        f"status: {status}",
+        f"juego: {juego}",
+        f"resultados: {resultados}",
+        f"nuevos: {nuevos}",
+        f"actualizados: {actualizados}",
+        f"error: {error or ''}",
+    ]
+    text = "\n".join(lines)
+    if error:
+        logger.error(text)
+        print(text)
+    else:
+        logger.info(text)
+        print(text)
+
 
 _DRAW_ENTRY = re.compile(
     r'\\"gameDrawId\\":\\"([^\\"]+)\\",\\"gameFamilyName\\":\\"([^\\"]+)\\"'
@@ -114,15 +148,23 @@ def fetch_page(url: str, use_cache: bool = True) -> dict[str, Any]:
 
     client = get_http_session()
     last_err = None
+    status_code = None
     for attempt in range(3):
         try:
             resp = client.get(url, headers=BROWSER_HEADERS, timeout=FETCH_TIMEOUT)
-            if resp.status_code != 200:
-                last_err = f"HTTP {resp.status_code}"
+            status_code = resp.status_code
+            if status_code != 200:
+                last_err = f"HTTP {status_code}"
+                _log_historial(url=url, status=status_code, juego="fetch", error=last_err)
                 continue
             html = resp.text or ""
             if len(html) < 5000:
-                last_err = "HTML demasiado corto"
+                last_err = f"HTML demasiado corto ({len(html)} bytes)"
+                _log_historial(url=url, status=status_code, juego="fetch", error=last_err)
+                continue
+            if "/results/" in url and "drawResults" not in html and "gameDrawId" not in html:
+                last_err = "HTML sin drawResults (posible bloqueo WAF o página vacía)"
+                _log_historial(url=url, status=status_code, juego="fetch", error=last_err)
                 continue
             _write_page_cache(url, html)
             if LEIDSA_TEST_MODE:
@@ -143,7 +185,7 @@ def fetch_page(url: str, use_cache: bool = True) -> dict[str, Any]:
             )
         except Exception as exc:
             last_err = str(exc)
-    return _safe_response(ok=False, error=last_err or "fetch failed", url=url)
+    return _safe_response(ok=False, error=last_err or "fetch failed", url=url, status_code=status_code)
 
 
 def discover_latest_draw_ids() -> dict[str, str]:
@@ -332,10 +374,28 @@ def fetch_leidsa_game_history(
         html, family, days=days, limit=limit, slug=slug
     )
 
+    parse_error = None
+    if fetch.get("ok") and not rows:
+        parse_error = (
+            "Parser drawResults: 0 sorteos "
+            f"(familia «{family}» no encontrada o HTML sin historial)"
+        )
+
     if not rows and options:
         _log(f"  {game['name']}: sin drawResults, {len(options)} opciones dropdown detectadas")
 
     _log(f"  {game['name']}: {len(rows)} resultados ({len(options)} opciones dropdown)")
+
+    status_code = fetch.get("status_code") or 200
+    _log_historial(
+        url=url,
+        status=status_code if rows else (parse_error or fetch.get("error") or "sin_filas"),
+        juego=game["name"],
+        resultados=len(rows),
+        nuevos=0,
+        actualizados=0,
+        error=parse_error or (fetch.get("error") if not fetch.get("ok") else None),
+    )
 
     return _safe_response(
         ok=bool(rows),
@@ -344,11 +404,13 @@ def fetch_leidsa_game_history(
         url=url,
         rows=rows,
         results=rows,
+        status_code=status_code,
         options_found=len(options),
         dropdown_options=options[:20],
         possible_api_urls=api_urls[:10],
         parser="drawResults",
         method=fetch.get("method"),
+        error=parse_error or fetch.get("error"),
     )
 
 
@@ -360,10 +422,14 @@ def fetch_all_leidsa_history(
     save: bool = True,
 ) -> dict[str, Any]:
     draw_ids = discover_latest_draw_ids()
+    if not draw_ids:
+        _log("discover_latest_draw_ids vacío — usando drawId por prefijo por juego")
+
     all_rows: list[dict] = []
     per_game: list[dict] = []
     inserted = updated = skipped = 0
     games_checked = 0
+    errors: list[str] = []
 
     for game in LEIDSA_HISTORY_GAMES:
         games_checked += 1
@@ -375,32 +441,85 @@ def fetch_all_leidsa_history(
             use_cache=use_cache,
         )
         rows = res.get("rows") or []
+        game_inserted = game_updated = 0
+        game_error = res.get("error")
+
+        if save and rows:
+            try:
+                batch = save_leidsa_rows(rows)
+                game_inserted = int(batch.get("inserted") or 0)
+                game_updated = int(batch.get("updated") or 0)
+                skipped += int(batch.get("skipped") or 0)
+                inserted += game_inserted
+                updated += game_updated
+                batch_errors = batch.get("errors") or []
+                if batch_errors:
+                    errors.extend(batch_errors[:3])
+            except Exception as exc:
+                game_error = f"Error guardando: {exc}"
+                errors.append(f"{game['name']}: {exc}")
+                logger.exception("%s guardado %s", LOG_HISTORIAL, game["name"])
+
+        _log_historial(
+            url=res.get("url") or "",
+            status=res.get("status_code") or ("ok" if rows else "error"),
+            juego=game["name"],
+            resultados=len(rows),
+            nuevos=game_inserted,
+            actualizados=game_updated,
+            error=game_error,
+        )
+
         per_game.append({
             "name": game["name"],
             "slug": game["slug"],
-            "ok": res.get("ok"),
+            "ok": bool(rows),
+            "saved": game_inserted + game_updated > 0,
             "url": res.get("url"),
+            "status_code": res.get("status_code"),
             "results_found": len(rows),
+            "inserted": game_inserted,
+            "updated": game_updated,
             "options_found": res.get("options_found", 0),
-            "error": res.get("error"),
+            "error": game_error,
+            "parser": res.get("parser"),
         })
         all_rows.extend(rows)
 
-    if save and all_rows:
-        batch = save_leidsa_rows(all_rows)
-        inserted = batch.get("inserted", 0)
-        updated = batch.get("updated", 0)
-        skipped = batch.get("skipped", 0)
+    results_found = len(all_rows)
+    saved_total = inserted + updated
+    failed = [g for g in per_game if not g.get("ok")]
+    partial = bool(failed) and saved_total > 0
+
+    if saved_total > 0:
+        ok = True
+    elif results_found > 0:
+        ok = True
+    else:
+        ok = False
+
+    if not ok and errors:
+        err_summary = "; ".join(errors[:5])
+    elif failed:
+        err_summary = "; ".join(
+            f"{g['name']}: {g.get('error') or 'sin filas'}" for g in failed[:6]
+        )
+    else:
+        err_summary = None
 
     return _safe_response(
-        ok=bool(all_rows),
+        ok=ok,
+        partial=partial,
         games_checked=games_checked,
-        results_found=len(all_rows),
+        results_found=results_found,
         inserted=inserted,
         updated=updated,
         skipped=skipped,
         games=per_game,
+        games_failed=len(failed),
         days=days,
+        error=err_summary if not ok else (err_summary if partial else None),
+        errors=errors[:15],
     )
 
 
@@ -458,27 +577,67 @@ def update_leidsa_history(days: int = 90) -> dict[str, Any]:
         from models import log_leidsa_sync
 
         out = fetch_all_leidsa_history(days=days, save=True)
-        msg = (
-            f"Historial LEIDSA: {out.get('results_found', 0)} sorteos, "
-            f"{out.get('inserted', 0)} nuevos, {out.get('updated', 0)} actualizados."
-        )
+        saved = int(out.get("inserted") or 0) + int(out.get("updated") or 0)
+        found = int(out.get("results_found") or 0)
+
+        if saved > 0:
+            out["ok"] = True
+        elif found > 0:
+            out["ok"] = True
+            out["warning"] = True
+            out["message"] = (
+                f"Historial LEIDSA: {found} sorteos encontrados pero ninguno nuevo guardado."
+            )
+        else:
+            out["ok"] = False
+            failed = out.get("games") or []
+            details = [
+                f"{g.get('name')}: {g.get('error') or 'sin filas'}"
+                for g in failed
+                if not g.get("ok")
+            ]
+            out["error"] = out.get("error") or (
+                "; ".join(details[:6]) if details else "Ningún juego devolvió historial parseable"
+            )
+            out["detalle"] = out["error"]
+            out["message"] = (
+                f"No se pudo actualizar historial LEIDSA. {out['error']}"
+            )
+
+        if out.get("ok") and saved > 0:
+            msg = (
+                f"Historial LEIDSA: {found} sorteos, "
+                f"{out.get('inserted', 0)} nuevos, {out.get('updated', 0)} actualizados."
+            )
+            if out.get("partial"):
+                msg += f" Advertencia: {out.get('games_failed', 0)} juego(s) sin datos."
+            out["message"] = msg
+
         log_leidsa_sync(
             ok=bool(out.get("ok")),
-            message=msg,
+            message=out.get("message", ""),
             imported=out.get("inserted", 0),
             updated=out.get("updated", 0),
+            error=out.get("error"),
         )
-        out["message"] = msg
-        out["status"] = "updated" if out.get("inserted") or out.get("updated") else "no_new"
+        out["status"] = (
+            "updated" if saved else ("partial" if out.get("partial") else "no_new" if out.get("ok") else "error")
+        )
+        out["fuente"] = "leidsa.com"
         return out
     except Exception as exc:
+        logger.exception("%s update_leidsa_history", LOG_HISTORIAL)
         _log(f"update_leidsa_history error: {exc}")
         return _safe_response(
             ok=False,
             error=str(exc),
+            detalle=str(exc),
+            message=f"Error interno actualizando historial LEIDSA: {exc}",
             games_checked=0,
             results_found=0,
             inserted=0,
             updated=0,
             skipped=0,
+            fuente="leidsa.com",
+            status="error",
         )

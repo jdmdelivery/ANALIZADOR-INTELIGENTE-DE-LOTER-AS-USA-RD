@@ -55,6 +55,45 @@ class LeidsaHistoryTests(unittest.TestCase):
             url = build_results_url(LEIDSA_HISTORY_GAMES[0], ids)
             self.assertIn("leidsa.com/results", url)
 
+    def test_update_ok_when_partial_saved(self):
+        from unittest.mock import patch
+        from services.leidsa_history import fetch_all_leidsa_history, update_leidsa_history
+
+        good = {
+            "ok": True,
+            "rows": [{"lottery": "leidsa_loto_mas", "draw": "noche", "fecha_rd": "2026-06-01", "numeros": [1, 2, 3, 4, 5, 6], "draw_time": "21:00"}],
+            "url": "https://www.leidsa.com/results/Leidsa/Loto/1_1",
+            "status_code": 200,
+            "error": None,
+        }
+        bad = {"ok": False, "rows": [], "url": "https://www.leidsa.com/x", "status_code": 403, "error": "HTTP 403"}
+
+        with patch("services.leidsa_history.fetch_leidsa_game_history", side_effect=[good, bad, bad, bad, bad, bad]):
+            with patch("services.leidsa_history.save_leidsa_rows") as save:
+                save.return_value = {"inserted": 2, "updated": 0, "skipped": 0, "errors": []}
+                out = fetch_all_leidsa_history(days=30, save=True, use_cache=False)
+        self.assertTrue(out.get("ok"))
+        self.assertTrue(out.get("partial"))
+        self.assertEqual(out.get("inserted"), 2)
+
+    def test_update_fails_when_all_games_empty(self):
+        from unittest.mock import patch
+        from services.leidsa_history import update_leidsa_history
+
+        empty = {"ok": False, "rows": [], "url": "https://www.leidsa.com/x", "status_code": 403, "error": "HTTP 403"}
+        with patch("services.leidsa_history.fetch_all_leidsa_history") as fetch_all:
+            fetch_all.return_value = {
+                "ok": False,
+                "results_found": 0,
+                "inserted": 0,
+                "updated": 0,
+                "games": [{"name": "Loto Más", "ok": False, "error": "HTTP 403"}],
+                "error": "HTTP 403",
+            }
+            out = update_leidsa_history(days=30)
+        self.assertFalse(out.get("ok"))
+        self.assertIn("error", out)
+
 
 if __name__ == "__main__":
     unittest.main()

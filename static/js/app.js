@@ -609,10 +609,21 @@
                 url += `&draw_name=${encodeURIComponent(currentDrawName)}`;
             }
 
-            const res = await fetch(url);
-            const data = await res.json();
+            const res = await fetch(url, { credentials: 'same-origin' });
+            const data = await parseJsonResponse(res);
+
+            if (res.status === 401) {
+                lastResultsError = data.message || data.error || 'Sesión expirada. Vuelve a iniciar sesión.';
+                recentResults.innerHTML = `<p class="empty-msg empty-msg-error">${escapeHtml(lastResultsError)}</p>`;
+                return;
+            }
+            if (res.status === 403) {
+                lastResultsError = data.message || data.error || 'Acceso denegado.';
+                recentResults.innerHTML = `<p class="empty-msg empty-msg-error">${escapeHtml(lastResultsError)}</p>`;
+                return;
+            }
             if (!data.ok) {
-                lastResultsError = data.message || 'Error al cargar resultados';
+                lastResultsError = data.message || data.error || 'Error al cargar resultados';
                 recentResults.innerHTML = renderEmptyResultsMessage(data);
                 return;
             }
@@ -1234,24 +1245,49 @@
         }
     }
 
+    function formatLeidsaHistoryError(data, res) {
+        const parts = [];
+        if (res && !res.ok) parts.push(`HTTP ${res.status}`);
+        if (data?.error) parts.push(data.error);
+        if (data?.detalle && data.detalle !== data.error) parts.push(data.detalle);
+        if (data?.games?.length) {
+            const failed = data.games
+                .filter((g) => !g.ok || g.error)
+                .map((g) => `${g.name}: ${g.error || 'sin filas'}${g.status_code ? ` (HTTP ${g.status_code})` : ''}`)
+                .slice(0, 6);
+            if (failed.length) parts.push(failed.join(' · '));
+        }
+        return parts.filter(Boolean).join(' · ') || data?.message || 'Error al actualizar historial LEIDSA';
+    }
+
     async function refreshLeidsaHistoryNow() {
         if (!btnRefreshLeidsaHistory) return;
         btnRefreshLeidsaHistory.disabled = true;
         const prevLabel = btnRefreshLeidsaHistory.textContent;
         btnRefreshLeidsaHistory.textContent = '⏳ Descargando historial...';
-        setLeidsaStatus('📚 Recorriendo dropdowns LEIDSA (puede tardar 1-2 min)...', 'loading');
+        setLeidsaStatus('📚 Recorriendo historial LEIDSA (6 juegos, puede tardar 1-2 min)...', 'loading');
         try {
             const res = await fetch('/api/resultados/leidsa/actualizar-historial', {
                 method: 'POST',
+                credentials: 'same-origin',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ days: historyDays }),
             });
-            const data = await res.json();
+            const data = await parseJsonResponse(res);
             if (!data.ok) {
-                setLeidsaStatus(data.message || data.error || 'Error al actualizar historial', 'error');
+                const detail = formatLeidsaHistoryError(data, res);
+                setLeidsaStatus(`❌ ${detail}`, 'error');
+                console.error('[LEIDSA HISTORIAL]', data);
+            } else if (data.partial || data.warning) {
+                setLeidsaStatus(
+                    `⚠️ ${data.message || 'Parcial'} · ${data.results_found || 0} sorteos · `
+                    + `${data.inserted || 0} nuevos · ${data.updated || 0} actualizados`,
+                    'muted'
+                );
             } else {
                 setLeidsaStatus(
-                    `📚 ${data.message || 'OK'} · ${data.results_found || 0} sorteos · ${data.inserted || 0} nuevos`,
+                    `📚 ${data.message || 'OK'} · ${data.results_found || 0} sorteos · `
+                    + `${data.inserted || 0} nuevos · ${data.updated || 0} actualizados`,
                     'ok'
                 );
             }
