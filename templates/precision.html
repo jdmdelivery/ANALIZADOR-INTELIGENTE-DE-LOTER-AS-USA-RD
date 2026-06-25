@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+{% block title %}Precisión del Analizador{% endblock %}
+{% block extra_head %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
+<script src="{{ url_for('static', filename='js/precision.js') }}" defer></script>
+{% endblock %}
+{% block content %}
+<div class="precision-page animate-fade-in">
+    <header class="precision-header glass-panel">
+        <h1 class="precision-title">📊 Precisión del Analizador</h1>
+        <p class="precision-sub">Historial de recomendaciones vs resultados oficiales — sin garantías de premio.</p>
+    </header>
+
+    <div id="precisionLoading" class="precision-loading">Cargando estadísticas…</div>
+    <div id="precisionError" class="analysis-error" style="display:none;"></div>
+
+    <div id="precisionContent" style="display:none;">
+        <section class="precision-kpi-grid glass-panel">
+            <div class="precision-kpi"><span class="kpi-label">Recomendaciones hoy</span><strong id="kpiRecToday">—</strong></div>
+            <div class="precision-kpi"><span class="kpi-label">Aciertos hoy</span><strong id="kpiHitsToday">—</strong></div>
+            <div class="precision-kpi"><span class="kpi-label">Aciertos semana</span><strong id="kpiHitsWeek">—</strong></div>
+            <div class="precision-kpi"><span class="kpi-label">Aciertos mes</span><strong id="kpiHitsMonth">—</strong></div>
+            <div class="precision-kpi"><span class="kpi-label">Precisión general</span><strong id="kpiOverall">—</strong></div>
+            <div class="precision-kpi"><span class="kpi-label">Score promedio</span><strong id="kpiAvgScore">—</strong></div>
+        </section>
+
+        <section class="precision-highlights glass-panel">
+            <div class="highlight-item"><span>🏆 Mejor lotería</span><strong id="bestLottery">—</strong></div>
+            <div class="highlight-item"><span>📉 Peor lotería</span><strong id="worstLottery">—</strong></div>
+            <div class="highlight-item"><span>🧠 Mejor algoritmo</span><strong id="bestAlgo">—</strong></div>
+            <div class="highlight-item"><span>⚠️ Peor algoritmo</span><strong id="worstAlgo">—</strong></div>
+        </section>
+
+        <section class="precision-charts glass-panel">
+            <h2 class="panel-title">Gráficos</h2>
+            <div class="chart-grid">
+                <div class="chart-box"><canvas id="chartByDay" aria-label="Precisión por día"></canvas></div>
+                <div class="chart-box"><canvas id="chartByLottery" aria-label="Precisión por lotería"></canvas></div>
+                <div class="chart-box"><canvas id="chartByAlgo" aria-label="Precisión por algoritmo"></canvas></div>
+                <div class="chart-box"><canvas id="chartScoreHist" aria-label="Historial de score"></canvas></div>
+            </div>
+        </section>
+
+        <section class="precision-stats-limits glass-panel">
+            <h2 class="panel-title">Estadísticas por volumen</h2>
+            <div id="statsLimits" class="stats-limits-grid"></div>
+        </section>
+
+        <section class="precision-rankings glass-panel">
+            <h2 class="panel-title">Rankings</h2>
+            <div class="rankings-grid">
+                <div><h3>Top 20 mejores</h3><ul id="rankBest" class="rank-list"></ul></div>
+                <div><h3>Top 20 peores</h3><ul id="rankWorst" class="rank-list"></ul></div>
+                <div><h3>Top 20 mayor score</h3><ul id="rankScore" class="rank-list"></ul></div>
+            </div>
+        </section>
+
+        <section class="precision-compare glass-panel">
+            <h2 class="panel-title">🔍 Comparar recomendación vs resultado</h2>
+            <p class="precision-sub">Selecciona una fila del historial o ingresa ID de evaluación.</p>
+            <div class="compare-controls">
+                <input type="number" id="compareIdInput" class="premium-select" placeholder="ID evaluación" min="1">
+                <button type="button" id="btnLoadCompare" class="btn-rec-action">Ver comparación</button>
+            </div>
+            <div id="compareDetail" class="compare-detail" style="display:none;"></div>
+        </section>
+
+        <section class="precision-table-section glass-panel">
+            <div class="table-toolbar">
+                <h2 class="panel-title">Historial evaluado</h2>
+                <select id="historyLimit" class="premium-select">
+                    <option value="100">Últimos 100</option>
+                    <option value="500">Últimos 500</option>
+                    <option value="1000">Últimos 1000</option>
+                    <option value="5000">Últimos 5000</option>
+                </select>
+            </div>
+            <div class="precision-table-wrap">
+                <table class="precision-table" id="precisionTable">
+                    <thead>
+                        <tr>
+                            <th>Fecha</th>
+                            <th>Lotería</th>
+                            <th>Recomendación</th>
+                            <th>Resultado</th>
+                            <th>Aciertos</th>
+                            <th>Score</th>
+                            <th>Estado</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody id="precisionTableBody"></tbody>
+                </table>
+            </div>
+        </section>
+
+        <p class="disclaimer-inline rec-disclaimer">{{ disclaimer }}</p>
+    </div>
+</div>
+{% endblock %}

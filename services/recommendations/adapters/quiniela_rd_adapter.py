@@ -1,25 +1,17 @@
 """Quiniela RD 00–99 — Top 10/20/50, posiciones 1ra/2da/3ra."""
 from __future__ import annotations
 
-import random
-from itertools import combinations
-
 from services.recommendations.adapters.base import BaseAdapter
 from services.recommendations.categories import (
-    assign_category,
     build_hot_cold_lists,
-    category_explanation,
-    category_label,
-    classify_number,
     position_frequency,
 )
 from services.recommendations.constants import MIN_HISTORY, STRONG_RECOMMENDATION_MIN
+from services.recommendations.profile_builder import build_scored_profiles
 from services.recommendations.scoring import (
     confidence_from_score,
-    format_score_breakdown,
     is_strong_recommendation,
     score_combination,
-    score_number,
 )
 
 
@@ -33,6 +25,8 @@ class QuinielaRDAdapter(BaseAdapter):
 
     def recommend(self, ctx: dict, config: dict) -> dict:
         per_draw = ctx["per_draw_main"]
+        dates = ctx.get("dates") or []
+        draw_name = ctx.get("draw_name") or ""
         if len(per_draw) < MIN_HISTORY:
             return self.insufficient(ctx, len(per_draw))
 
@@ -40,30 +34,20 @@ class QuinielaRDAdapter(BaseAdapter):
         lo, hi = int(config["min"]), int(config["max"])
         universe = [_normalize(i, pad) for i in range(lo, hi + 1)]
         count = int(config.get("count", 3))
-
-        profiles: dict[str, dict] = {}
-        categories: dict[str, str] = {}
-        scored_list: list[dict] = []
-
-        pos_freq = position_frequency(per_draw, 100)
         weights = ctx.get("weights")
+        pos_freq = position_frequency(per_draw, 100)
 
-        for num in universe:
-            prof = classify_number(num, per_draw, pad=pad, window=25, universe=universe)
-            cat = assign_category(prof)
-            categories[num] = cat
-            s, sexp = score_number(num, per_draw, weights=weights, position_freq=pos_freq)
-            profiles[num] = {
-                **prof,
-                "category": cat,
-                "category_label": category_label(cat),
-                "score": s,
-                "reason": category_explanation(cat, prof),
-                "score_breakdown": format_score_breakdown(sexp),
-            }
-            scored_list.append(profiles[num])
+        profiles, categories = build_scored_profiles(
+            universe,
+            per_draw,
+            pad=pad,
+            weights=weights,
+            dates=dates,
+            draw_name=draw_name,
+            position_freq=pos_freq,
+        )
 
-        scored_list.sort(key=lambda x: (-x["score"], x["number"]))
+        scored_list = sorted(profiles.values(), key=lambda x: (-x["score"], x["number"]))
         top10 = scored_list[:10]
         top20 = scored_list[:20]
         top50 = scored_list[:50]
@@ -76,16 +60,48 @@ class QuinielaRDAdapter(BaseAdapter):
 
         primary = self._pick_primary_combo(scored_list, count, per_draw)
         combo_score, digit_parts = score_combination(
-            primary, per_draw, weights=weights, position_freq=pos_freq
+            primary,
+            per_draw,
+            weights=weights,
+            position_freq=pos_freq,
+            dates=dates,
+            draw_name=draw_name,
         )
+        for i, part in enumerate(digit_parts):
+            n = part["number"]
+            part["reason"] = profiles.get(n, {}).get("reason", "")
+            part["position"] = i + 1
+
         conf_key, conf_label = confidence_from_score(combo_score)
         strong = is_strong_recommendation(combo_score)
 
-        analysis_text = ". ".join(
-            category_explanation(profiles[n]["category"], profiles[n]) for n in primary[:3]
-        )
+        analysis_text = ". ".join(profiles[n]["reason"] for n in primary[:3])
         if not strong:
             analysis_text = f"Confianza baja (score {combo_score}). {analysis_text}"
+
+        position_picks = []
+        for pos in range(3):
+            pos_scored = []
+            for p in scored_list:
+                pf = pos_freq.get(pos)
+                if not pf:
+                    continue
+                mx = max(pf.values()) if pf else 1
+                pos_score = int((pf.get(p["number"], 0) / mx) * 100) if mx else p["score"]
+                pos_scored.append({**p, "position_score": pos_score})
+            pos_scored.sort(key=lambda x: (-x["position_score"], x["number"]))
+            position_picks.append({
+                "position": pos + 1,
+                "label": f"Posición {pos + 1}",
+                "top_5": [
+                    {
+                        "number": x["number"],
+                        "score": x["position_score"],
+                        "reason": x["reason"],
+                    }
+                    for x in pos_scored[:5]
+                ],
+            })
 
         meta = self.base_meta(ctx, config, "quiniela_rd")
         return {
@@ -100,8 +116,9 @@ class QuinielaRDAdapter(BaseAdapter):
             "confidence_label": conf_label,
             "is_strong_recommendation": strong,
             "analysis_text": analysis_text + ".",
-            "analysis_basis": "Basado en frecuencia 7/15/25/100, posición y tendencia",
+            "analysis_basis": "Basado en frecuencia 7/15/25/100, posición, día de semana y tendencia",
             "digit_scores": digit_parts,
+            "position_picks": position_picks,
             "top_numbers": {
                 "top_10": top10,
                 "top_20": top20,

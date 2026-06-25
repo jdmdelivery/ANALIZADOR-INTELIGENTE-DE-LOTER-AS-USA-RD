@@ -4,7 +4,24 @@ from __future__ import annotations
 import json
 from datetime import datetime, timedelta
 
+from collections import Counter
+
 from models import format_numbers, get_connection, parse_numbers
+
+
+def _box_hits(predicted: list[str], actual: list[str]) -> int:
+    """Coincidencias tipo box (multiset) para Pick."""
+    if not predicted or not actual:
+        return 0
+    pc = Counter(predicted)
+    ac = Counter(actual)
+    return sum((pc & ac).values())
+
+
+def _bonus_hits(predicted_bonus: list[str], actual_bonus: list[str]) -> int:
+    if not predicted_bonus or not actual_bonus:
+        return 0
+    return len(set(predicted_bonus) & set(actual_bonus))
 
 
 def save_recommendation_run(lottery_id: int, draw_name: str, family: str, result: dict) -> int | None:
@@ -64,9 +81,12 @@ def evaluate_pending_backtests() -> int:
                 continue
             actual = parse_numbers(actual_row["numbers"])
             bonus = parse_numbers(actual_row.get("bonus_number") or actual_row.get("fireball_number") or "")
+            predicted_bonus = parse_numbers(row["bonus_numbers"] or "")
             exact = len(set(predicted) & set(actual))
             pos_hits = sum(1 for i, n in enumerate(predicted) if i < len(actual) and n == actual[i])
-            box_hits = exact
+            box_hits = _box_hits(predicted, actual)
+            bonus_hits = _bonus_hits(predicted_bonus, bonus)
+            _ = bonus_hits  # reservado para columna futura
             conn.execute(
                 """INSERT INTO backtest_results
                    (recommendation_run_id, lottery_id, draw_name, game_family,
@@ -97,52 +117,11 @@ def evaluate_pending_backtests() -> int:
 
 
 def run_backtest_summary(days: int = 30) -> dict:
-    evaluate_pending_backtests()
-    conn = get_connection()
-    try:
-        since = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
-        rows = conn.execute(
-            """SELECT b.*, l.name as lottery_name, l.country
-               FROM backtest_results b
-               JOIN lotteries l ON l.id = b.lottery_id
-               WHERE b.evaluated_at >= ?""",
-            (since,),
-        ).fetchall()
-        if not rows:
-            return {
-                "ok": True,
-                "message": "Sin datos de backtesting aún.",
-                "days": days,
-                "total": 0,
-            }
+    """Compatibilidad — delega al módulo de precisión."""
+    from services.precision.evaluator import evaluate_all_pending
+    from services.precision.dashboard import get_dashboard
 
-        total = len(rows)
-        avg_exact = sum(r["exact_hits"] for r in rows) / total
-        avg_pos = sum(r["position_hits"] for r in rows) / total
-        by_lottery: dict[str, list] = {}
-        by_family: dict[str, list] = {}
-        for r in rows:
-            by_lottery.setdefault(r["lottery_name"], []).append(r["exact_hits"])
-            by_family.setdefault(r["game_family"] or "?", []).append(r["exact_hits"])
-
-        def _avg(d: dict) -> dict:
-            return {k: round(sum(v) / len(v), 2) for k, v in d.items()}
-
-        best_lot = max(by_lottery.items(), key=lambda x: sum(x[1]) / len(x[1]))[0] if by_lottery else None
-        worst_lot = min(by_lottery.items(), key=lambda x: sum(x[1]) / len(x[1]))[0] if by_lottery else None
-        best_family = max(by_family.items(), key=lambda x: sum(x[1]) / len(x[1]))[0] if by_family else None
-
-        return {
-            "ok": True,
-            "days": days,
-            "total": total,
-            "avg_exact_hits": round(avg_exact, 2),
-            "avg_position_hits": round(avg_pos, 2),
-            "precision_by_lottery": _avg(by_lottery),
-            "precision_by_family": _avg(by_family),
-            "best_lottery": best_lot,
-            "worst_lottery": worst_lot,
-            "best_game_family": best_family,
-        }
-    finally:
-        conn.close()
+    evaluate_all_pending(limit=200)
+    dash = get_dashboard()
+    dash["days"] = days
+    return dash

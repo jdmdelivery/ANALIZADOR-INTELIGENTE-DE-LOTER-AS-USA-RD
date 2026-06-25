@@ -40,6 +40,11 @@ class KinoAdapter(LottoAdapter):
         base["recommended_numbers"] = suggested
         base["recommend_count"] = count
         base["suggested_list"] = scored_nums[:count]
+        base["top_numbers"] = {
+            "top_10": scored_nums[:10],
+            "top_20": scored_nums[:20],
+            "top_50": scored_nums[:50],
+        }
         base["game_type"] = self.game_type_label
         base["payout_table_available"] = False
         base["analysis_text"] = (

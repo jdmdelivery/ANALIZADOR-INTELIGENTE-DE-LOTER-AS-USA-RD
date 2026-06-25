@@ -47,8 +47,10 @@ def tune_weights_from_backtests() -> dict:
             if avg >= 1.5:
                 weights["freq_25"] = min(WEIGHT_MAX, weights["freq_25"] + 0.03)
                 weights["trend_10"] = min(WEIGHT_MAX, weights["trend_10"] + 0.02)
+                weights["weekday"] = min(WEIGHT_MAX, weights.get("weekday", 0.07) + 0.01)
             elif avg < 0.5:
-                weights["delay"] = max(WEIGHT_MIN, weights["delay"] - 0.03)
+                weights["delay"] = min(WEIGHT_MAX, weights["delay"] + 0.02)
+                weights["weekday"] = max(WEIGHT_MIN, weights.get("weekday", 0.07) - 0.01)
             weights = normalize_weights(weights)
             conn.execute(
                 """INSERT INTO recommendation_weights (game_family, weights_json, updated_at)

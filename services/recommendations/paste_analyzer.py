@@ -3,13 +3,8 @@ from __future__ import annotations
 
 import re
 
-from services.recommendations.categories import (
-    assign_category,
-    category_explanation,
-    category_label,
-    classify_number,
-)
 from services.recommendations.data_loader import load_draw_history
+from services.recommendations.profile_builder import build_scored_profiles
 from services.recommendations.registry import game_family, resolve_adapter, resolve_config
 from services.recommendations.scoring import score_number
 
@@ -67,25 +62,37 @@ def analyze_pasted_numbers(lottery_id: int, draw_name: str, pasted: str) -> dict
         return {"ok": False, "message": "Ningún número válido.", "errors": errors}
 
     per_draw = ctx["per_draw_main"]
+    dates = ctx.get("dates") or []
     pad = int(config.get("pad", 2))
     family = game_family(lottery)
+    weights = None
+
+    profiles, _ = build_scored_profiles(
+        valid,
+        per_draw,
+        pad=pad,
+        weights=weights,
+        dates=dates,
+        draw_name=draw_name,
+    )
 
     analysis = []
     avoid = []
     hot_list = []
     cold_list = []
     for n in valid:
-        prof = classify_number(n, per_draw, pad=pad)
-        cat = assign_category(prof)
-        score, _ = score_number(n, per_draw)
+        prof = profiles[n]
+        cat = prof["category"]
+        score = prof["score"]
         entry = {
             "number": n,
             "score": score,
             "category": cat,
-            "category_label": category_label(cat),
-            "reason": category_explanation(cat, prof),
+            "category_label": prof["category_label"],
+            "reason": prof["reason"],
             "best_position": prof.get("best_position"),
             "draws_since": prof.get("draws_since"),
+            "count_100": prof.get("count_100"),
         }
         analysis.append(entry)
         if cat in ("sobrecalentado", "frío") and score < 40:
@@ -96,6 +103,8 @@ def analyze_pasted_numbers(lottery_id: int, draw_name: str, pasted: str) -> dict
             cold_list.append(entry)
 
     analysis.sort(key=lambda x: -x["score"])
+    best = analysis[0] if analysis else None
+    worst = analysis[-1] if analysis else None
 
     compare = {}
     if family == "kino":
@@ -116,6 +125,8 @@ def analyze_pasted_numbers(lottery_id: int, draw_name: str, pasted: str) -> dict
         "hot_signals": hot_list,
         "cold_signals": cold_list,
         "avoid": avoid,
+        "best_score": best,
+        "worst_score": worst,
         "compare": compare,
         "copy_text": _format_copy(analysis, lottery.get("name")),
         "disclaimer": RECOMMENDATION_DISCLAIMER,

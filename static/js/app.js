@@ -716,20 +716,24 @@
             const trend = item.trend_icon
                 ? `<span class="stat-trend-badge" title="${escapeHtml(item.trend_label || '')}">${item.trend_icon}</span>`
                 : '';
-            const lastSeen = item.last_seen_text
-                ? `<span class="stat-detail-sub">${escapeHtml(item.last_seen_text)}</span>`
-                : '';
+            const summary = item.summary || item.reason || '';
+            const lastSeen = item.draws_since != null
+                ? `<span class="stat-detail-sub">${item.draws_since} sorteos sin salir</span>`
+                : (item.last_seen_text
+                    ? `<span class="stat-detail-sub">${escapeHtml(item.last_seen_text)}</span>`
+                    : '');
             return `
                 <div class="stat-detail-card ${typeClass}">
                     <div class="stat-detail-head">
                         <span class="stat-detail-num">${escapeHtml(item.number)}</span>
+                        ${item.score != null ? `<span class="rec-combo-score ${scoreClass(item.score)}">${item.score}</span>` : ''}
                         ${trend}
                     </div>
-                    <p class="stat-detail-text">${escapeHtml(item.summary || '')}</p>
+                    <p class="stat-detail-text">${escapeHtml(summary)}</p>
                     <div class="stat-detail-meta">
                         <span>${escapeHtml(String(item.count ?? 0))} veces</span>
                         <span>${escapeHtml(String(item.percentage ?? 0))}%</span>
-                        <span>freq. ${escapeHtml(String(item.frequency ?? item.count ?? 0))}</span>
+                        ${item.count_100 != null ? `<span>en 100: ${item.count_100}</span>` : ''}
                     </div>
                     ${lastSeen}
                 </div>
@@ -756,20 +760,28 @@
         const el = $('recTopSection');
         if (!el) return;
         const parts = [];
-        const top5 = data.top_combinations?.top_5;
-        const top10pick = data.top_combinations?.top_10;
-        if (top5?.length) {
-            parts.push('<h4 class="rec-section-title">Top 5 combinaciones</h4>');
-            top5.forEach((c) => {
-                parts.push(`<div class="rec-combo-card"><span class="rec-combo-nums">${escapeHtml((c.numbers || []).join(' '))}</span><span class="rec-combo-score ${scoreClass(c.score)}">Score ${c.score}</span></div>`);
+        const renderComboList = (list, title, maxShow) => {
+            if (!list?.length) return;
+            parts.push(`<h4 class="rec-section-title">${escapeHtml(title)}</h4>`);
+            list.slice(0, maxShow || list.length).forEach((c) => {
+                const conf = c.confidence_label ? ` · ${c.confidence_label}` : '';
+                parts.push(`<div class="rec-combo-card"><span class="rec-combo-nums">${escapeHtml((c.numbers || []).join(' '))}</span><span class="rec-combo-score ${scoreClass(c.score)}">Score ${c.score}${escapeHtml(conf)}</span></div>`);
+            });
+        };
+        const tops = data.top_combinations || {};
+        renderComboList(tops.top_5, 'Top 5 combinaciones', 5);
+        renderComboList(tops.top_10, 'Top 10 combinaciones', 10);
+        renderComboList(tops.top_20, 'Top 20 combinaciones', 10);
+
+        if (data.position_picks?.length) {
+            parts.push('<h4 class="rec-section-title">Análisis por posición</h4>');
+            data.position_picks.forEach((pos) => {
+                const best = pos.best || (pos.top_5 && pos.top_5[0]);
+                const topLine = (pos.top_5 || []).map((x) => `${x.number}(${x.score})`).join(' · ');
+                parts.push(`<p class="rec-paste-item"><strong>${escapeHtml(pos.label || '')}:</strong> mejor ${escapeHtml(best?.number || '—')} (score ${best?.score ?? '—'})<br><span class="rec-pos-top">${escapeHtml(topLine)}</span></p>`);
             });
         }
-        if (top10pick?.length && !top5?.length) {
-            parts.push('<h4 class="rec-section-title">Top combinaciones</h4>');
-            top10pick.slice(0, 5).forEach((c) => {
-                parts.push(`<div class="rec-combo-card"><span class="rec-combo-nums">${escapeHtml((c.numbers || []).join(' '))}</span><span class="rec-combo-score ${scoreClass(c.score)}">${c.score}</span></div>`);
-            });
-        }
+
         const tn = data.top_numbers;
         if (tn?.top_10?.length) {
             parts.push('<h4 class="rec-section-title">Top números RD</h4>');
@@ -777,7 +789,7 @@
                 const list = tn[key];
                 if (!list?.length) return;
                 const label = key.replace('top_', 'Top ');
-                const nums = list.slice(0, key === 'top_50' ? 15 : 10).map((x) => `${x.number}(${x.score})`).join(' · ');
+                const nums = list.slice(0, key === 'top_50' ? 20 : 10).map((x) => `${x.number}(${x.score})`).join(' · ');
                 parts.push(`<p class="rec-paste-item"><strong>${label}:</strong> ${escapeHtml(nums)}</p>`);
             });
         }
@@ -795,6 +807,39 @@
             el.style.display = 'block';
         } else {
             el.style.display = 'none';
+        }
+    }
+
+    async function loadBacktestSummary() {
+        const panel = $('recBacktestPanel');
+        const content = $('recBacktestContent');
+        if (!panel || !content) return;
+        try {
+            const res = await fetch('/api/recommendations/backtest?days=30');
+            const data = await res.json();
+            if (!data.ok || !data.total) {
+                panel.style.display = 'none';
+                return;
+            }
+            const periods = data.periods || {};
+            const rows = [
+                ['7 días', periods['7']],
+                ['30 días', periods['30']],
+                ['90 días', periods['90']],
+            ].filter(([, p]) => p && p.total > 0);
+            let html = `<p class="rec-paste-item">Evaluaciones: <strong>${data.total}</strong> · Mejor lotería: ${escapeHtml(data.best_lottery || '—')} · Peor: ${escapeHtml(data.worst_lottery || '—')}</p>`;
+            html += `<p class="rec-paste-item">Aciertos promedio: exactos ${data.avg_exact_hits} · posición ${data.avg_position_hits} · box ${data.avg_box_hits ?? '—'}</p>`;
+            if (rows.length) {
+                html += '<div class="rec-backtest-grid">';
+                rows.forEach(([label, p]) => {
+                    html += `<div class="rec-backtest-card"><span class="rec-bt-label">${escapeHtml(label)}</span><span class="rec-bt-val">${p.avg_exact_hits} exactos</span><span class="rec-bt-sub">${p.total} eval.</span></div>`;
+                });
+                html += '</div>';
+            }
+            content.innerHTML = html;
+            panel.style.display = 'block';
+        } catch (_) {
+            panel.style.display = 'none';
         }
     }
 
@@ -861,6 +906,12 @@
             const lines = (data.analysis || []).map((a) =>
                 `${a.number}: score ${a.score} — ${a.category_label} — ${a.reason}`
             );
+            if (data.best_score) {
+                lines.unshift(`Mejor score: ${data.best_score.number} (${data.best_score.score})`);
+            }
+            if (data.avoid?.length) {
+                lines.push(`Evitar: ${data.avoid.map((a) => a.number).join(', ')}`);
+            }
             if (data.compare?.match_percent != null) {
                 lines.push(`Coincidencia último sorteo: ${data.compare.match_percent}%`);
             }
@@ -983,6 +1034,7 @@
             }
 
             renderTopSection(data);
+            loadBacktestSummary();
 
             const windowSize = data.analysis_window || 25;
             setStatWindowHint(windowSize);

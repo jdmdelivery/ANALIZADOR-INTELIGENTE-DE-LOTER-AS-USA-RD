@@ -93,6 +93,24 @@ class RecommendationEngineTests(unittest.TestCase):
         top = result.get("top_combinations") or {}
         self.assertGreaterEqual(len(top.get("top_5") or []), 1)
         self.assertGreaterEqual(len(top.get("top_10") or []), 1)
+        self.assertGreaterEqual(len(top.get("top_20") or []), 1)
+        self.assertTrue(result.get("position_picks"))
+
+    def test_rich_explanation_format(self):
+        from services.recommendations.explanations import build_rich_explanation
+        prof = {"count_100": 14, "draws_since": 3, "trend": "tendencia", "category": "tendencia"}
+        text = build_rich_explanation("23", prof, 87, draw_name="noche", per_draw=[["23"]] * 100)
+        self.assertIn("23", text)
+        self.assertIn("score 87", text)
+        self.assertIn("sorteos", text)
+
+    def test_weekday_factor(self):
+        from services.recommendations.context_factors import score_weekday_factor
+        per_draw = [["05"], ["06"], ["05"], ["07"]]
+        dates = ["2026-05-26", "2026-05-25", "2026-05-19", "2026-05-18"]
+        score, meta = score_weekday_factor("05", per_draw, dates)
+        self.assertGreaterEqual(score, 0)
+        self.assertIn("weekday_counts", meta)
 
     def test_fireball_separate_score(self):
         lot = _seed_pick3()

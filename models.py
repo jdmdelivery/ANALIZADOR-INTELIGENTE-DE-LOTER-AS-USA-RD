@@ -105,6 +105,10 @@ def migrate_db():
             CREATE UNIQUE INDEX IF NOT EXISTS idx_results_lottery_date_draw
             ON lottery_results (lottery_id, draw_date, draw_name)
         """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_results_lottery_draw_date
+            ON lottery_results (lottery_id, draw_name, draw_date DESC)
+        """)
         for col in ("main_numbers", "bonus_numbers", "bonus_label", "game_name"):
             try:
                 conn.execute(f"ALTER TABLE lottery_results ADD COLUMN {col} TEXT")
@@ -222,9 +226,54 @@ def migrate_db():
                 updated_at TEXT DEFAULT (datetime('now'))
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS precision_weight_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                game_family TEXT NOT NULL,
+                old_weights_json TEXT NOT NULL,
+                new_weights_json TEXT NOT NULL,
+                avg_hit_percentage REAL,
+                reason TEXT,
+                created_at TEXT DEFAULT (datetime('now'))
+            )
+        """)
+        for col_sql in (
+            "ALTER TABLE recommendation_runs ADD COLUMN country TEXT",
+            "ALTER TABLE recommendation_runs ADD COLUMN lottery_name TEXT",
+            "ALTER TABLE recommendation_runs ADD COLUMN game_type TEXT",
+            "ALTER TABLE recommendation_runs ADD COLUMN algorithm_version TEXT",
+            "ALTER TABLE recommendation_runs ADD COLUMN factors_json TEXT",
+            "ALTER TABLE recommendation_runs ADD COLUMN confidence_label TEXT",
+            "ALTER TABLE recommendation_runs ADD COLUMN evaluation_status TEXT DEFAULT 'pending'",
+            "ALTER TABLE backtest_results ADD COLUMN predicted_bonus TEXT",
+            "ALTER TABLE backtest_results ADD COLUMN bonus_hits INTEGER DEFAULT 0",
+            "ALTER TABLE backtest_results ADD COLUMN partial_hits INTEGER DEFAULT 0",
+            "ALTER TABLE backtest_results ADD COLUMN hit_percentage REAL",
+            "ALTER TABLE backtest_results ADD COLUMN achieved_score REAL",
+            "ALTER TABLE backtest_results ADD COLUMN status_label TEXT",
+            "ALTER TABLE backtest_results ADD COLUMN detail_json TEXT",
+            "ALTER TABLE backtest_results ADD COLUMN result_id INTEGER",
+            "ALTER TABLE backtest_results ADD COLUMN compare_summary TEXT",
+        ):
+            try:
+                conn.execute(col_sql)
+            except sqlite3.OperationalError:
+                pass
         seed_rd_conectate_lotteries(conn)
         seed_leidsa_lotteries(conn)
         _sync_lottery_draw_schedules(conn)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_backtest_run
+            ON backtest_results (recommendation_run_id)
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_rec_runs_lottery
+            ON recommendation_runs (lottery_id, created_at DESC)
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_backtest_evaluated
+            ON backtest_results (evaluated_at DESC)
+        """)
         conn.commit()
     finally:
         conn.close()
@@ -914,6 +963,7 @@ def upsert_result(lottery_id, draw_name, draw_time, draw_date, numbers,
                  main_json, bonus_json, bonus_label, game_name, estado, src, now,
                  existing["id"]),
             )
+            _notify_precision_hook(lottery_id, draw_name, draw_date, existing["id"])
             return existing["id"], "updated"
         cur = conn.execute(
             """INSERT INTO lottery_results
@@ -926,7 +976,18 @@ def upsert_result(lottery_id, draw_name, draw_time, draw_date, numbers,
              bonus_number, fireball_number, source_url, confirmed,
              main_json, bonus_json, bonus_label, game_name, estado, src, now),
         )
-        return cur.lastrowid, "inserted"
+        new_id = cur.lastrowid
+        _notify_precision_hook(lottery_id, draw_name, draw_date, new_id)
+        return new_id, "inserted"
+
+
+def _notify_precision_hook(lottery_id, draw_name, draw_date, result_id):
+    """Evalúa recomendaciones pendientes sin tocar scrapers ni motor de actualización."""
+    try:
+        from services.precision.evaluator import on_official_result_saved
+        on_official_result_saved(lottery_id, draw_name, draw_date, result_id)
+    except Exception:
+        pass
 
 
 def delete_result(result_id):

@@ -12,6 +12,10 @@ from services.recommendations.constants import (
     WEIGHT_MIN,
 )
 from services.recommendations.categories import frequency_in_window
+from services.recommendations.context_factors import (
+    score_draw_slot_factor,
+    score_weekday_factor,
+)
 
 
 def clamp_score(value: float) -> int:
@@ -46,9 +50,11 @@ def score_number(
     weights: dict[str, float] | None = None,
     position: int | None = None,
     position_freq: dict[int, Counter] | None = None,
+    dates: list[str] | None = None,
+    draw_name: str = "",
 ) -> tuple[int, dict]:
     w = normalize_weights(weights or DEFAULT_WEIGHTS)
-    explanation: dict = {"weights": w, "components": {}}
+    explanation: dict = {"weights": w, "components": {}, "weekday_meta": {}, "draw_slot_meta": {}}
 
     if not per_draw:
         return 0, explanation
@@ -85,6 +91,11 @@ def score_number(
         ctx = (pf.get(number, 0) / mx) * 100 if mx else 50
     comp_context = ctx
 
+    comp_weekday, weekday_meta = score_weekday_factor(number, per_draw, dates)
+    comp_slot, slot_meta = score_draw_slot_factor(draw_name)
+    explanation["weekday_meta"] = weekday_meta
+    explanation["draw_slot_meta"] = slot_meta
+
     raw = (
         comp_freq_25 * w["freq_25"]
         + comp_freq_100 * w["freq_100"]
@@ -92,6 +103,8 @@ def score_number(
         + comp_delay * w["delay"]
         + comp_stability * w["stability"]
         + comp_context * w["context"]
+        + comp_weekday * w["weekday"]
+        + comp_slot * w["draw_slot"]
     )
     explanation["components"] = {
         "freq_25": round(comp_freq_25, 1),
@@ -100,7 +113,10 @@ def score_number(
         "delay": round(comp_delay, 1),
         "stability": round(comp_stability, 1),
         "context": round(comp_context, 1),
+        "weekday": round(comp_weekday, 1),
+        "draw_slot": round(comp_slot, 1),
     }
+    explanation["freq_100_count"] = c100
     return clamp_score(raw), explanation
 
 
@@ -110,12 +126,20 @@ def score_combination(
     *,
     weights: dict[str, float] | None = None,
     position_freq: dict[int, Counter] | None = None,
+    dates: list[str] | None = None,
+    draw_name: str = "",
 ) -> tuple[int, list[dict]]:
     parts = []
     total = 0
     for i, n in enumerate(numbers):
         s, exp = score_number(
-            n, per_draw, weights=weights, position=i, position_freq=position_freq
+            n,
+            per_draw,
+            weights=weights,
+            position=i,
+            position_freq=position_freq,
+            dates=dates,
+            draw_name=draw_name,
         )
         parts.append({"number": n, "score": s, "explanation": exp})
         total += s
@@ -138,7 +162,9 @@ def format_score_breakdown(explanation: dict) -> str:
         ("trend_10", "tendencia 10"),
         ("delay", "atraso"),
         ("stability", "estabilidad"),
-        ("context", "contexto"),
+        ("context", "posición"),
+        ("weekday", "día semana"),
+        ("draw_slot", "tanda"),
     ):
         if key in comps:
             bits.append(f"{label} {comps[key]}% (peso {round(w.get(key, 0)*100)}%)")

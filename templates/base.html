@@ -9,6 +9,7 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&family=Rajdhani:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/precision.css') }}">
     {% block extra_head %}{% endblock %}
 </head>
 <body class="premium-body">
@@ -31,6 +32,7 @@
                 <a href="/#filtros" class="nav-link" data-nav="rd"><span class="nav-icon">🇩🇴</span> República Dominicana</a>
                 <a href="/#resultados" class="nav-link" data-nav="resultados"><span class="nav-icon">📋</span> Resultados</a>
                 <a href="/#analisis" class="nav-link" data-nav="analisis"><span class="nav-icon">📊</span> Análisis</a>
+                <a href="{{ url_for('precision_page') }}" class="nav-link" data-nav="precision"><span class="nav-icon">🏆</span> Precisión</a>
                 <a href="/#tandas" class="nav-link" data-nav="predicciones"><span class="nav-icon">🎯</span> Predicciones</a>
                 <a href="/#resultados" class="nav-link" data-nav="historial"><span class="nav-icon">🕘</span> Historial</a>
                 <a href="/#tandas" class="nav-link" data-nav="favoritos"><span class="nav-icon">⭐</span> Favoritos</a>

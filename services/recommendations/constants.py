@@ -8,14 +8,16 @@ RECOMMENDATION_DISCLAIMER = (
 MIN_HISTORY = 10
 INSUFFICIENT_HISTORY_MSG = "Histórico insuficiente"
 
-# Pesos base (suman 1.0) — FASE 4
+# Pesos base (suman 1.0) — índice ponderado multi-factor
 DEFAULT_WEIGHTS = {
-    "freq_25": 0.25,
-    "freq_100": 0.20,
-    "trend_10": 0.20,
-    "delay": 0.15,
+    "freq_25": 0.22,
+    "freq_100": 0.18,
+    "trend_10": 0.18,
+    "delay": 0.14,
     "stability": 0.10,
-    "context": 0.10,
+    "context": 0.08,
+    "weekday": 0.07,
+    "draw_slot": 0.03,
 }
 
 WEIGHT_MIN = 0.05

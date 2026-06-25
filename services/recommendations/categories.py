@@ -86,7 +86,7 @@ def classify_number(
             best_pos_count = c
             best_pos = pos
 
-    pos_labels = {0: "1ra", 1: "2da", 2: "3ra"}
+    pos_labels = {0: "1ra", 1: "2da", 2: "3ra", 3: "4ra"}
     pos_label = pos_labels.get(best_pos) if best_pos is not None else None
 
     return {

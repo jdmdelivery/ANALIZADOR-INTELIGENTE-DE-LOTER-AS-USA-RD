@@ -2,13 +2,46 @@
 from __future__ import annotations
 
 import json
+import time
+from collections import Counter
 from datetime import datetime
+from itertools import combinations
 
 from models import create_prediction, get_lottery
 
 from services.recommendations.data_loader import load_draw_history
 from services.recommendations.registry import resolve_adapter, resolve_config
 from services.recommendations.weight_tuner import get_weights_for_family
+
+_REC_CACHE: dict[tuple, tuple[float, dict]] = {}
+_CACHE_TTL_SEC = 900  # 15 minutos
+
+
+def _cache_key(lottery_id: int, draw_name: str, max_results) -> tuple:
+    return (lottery_id, draw_name, max_results)
+
+
+def _get_cached(lottery_id: int, draw_name: str, max_results) -> dict | None:
+    key = _cache_key(lottery_id, draw_name, max_results)
+    entry = _REC_CACHE.get(key)
+    if not entry:
+        return None
+    ts, payload = entry
+    if time.time() - ts > _CACHE_TTL_SEC:
+        _REC_CACHE.pop(key, None)
+        return None
+    return payload
+
+
+def _set_cache(lottery_id: int, draw_name: str, max_results, payload: dict) -> None:
+    if not payload.get("ok"):
+        return
+    key = _cache_key(lottery_id, draw_name, max_results)
+    _REC_CACHE[key] = (time.time(), payload)
+
+
+def clear_recommendation_cache() -> None:
+    _REC_CACHE.clear()
 
 
 def _ensure_country_match(lottery: dict) -> None:
@@ -18,13 +51,29 @@ def _ensure_country_match(lottery: dict) -> None:
 
 
 def generate_recommendation(lottery_id: int, draw_name: str) -> dict:
+    lottery = get_lottery(lottery_id)
+    cached = _get_cached(lottery_id, draw_name, None)
+    if cached:
+        out = dict(cached)
+        out["from_cache"] = True
+        config = resolve_config(lottery) if lottery else {}
+        _persist_recommendation(lottery_id, draw_name, out, lottery or {}, config)
+        return _legacy_compat(out, lottery or {}, config)
+
     result, lottery, config = _run_adapter(lottery_id, draw_name)
     if not result.get("ok"):
         return result
 
     result["created_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     result["engine"] = "recommendations_v2"
+    result["from_cache"] = False
+    _set_cache(lottery_id, draw_name, None, result)
+    _persist_recommendation(lottery_id, draw_name, result, lottery, config)
 
+    return _legacy_compat(result, lottery, config)
+
+
+def _persist_recommendation(lottery_id: int, draw_name: str, result: dict, lottery: dict, config: dict) -> None:
     try:
         create_prediction(
             lottery_id,
@@ -34,13 +83,29 @@ def generate_recommendation(lottery_id: int, draw_name: str) -> dict:
             result.get("confidence_level") or "bajo",
             float(result.get("score") or 0),
         )
-        from services.recommendations.backtesting import save_recommendation_run
+        from services.precision.storage import save_precision_recommendation
 
-        save_recommendation_run(lottery_id, draw_name, result.get("game_family", ""), result)
+        save_precision_recommendation(
+            lottery_id,
+            draw_name,
+            result.get("game_family") or "",
+            result,
+        )
     except Exception:
         pass
 
-    return _legacy_compat(result, lottery, config)
+
+def _compute_top_pairs(per_draw: list[list[str]], limit: int = 10) -> list[dict]:
+    pairs: Counter = Counter()
+    for draw in per_draw[:60]:
+        if len(draw) < 2:
+            continue
+        for pair in combinations(sorted(set(draw)), 2):
+            pairs[pair] += 1
+    return [
+        {"pair": list(p), "count": c}
+        for p, c in pairs.most_common(limit)
+    ]
 
 
 def build_analysis_stats(lottery_id: int, draw_name: str, max_results=None) -> dict | None:
@@ -55,12 +120,16 @@ def build_analysis_stats(lottery_id: int, draw_name: str, max_results=None) -> d
             "total_results": result.get("history_count", 0),
         }
 
-    ctx = load_draw_history(lottery_id, draw_name, limit=max_results)
-    per_draw = ctx.get("per_draw_main") or []
-    from collections import Counter
+    per_draw = result.get("_per_draw") or []
+    if not per_draw:
+        ctx = load_draw_history(lottery_id, draw_name, limit=max_results)
+        per_draw = ctx.get("per_draw_main") or []
 
     all_nums = [n for d in per_draw for n in d]
     last_draw = set(per_draw[0]) if per_draw else set()
+    freq = Counter(all_nums)
+    f30 = Counter(n for d in per_draw[:30] for n in d)
+    f60 = Counter(n for d in per_draw[:60] for n in d)
 
     return {
         "ok": True,
@@ -81,17 +150,17 @@ def build_analysis_stats(lottery_id: int, draw_name: str, max_results=None) -> d
         "recent_exclusion_draws": 5,
         "analysis_basis": result.get("analysis_basis", ""),
         "position_frequency": result.get("position_frequency", {}),
-        "top_pairs": [],
+        "top_pairs": _compute_top_pairs(per_draw),
         "recent_trend": {},
-        "numbers_together": [],
-        "frequency_30": {},
-        "frequency_60": {},
+        "numbers_together": _compute_top_pairs(per_draw, 5),
+        "frequency_30": dict(f30),
+        "frequency_60": dict(f60),
         "last_30_count": min(30, len(per_draw)),
         "last_60_count": min(60, len(per_draw)),
         "last_90_count": min(90, len(per_draw)),
         "_per_draw": per_draw,
         "_all_nums": all_nums,
-        "_freq": Counter(all_nums),
+        "_freq": freq,
         "_config": config,
     }
 
@@ -112,6 +181,7 @@ def _run_adapter(lottery_id: int, draw_name: str, max_results=None):
     result = adapter.recommend(ctx, config)
     if result.get("ok"):
         result["game_family"] = family
+        result["_per_draw"] = ctx.get("per_draw_main")
     return result, lottery, config
 
 

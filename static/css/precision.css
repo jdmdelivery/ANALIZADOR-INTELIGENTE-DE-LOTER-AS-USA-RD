@@ -1,0 +1,99 @@
+/* Dashboard Precisión del Analizador */
+.precision-page { padding: 0.5rem 0 2rem; max-width: 1200px; margin: 0 auto; }
+.precision-header { padding: 1.25rem; margin-bottom: 1rem; text-align: center; }
+.precision-title { font-family: var(--font-display); font-size: clamp(1.25rem, 4vw, 1.75rem); margin: 0 0 0.35rem; }
+.precision-sub { margin: 0; opacity: 0.85; font-size: 0.95rem; }
+.precision-loading { text-align: center; padding: 2rem; opacity: 0.8; }
+.precision-kpi-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 0.75rem;
+    padding: 1rem;
+    margin-bottom: 1rem;
+}
+.precision-kpi {
+    padding: 0.75rem;
+    border-radius: 10px;
+    background: rgba(0,0,0,0.2);
+    text-align: center;
+}
+.precision-kpi .kpi-label { display: block; font-size: 0.75rem; opacity: 0.75; margin-bottom: 0.25rem; }
+.precision-kpi strong { font-size: 1.35rem; font-family: var(--font-display); }
+.precision-highlights {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 0.75rem;
+    padding: 1rem;
+    margin-bottom: 1rem;
+}
+.highlight-item { padding: 0.5rem; }
+.highlight-item span { display: block; font-size: 0.8rem; opacity: 0.75; }
+.chart-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 1rem;
+    padding: 0 1rem 1rem;
+}
+.chart-box {
+    min-height: 220px;
+    padding: 0.5rem;
+    background: rgba(0,0,0,0.15);
+    border-radius: 10px;
+}
+.stats-limits-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 0.75rem;
+    padding: 0 1rem 1rem;
+}
+.stat-limit-card {
+    padding: 0.75rem;
+    border-radius: 8px;
+    background: rgba(255,255,255,0.04);
+    text-align: center;
+}
+.rankings-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 1rem;
+    padding: 0 1rem 1rem;
+}
+.rank-list { list-style: none; padding: 0; margin: 0; font-size: 0.85rem; max-height: 320px; overflow-y: auto; }
+.rank-list li { padding: 0.35rem 0; border-bottom: 1px solid rgba(255,255,255,0.06); }
+.compare-controls { display: flex; flex-wrap: wrap; gap: 0.5rem; padding: 0 1rem 1rem; align-items: center; }
+.compare-detail {
+    margin: 0 1rem 1rem;
+    padding: 1rem;
+    border-radius: 10px;
+    background: rgba(0,0,0,0.25);
+    white-space: pre-wrap;
+    font-size: 0.95rem;
+    line-height: 1.5;
+}
+.compare-pos-row { display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 0.5rem 0; }
+.compare-ball {
+    padding: 0.35rem 0.6rem;
+    border-radius: 8px;
+    background: rgba(255,255,255,0.08);
+    font-weight: 600;
+}
+.table-toolbar { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 0.5rem; padding: 1rem 1rem 0; }
+.precision-table-wrap { overflow-x: auto; padding: 0 1rem 1rem; -webkit-overflow-scrolling: touch; }
+.precision-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; min-width: 640px; }
+.precision-table th, .precision-table td { padding: 0.5rem 0.4rem; text-align: left; border-bottom: 1px solid rgba(255,255,255,0.08); }
+.precision-table tbody tr { cursor: pointer; }
+.precision-table tbody tr:hover { background: rgba(255,255,255,0.04); }
+.btn-table-link {
+    background: transparent;
+    border: 1px solid rgba(255,255,255,0.2);
+    color: inherit;
+    padding: 0.2rem 0.5rem;
+    border-radius: 6px;
+    font-size: 0.75rem;
+    cursor: pointer;
+}
+@media (max-width: 768px) {
+    .precision-kpi-grid { grid-template-columns: repeat(2, 1fr); }
+    .chart-grid { grid-template-columns: 1fr; }
+    .rankings-grid { grid-template-columns: 1fr; }
+}

@@ -1040,15 +1040,46 @@ def api_recommendations_analyze_paste():
     return jsonify(analyze_pasted_numbers(int(lottery_id), draw_name, pasted))
 
 
+@app.route("/precision")
+@login_required
+def precision_page():
+    return render_template("precision.html", disclaimer=DISCLAIMER)
+
+
+@app.route("/api/precision/dashboard")
+@login_required
+def api_precision_dashboard():
+    from services.precision.dashboard import get_dashboard
+    return jsonify(get_dashboard())
+
+
+@app.route("/api/precision/history")
+@login_required
+def api_precision_history():
+    limit = request.args.get("limit", 100, type=int)
+    offset = request.args.get("offset", 0, type=int)
+    from services.precision.dashboard import get_history
+    return jsonify(get_history(limit=limit, offset=offset))
+
+
+@app.route("/api/precision/compare/<int:evaluation_id>")
+@login_required
+def api_precision_compare(evaluation_id):
+    from services.precision.dashboard import get_compare_detail
+    return jsonify(get_compare_detail(evaluation_id))
+
+
 @app.route("/api/recommendations/backtest")
 @login_required
 def api_recommendations_backtest():
     days = request.args.get("days", 30, type=int)
-    from services.recommendations.backtesting import run_backtest_summary
-    from services.recommendations.weight_tuner import tune_weights_from_backtests
+    from services.precision.dashboard import get_dashboard
+    from services.precision.evaluator import evaluate_all_pending
 
-    tune_weights_from_backtests()
-    return jsonify(run_backtest_summary(days=days))
+    evaluate_all_pending(limit=200)
+    dash = get_dashboard()
+    dash["days"] = days
+    return jsonify(dash)
 
 
 @app.route("/api/analysis")
