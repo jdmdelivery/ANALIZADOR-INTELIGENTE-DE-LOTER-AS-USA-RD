@@ -177,6 +177,51 @@ def migrate_db():
                 last_login TEXT
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS recommendation_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                lottery_id INTEGER NOT NULL,
+                draw_name TEXT NOT NULL,
+                game_family TEXT,
+                adapter TEXT,
+                payload_json TEXT,
+                primary_numbers TEXT,
+                bonus_numbers TEXT,
+                score REAL,
+                confidence TEXT,
+                history_count INTEGER,
+                latest_result_date TEXT,
+                created_at TEXT DEFAULT (datetime('now')),
+                FOREIGN KEY (lottery_id) REFERENCES lotteries(id) ON DELETE CASCADE
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS backtest_results (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                recommendation_run_id INTEGER,
+                lottery_id INTEGER NOT NULL,
+                draw_name TEXT NOT NULL,
+                game_family TEXT,
+                predicted_numbers TEXT,
+                actual_numbers TEXT,
+                actual_bonus TEXT,
+                exact_hits INTEGER DEFAULT 0,
+                position_hits INTEGER DEFAULT 0,
+                box_hits INTEGER DEFAULT 0,
+                score REAL,
+                draw_date TEXT,
+                evaluated_at TEXT DEFAULT (datetime('now')),
+                FOREIGN KEY (lottery_id) REFERENCES lotteries(id) ON DELETE CASCADE
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS recommendation_weights (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                game_family TEXT NOT NULL UNIQUE,
+                weights_json TEXT NOT NULL,
+                updated_at TEXT DEFAULT (datetime('now'))
+            )
+        """)
         seed_rd_conectate_lotteries(conn)
         seed_leidsa_lotteries(conn)
         _sync_lottery_draw_schedules(conn)

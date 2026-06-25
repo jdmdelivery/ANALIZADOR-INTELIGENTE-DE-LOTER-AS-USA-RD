@@ -40,6 +40,7 @@
     let currentDrawName = '';
     let lastResultsError = '';
     let refreshResultsInProgress = false;
+    let lastPredictionData = null;
 
     const TANDA_CSS = {
         'mañana': 'rc-manana',
@@ -78,6 +79,12 @@
     if (btnRefreshRdHistoryFull) {
         btnRefreshRdHistoryFull.addEventListener('click', refreshRdHistoryFullNow);
     }
+    const btnCopyPlay = $('btnCopyPlay');
+    const btnShowExplain = $('btnShowExplain');
+    const btnAnalyzePaste = $('btnAnalyzePaste');
+    if (btnCopyPlay) btnCopyPlay.addEventListener('click', copyCurrentPlay);
+    if (btnShowExplain) btnShowExplain.addEventListener('click', toggleExplainPanel);
+    if (btnAnalyzePaste) btnAnalyzePaste.addEventListener('click', analyzePastedNumbers);
     if (btnRefreshLeidsaHistory) {
         btnRefreshLeidsaHistory.addEventListener('click', refreshLeidsaHistoryNow);
     }
@@ -738,6 +745,132 @@
         });
     }
 
+    function scoreClass(score) {
+        const s = Number(score) || 0;
+        if (s >= 80) return 'rec-score-high';
+        if (s >= 60) return 'rec-score-med';
+        return 'rec-score-low';
+    }
+
+    function renderTopSection(data) {
+        const el = $('recTopSection');
+        if (!el) return;
+        const parts = [];
+        const top5 = data.top_combinations?.top_5;
+        const top10pick = data.top_combinations?.top_10;
+        if (top5?.length) {
+            parts.push('<h4 class="rec-section-title">Top 5 combinaciones</h4>');
+            top5.forEach((c) => {
+                parts.push(`<div class="rec-combo-card"><span class="rec-combo-nums">${escapeHtml((c.numbers || []).join(' '))}</span><span class="rec-combo-score ${scoreClass(c.score)}">Score ${c.score}</span></div>`);
+            });
+        }
+        if (top10pick?.length && !top5?.length) {
+            parts.push('<h4 class="rec-section-title">Top combinaciones</h4>');
+            top10pick.slice(0, 5).forEach((c) => {
+                parts.push(`<div class="rec-combo-card"><span class="rec-combo-nums">${escapeHtml((c.numbers || []).join(' '))}</span><span class="rec-combo-score ${scoreClass(c.score)}">${c.score}</span></div>`);
+            });
+        }
+        const tn = data.top_numbers;
+        if (tn?.top_10?.length) {
+            parts.push('<h4 class="rec-section-title">Top números RD</h4>');
+            ['top_10', 'top_20', 'top_50'].forEach((key) => {
+                const list = tn[key];
+                if (!list?.length) return;
+                const label = key.replace('top_', 'Top ');
+                const nums = list.slice(0, key === 'top_50' ? 15 : 10).map((x) => `${x.number}(${x.score})`).join(' · ');
+                parts.push(`<p class="rec-paste-item"><strong>${label}:</strong> ${escapeHtml(nums)}</p>`);
+            });
+        }
+        if (data.fireball?.number) {
+            parts.push(`<p class="rec-paste-item"><strong>${escapeHtml(data.bonus_label || 'Fireball')}:</strong> ${escapeHtml(data.fireball.number)} (score ${data.fireball.score})</p>`);
+            (data.fireball_alternatives || []).forEach((fb, i) => {
+                parts.push(`<p class="rec-paste-item">Alt. Fireball ${i + 1}: ${escapeHtml(fb.number)} (${fb.score})</p>`);
+            });
+        }
+        if (data.special_ball?.number) {
+            parts.push(`<p class="rec-paste-item"><strong>${escapeHtml(data.bonus_label || 'Especial')}:</strong> ${escapeHtml(data.special_ball.number)} — score principal ${data.main_score}, especial ${data.special_ball_score}</p>`);
+        }
+        if (parts.length) {
+            el.innerHTML = parts.join('');
+            el.style.display = 'block';
+        } else {
+            el.style.display = 'none';
+        }
+    }
+
+    function buildExplainHtml(data) {
+        const bits = [];
+        bits.push(`<p><strong>Tipo:</strong> ${escapeHtml(data.game_type || '—')} · <strong>País:</strong> ${escapeHtml(data.country || '—')}</p>`);
+        bits.push(`<p><strong>Último resultado usado:</strong> ${escapeHtml(data.latest_result_date || '—')} · <strong>Histórico:</strong> ${data.history_count || data.total_results || 0} sorteos</p>`);
+        if (data.digit_scores?.length) {
+            bits.push('<p><strong>Por dígito/número:</strong></p><ul>');
+            data.digit_scores.forEach((d) => {
+                bits.push(`<li>${escapeHtml(d.number)} — score ${d.score}: ${escapeHtml(d.reason || d.score_breakdown || '')}</li>`);
+            });
+            bits.push('</ul>');
+        }
+        bits.push(`<p>${escapeHtml(data.analysis_text || '')}</p>`);
+        if (data.is_strong_recommendation === false) {
+            bits.push('<p class="prediction-warning">⚠️ Confianza baja — no es recomendación fuerte.</p>');
+        }
+        bits.push(`<p class="rec-disclaimer">${escapeHtml(data.disclaimer || '')}</p>`);
+        return bits.join('');
+    }
+
+    function toggleExplainPanel() {
+        const panel = $('recExplainPanel');
+        if (!panel || !lastPredictionData) return;
+        if (panel.style.display === 'block') {
+            panel.style.display = 'none';
+            return;
+        }
+        panel.innerHTML = buildExplainHtml(lastPredictionData);
+        panel.style.display = 'block';
+    }
+
+    function copyCurrentPlay() {
+        if (!lastPredictionData) return;
+        const nums = (lastPredictionData.generated_numbers || []).join(' ');
+        const bonus = lastPredictionData.generated_bonus || (lastPredictionData.bonus_numbers || [])[0];
+        let text = `${lastPredictionData.lottery || ''} ${lastPredictionData.draw_name || ''}: ${nums}`;
+        if (bonus) text += ` + ${lastPredictionData.bonus_label || 'Bonus'} ${bonus}`;
+        navigator.clipboard.writeText(text.trim()).catch(() => {});
+    }
+
+    async function analyzePastedNumbers() {
+        const input = $('pasteNumbersInput');
+        const out = $('pasteAnalysisResult');
+        if (!input || !out || !currentLotteryId || !currentDrawName) return;
+        out.style.display = 'block';
+        out.textContent = 'Analizando...';
+        try {
+            const res = await fetch('/api/recommendations/analyze-paste', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    lottery_id: currentLotteryId,
+                    draw_name: currentDrawName,
+                    pasted: input.value,
+                }),
+            });
+            const data = await res.json();
+            if (!data.ok) {
+                out.textContent = data.message || 'Error al analizar';
+                return;
+            }
+            const lines = (data.analysis || []).map((a) =>
+                `${a.number}: score ${a.score} — ${a.category_label} — ${a.reason}`
+            );
+            if (data.compare?.match_percent != null) {
+                lines.push(`Coincidencia último sorteo: ${data.compare.match_percent}%`);
+            }
+            out.innerHTML = lines.map((l) => `<div class="rec-paste-item">${escapeHtml(l)}</div>`).join('')
+                + `<button type="button" class="btn-rec-action" style="margin-top:0.5rem" onclick="navigator.clipboard.writeText(${JSON.stringify(data.copy_text || '')})">Copiar análisis</button>`;
+        } catch (e) {
+            out.textContent = e.message || 'Error';
+        }
+    }
+
     async function getPrediction(btn) {
         showLoading(true);
         $('analysisPlaceholder').style.display = 'none';
@@ -772,9 +905,13 @@
 
             if (!data.ok) {
                 $('analysisError').style.display = 'block';
-                $('analysisErrorMsg').textContent = data.message || 'No hay suficientes datos históricos.';
+                $('analysisErrorMsg').textContent = data.message || 'Histórico insuficiente';
                 return;
             }
+
+            lastPredictionData = data;
+            const explainPanel = $('recExplainPanel');
+            if (explainPanel) explainPanel.style.display = 'none';
 
             const drawLabel = (data.draw_display || btn.label || btn.draw_name);
             const recCount = data.recommend_count || (data.generated_numbers || []).length;
@@ -826,13 +963,26 @@
 
             const confEl = $('predictionConfidence');
             const confLabel = data.confidence_label
-                || ({ alto: 'Alto', medio: 'Medio', bajo: 'Bajo' }[data.confidence_level] || 'Bajo');
-            confEl.textContent = `Nivel: ${confLabel}`;
+                || ({ alto: 'Alta', medio: 'Media', bajo: 'Baja' }[data.confidence_level] || 'Baja');
+            confEl.textContent = confLabel;
             confEl.className = `confidence-badge confidence-${data.confidence_level || 'bajo'}`;
+
+            if (data.is_strong_recommendation === false && warnEl) {
+                warnEl.textContent = (warnEl.textContent ? warnEl.textContent + ' ' : '')
+                    + 'Confianza baja — riesgo alto.';
+                warnEl.style.display = 'block';
+            }
 
             $('predictionScore').textContent = data.score ?? '—';
             $('predictionHistoric').textContent = data.total_results ? `${data.total_results} sorteos` : '—';
             $('predictionDate').textContent = data.created_at ? `Generado: ${data.created_at}` : '';
+
+            const discEl = $('predictionDisclaimer');
+            if (discEl && data.disclaimer) {
+                discEl.textContent = data.disclaimer;
+            }
+
+            renderTopSection(data);
 
             const windowSize = data.analysis_window || 25;
             setStatWindowHint(windowSize);

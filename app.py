@@ -1010,6 +1010,47 @@ def api_prediction():
         }), 500
 
 
+@app.route("/api/recommendations")
+def api_recommendations_v2():
+    """Motor de recomendaciones v2 — payload completo."""
+    lottery_id = request.args.get("lottery_id", type=int)
+    draw_name = request.args.get("draw_name", "").strip()
+    if not lottery_id or not draw_name:
+        return jsonify({"ok": False, "message": "lottery_id y draw_name requeridos"}), 400
+    from services.recommendations.engine import generate_recommendation
+
+    lottery = get_lottery(lottery_id)
+    result = generate_recommendation(lottery_id, draw_name)
+    if lottery:
+        result = _enrich_prediction_payload(result, lottery_id, draw_name, lottery)
+    status = 200 if result.get("ok") else 400
+    return jsonify(result), status
+
+
+@app.route("/api/recommendations/analyze-paste", methods=["POST"])
+def api_recommendations_analyze_paste():
+    data = request.get_json(silent=True) or {}
+    lottery_id = data.get("lottery_id")
+    draw_name = (data.get("draw_name") or "").strip()
+    pasted = data.get("numbers") or data.get("pasted") or ""
+    if not lottery_id or not draw_name:
+        return jsonify({"ok": False, "message": "lottery_id y draw_name requeridos"}), 400
+    from services.recommendations.paste_analyzer import analyze_pasted_numbers
+
+    return jsonify(analyze_pasted_numbers(int(lottery_id), draw_name, pasted))
+
+
+@app.route("/api/recommendations/backtest")
+@login_required
+def api_recommendations_backtest():
+    days = request.args.get("days", 30, type=int)
+    from services.recommendations.backtesting import run_backtest_summary
+    from services.recommendations.weight_tuner import tune_weights_from_backtests
+
+    tune_weights_from_backtests()
+    return jsonify(run_backtest_summary(days=days))
+
+
 @app.route("/api/analysis")
 def api_analysis():
     try:

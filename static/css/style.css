@@ -1370,3 +1370,106 @@ body.premium-body {
     border-color: rgba(0, 212, 255, 0.3) !important;
     color: var(--text) !important;
 }
+
+/* —— Motor recomendaciones v2 —— */
+.rec-actions-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    justify-content: center;
+    margin: 0.75rem 0;
+}
+.btn-rec-action {
+    flex: 1 1 auto;
+    min-width: 120px;
+    min-height: 44px;
+    padding: 0.55rem 0.85rem;
+    border-radius: 10px;
+    border: 1px solid rgba(0, 212, 255, 0.35);
+    background: rgba(0, 212, 255, 0.08);
+    color: var(--text);
+    font-size: 0.85rem;
+    cursor: pointer;
+    transition: background 0.2s, border-color 0.2s;
+}
+.btn-rec-action:hover { background: rgba(0, 212, 255, 0.18); border-color: var(--cyan); }
+.rec-explain-panel {
+    background: rgba(5, 15, 35, 0.75);
+    border: 1px solid rgba(255, 215, 0, 0.25);
+    border-radius: 12px;
+    padding: 0.85rem 1rem;
+    margin-bottom: 0.75rem;
+    font-size: 0.82rem;
+    line-height: 1.45;
+    max-height: 220px;
+    overflow-y: auto;
+}
+.rec-top-section { margin: 0.75rem 0; }
+.rec-section-title {
+    font-size: 0.8rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--gold-dim);
+    margin: 0 0 0.5rem;
+}
+.rec-combo-card {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.6rem 0.75rem;
+    margin-bottom: 0.45rem;
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+}
+.rec-combo-nums { font-family: var(--font-display); font-weight: 700; letter-spacing: 0.08em; }
+.rec-combo-score {
+    margin-left: auto;
+    font-size: 0.75rem;
+    padding: 0.15rem 0.5rem;
+    border-radius: 8px;
+}
+.rec-score-high { background: rgba(0, 255, 136, 0.15); color: #00ff88; }
+.rec-score-med { background: rgba(255, 215, 0, 0.15); color: #ffd700; }
+.rec-score-low { background: rgba(255, 107, 107, 0.15); color: #ff6b6b; }
+.rec-paste-section {
+    margin: 1rem 0;
+    padding-top: 0.75rem;
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+.rec-paste-input {
+    width: 100%;
+    box-sizing: border-box;
+    margin-bottom: 0.5rem;
+    padding: 0.65rem;
+    border-radius: 10px;
+    border: 1px solid rgba(0, 212, 255, 0.25);
+    background: rgba(5, 12, 30, 0.85);
+    color: var(--text);
+    font-size: 0.9rem;
+    resize: vertical;
+}
+.rec-paste-result {
+    margin-top: 0.65rem;
+    font-size: 0.8rem;
+    line-height: 1.4;
+}
+.rec-paste-item {
+    padding: 0.45rem 0.55rem;
+    margin-bottom: 0.35rem;
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.04);
+}
+.rec-disclaimer {
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+    padding-top: 0.65rem;
+    margin-top: 0.5rem;
+}
+@media (max-width: 480px) {
+    .rec-combo-card { flex-direction: column; align-items: flex-start; }
+    .rec-combo-score { margin-left: 0; }
+    .btn-rec-action { flex: 1 1 100%; }
+}

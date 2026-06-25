@@ -138,6 +138,23 @@
                 <p id="predictionWarning" class="prediction-warning" style="display:none" aria-live="polite"></p>
                 <div id="predictionBalls" class="lottery-balls-hd lottery-balls-recommend"></div>
 
+                <div class="rec-actions-row">
+                    <button type="button" id="btnCopyPlay" class="btn-rec-action" title="Copiar jugada">📋 Copiar jugada</button>
+                    <button type="button" id="btnShowExplain" class="btn-rec-action" title="Ver explicación">💡 Ver explicación</button>
+                </div>
+
+                <div id="recExplainPanel" class="rec-explain-panel" style="display:none" aria-live="polite"></div>
+
+                <div id="recTopSection" class="rec-top-section" style="display:none;"></div>
+
+                <div class="rec-paste-section">
+                    <h4 class="rec-section-title">📥 Pegar números para analizar</h4>
+                    <textarea id="pasteNumbersInput" class="rec-paste-input" rows="3"
+                        placeholder="05 13 23 45 o una línea por número"></textarea>
+                    <button type="button" id="btnAnalyzePaste" class="btn-rec-action">Analizar pegados</button>
+                    <div id="pasteAnalysisResult" class="rec-paste-result" style="display:none;"></div>
+                </div>
+
                 <div class="stats-blocks">
                     <div class="stat-block stat-hot">
                         <h4>🔥 Calientes <span id="statHotWindow" class="stat-window-hint"></span></h4>
@@ -173,7 +190,7 @@
                     </div>
                 </div>
                 <p class="analysis-date" id="predictionDate"></p>
-                <p class="disclaimer-inline">{{ disclaimer }}</p>
+                <p class="disclaimer-inline rec-disclaimer" id="predictionDisclaimer">{{ disclaimer }}</p>
             </div>
 
             
