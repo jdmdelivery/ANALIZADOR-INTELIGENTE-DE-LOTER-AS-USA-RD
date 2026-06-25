@@ -10,6 +10,7 @@ import time
 from models import count_results_for_lottery, get_all_lotteries, get_max_draw_date
 from services.lottery_normalize import find_lottery_in_list, normalize_lottery_name
 from services.rd_lottery_config import get_rd_lottery_config, iter_enabled_conectate_configs
+from services.rd_update_log import log_rd_update
 
 logger = logging.getLogger(__name__)
 LOG = "[RD]"
@@ -59,8 +60,11 @@ def _needs_fallback(res: dict) -> bool:
     return True
 
 
-def _record(sources: list, key: str, res: dict) -> None:
-    sources.append({
+def _record(sources: list, key: str, res: dict, *, lottery_name: str = "") -> None:
+    err = None
+    if not res.get("ok"):
+        err = (res.get("errors") or [res.get("message") or res.get("error")])[0]
+    entry = {
         "fuente": key,
         "fuente_label": res.get("fuente_label") or SOURCE_LABELS.get(key, key),
         "ok": bool(res.get("ok")),
@@ -69,11 +73,22 @@ def _record(sources: list, key: str, res: dict) -> None:
         "sorteos": _rows_found(res),
         "imported": res.get("imported", 0),
         "updated": res.get("updated", 0),
-        "error": (res.get("errors") or [res.get("message") or res.get("error")])[0]
-        if not res.get("ok")
-        else None,
+        "error": err,
         "url": res.get("url") or "",
-    })
+        "parser": res.get("parser"),
+    }
+    sources.append(entry)
+    log_rd_update(
+        fuente=entry["fuente_label"],
+        url=entry["url"],
+        status=entry.get("status_code") or ("ok" if entry["ok"] else "error"),
+        tiempo=entry.get("elapsed") or "",
+        loteria=lottery_name,
+        resultados=entry["sorteos"],
+        guardados=int(entry["imported"] or 0) + int(entry["updated"] or 0),
+        actualizados=entry["updated"],
+        error=err,
+    )
 
 
 def _log_result(label: str, lottery_name: str, res: dict) -> None:
@@ -99,18 +114,31 @@ def _log_result(label: str, lottery_name: str, res: dict) -> None:
         )
 
 
-def _cache_response(lot: dict | None, parser: str = "rd_multi") -> dict | None:
+def _cache_response(
+    lot: dict | None,
+    parser: str = "rd_multi",
+    errors: list[str] | None = None,
+) -> dict | None:
     if not lot:
         return None
     saved = count_results_for_lottery(lot["id"])
     if saved <= 0:
         return None
+    latest = get_max_draw_date(lot["id"])
+    err_text = "; ".join(str(e) for e in (errors or [])[:5] if e)
+    if not err_text:
+        err_text = "Todas las fuentes en vivo fallaron sin filas nuevas."
+    msg = (
+        f"⚠️ Actualización en vivo falló (última fecha en BD: {latest or 'desconocida'}). "
+        f"{err_text}"
+    )
     return {
         "ok": True,
         "status": "cached_fallback",
         "pais": "DO",
         "parser": parser,
         "used_db_fallback": True,
+        "live_failed": True,
         "cache": True,
         "fuente": "database",
         "fuente_label": "Cache Local",
@@ -119,9 +147,11 @@ def _cache_response(lot: dict | None, parser: str = "rd_multi") -> dict | None:
         "imported": 0,
         "updated": 0,
         "lottery_id": lot["id"],
-        "latest_date": get_max_draw_date(lot["id"]),
-        "message": "Mostrando resultados guardados (última actualización en BD).",
-        "mensaje": "Mostrando resultados guardados (última actualización en BD).",
+        "latest_date": latest,
+        "message": msg,
+        "mensaje": msg,
+        "errors": list(errors or []),
+        "error_detail": err_text,
     }
 
 
@@ -212,7 +242,7 @@ def actualizar_rd_loteria(lottery_name: str, days: int = 30) -> dict:
     try:
         primary = _run_conectate_primary(db_name, days)
         primary["elapsed"] = round(time.monotonic() - t0, 2)
-        _record(sources_tried, "conectate_primary", primary)
+        _record(sources_tried, "conectate_primary", primary, lottery_name=db_name)
         if not _needs_fallback(primary):
             return _success(primary, fuente_key="conectate", lottery_name=db_name, sources_tried=sources_tried)
         if primary.get("message"):
@@ -220,13 +250,19 @@ def actualizar_rd_loteria(lottery_name: str, days: int = 30) -> dict:
     except Exception as exc:
         logger.exception("%s Conectate primary error %s", LOG, db_name)
         errors.append(str(exc))
+        _record(
+            sources_tried,
+            "conectate_primary",
+            {"ok": False, "error": str(exc), "message": str(exc)},
+            lottery_name=db_name,
+        )
 
     # 2–5 — Fallbacks
     for fuente_key, fn_name in FALLBACK_CHAIN:
         logger.info("%s %s — probando %s", LOG, db_name, SOURCE_LABELS.get(fuente_key, fuente_key))
         try:
             fb = _run_fallback(fuente_key, fn_name, db_name, days)
-            _record(sources_tried, fuente_key, fb)
+            _record(sources_tried, fuente_key, fb, lottery_name=db_name)
             if fb.get("ok") and (_saved(fb) or _rows_found(fb) > 0):
                 return _success(
                     fb,
@@ -240,9 +276,15 @@ def actualizar_rd_loteria(lottery_name: str, days: int = 30) -> dict:
         except Exception as exc:
             logger.exception("%s fallback %s error", LOG, fuente_key)
             errors.append(str(exc))
+            _record(
+                sources_tried,
+                fuente_key,
+                {"ok": False, "error": str(exc), "message": str(exc)},
+                lottery_name=db_name,
+            )
 
     # 6 — Caché BD
-    cached = _cache_response(lot)
+    cached = _cache_response(lot, errors=errors)
     if cached:
         cached["sources_tried"] = sources_tried
         cached["errors"] = errors[:10]
@@ -256,6 +298,8 @@ def actualizar_rd_loteria(lottery_name: str, days: int = 30) -> dict:
         "lottery_name": db_name,
         "sources_tried": sources_tried,
         "errors": errors,
+        "error_detail": "; ".join(errors[:5]) if errors else "Todas las fuentes fallaron",
+        "live_failed": True,
         "message": errors[0] if errors else f"No se pudo actualizar {db_name}",
     }
 

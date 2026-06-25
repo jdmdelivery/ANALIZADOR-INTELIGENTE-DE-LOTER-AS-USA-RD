@@ -120,11 +120,12 @@ def parse_anguila_history_page(html, cfg, year_hint, source_url):
     return results
 
 
-def parse_anguila_blocks(html, year_hint, source_url, page_date=None):
+def parse_anguila_blocks(html, year_hint, source_url, page_date=None, hub: dict | None = None):
     """Bloques Anguila desde hub — usa API sessions (el hub Nuxt ya no incluye scores SSR)."""
     from scrapers.kiskoo_nuxt_parser import fetch_hub_rows
 
-    hub = fetch_hub_rows(days=30)
+    if hub is None:
+        hub = fetch_hub_rows(days=30)
     if not hub.get("ok"):
         return []
     target_date = page_date
@@ -184,11 +185,12 @@ def _parse_session_blocks(html, days: int = 90):
     return _parse_draw_page_nuxt(html, "", days=days)
 
 
-def _parse_main_page_blocks(html, year_hint, page_date=None, days: int = 30):
+def _parse_main_page_blocks(html, year_hint, page_date=None, days: int = 30, hub: dict | None = None):
     """Hub por fecha — API sessions (HTML Nuxt del hub ya no trae scores)."""
     from scrapers.kiskoo_nuxt_parser import fetch_hub_rows
 
-    hub = fetch_hub_rows(days=days)
+    if hub is None:
+        hub = fetch_hub_rows(days=days)
     if not hub.get("ok"):
         return []
     rows = []
@@ -203,6 +205,22 @@ def _parse_main_page_blocks(html, year_hint, page_date=None, days: int = 30):
             "source_url": row.get("source_url", BASE_URL + "/loterias/"),
         })
     return rows
+
+
+def _hub_rows_for_lottery(days: int, lottery_name: str, hub: dict | None = None) -> tuple[list[dict], dict]:
+    """Una sola llamada API hub; filtra por lotería."""
+    from scrapers.kiskoo_nuxt_parser import fetch_hub_rows
+
+    if hub is None:
+        hub = fetch_hub_rows(days=days, source_label="conectate_api")
+    if not hub.get("ok"):
+        return [], hub
+    rows = [
+        {**row, "lottery_name": lottery_name}
+        for row in (hub.get("rows") or [])
+        if lottery_names_match(row.get("lottery_name", ""), lottery_name)
+    ]
+    return rows, hub
 
 
 def _find_lottery_id(lotteries, name):
@@ -246,6 +264,16 @@ class ConectateRDScraper:
     def __init__(self):
         self.session = requests.Session()
         self.session.headers.update(HEADERS)
+        self._hub_cache: dict | None = None
+        self._hub_cache_days: int | None = None
+
+    def get_hub_rows(self, days: int = 30) -> dict:
+        if self._hub_cache is None or self._hub_cache_days != days:
+            from scrapers.kiskoo_nuxt_parser import fetch_hub_rows
+
+            self._hub_cache = fetch_hub_rows(days=days, source_label="conectate_api")
+            self._hub_cache_days = days
+        return self._hub_cache
 
     def fetch_page(self, path="", params=None):
         url = self.base_url.rstrip("/") + "/" + path.lstrip("/")
@@ -273,7 +301,9 @@ class ConectateRDScraper:
 
     def scrape_main_for_date(self, date_param, year_hint, days: int = 30):
         page_date = _date_param_to_iso(date_param)
-        return _parse_main_page_blocks("", year_hint, page_date=page_date, days=days)
+        return _parse_main_page_blocks(
+            "", year_hint, page_date=page_date, days=days, hub=self.get_hub_rows(days)
+        )
 
 
 def import_conectate_rd_new_lotteries_only(days_back=30, delay_seconds=0.25):
@@ -439,10 +469,18 @@ def import_conectate_lottery_bulk_style(lottery_name: str, days_back: int = 30) 
     for days_ago in range(days_back):
         dt = datetime.now() - timedelta(days=days_ago)
         date_param = dt.strftime("%d-%m-%Y")
-        for row in scraper.scrape_main_for_date(date_param, str(dt.year)):
+        for row in scraper.scrape_main_for_date(date_param, str(dt.year), days=days_back):
             if lottery_names_match(row.get("lottery_name", ""), db_name):
                 _save(row, row.get("draw_time", ""))
-        time.sleep(0.15)
+        time.sleep(0.02)
+
+    # Complemento hub solo si hace falta (evita timeout de sessions API)
+    if imported + updated == 0:
+        hub_rows, hub = _hub_rows_for_lottery(days_back, db_name, scraper.get_hub_rows(days_back))
+        if not hub.get("ok") and hub.get("error"):
+            errors.append(str(hub.get("error")))
+        for row in hub_rows:
+            _save(row, row.get("draw_time", ""))
 
     with get_db() as conn:
         total = conn.execute(
@@ -556,23 +594,12 @@ def import_conectate_lottery_history(lottery_name: str, days: int = 90, draw_nam
     year_hint = str(datetime.now().year)
     raw_rows: list = []
     only_today_warning = False
+    hub_errors: list[str] = []
 
     is_anguila = (cfg and cfg.get("anguila")) or normalize_lottery_name(lottery_name) == "anguila"
     if is_anguila:
         rows_vis, _ = scrape_anguila_all_visible(scraper, year_hint, days_back=days)
         raw_rows.extend(rows_vis)
-        for days_ago in range(days):
-            dt = datetime.now() - timedelta(days=days_ago)
-            date_param = dt.strftime("%d-%m-%Y")
-            page = scraper.fetch_page("/loterias/", params={"date": date_param})
-            if page.get("ok"):
-                page_date = _date_param_to_iso(date_param)
-                raw_rows.extend(
-                    parse_anguila_blocks(
-                        page["html"], year_hint, page["url"], page_date=page_date
-                    )
-                )
-            time.sleep(0.15)
     else:
         pages = (cfg or {}).get("conectate_pages") or []
         if not pages:
@@ -594,13 +621,14 @@ def import_conectate_lottery_history(lottery_name: str, days: int = 90, draw_nam
                     page_dates_from_draw_pages.add(row["draw_date"])
             time.sleep(0.2)
 
-        for days_ago in range(days):
-            dt = datetime.now() - timedelta(days=days_ago)
-            date_param = dt.strftime("%d-%m-%Y")
-            for row in scraper.scrape_main_for_date(date_param, year_hint):
-                if lottery_names_match(row.get("lottery_name", ""), db_name):
-                    raw_rows.append({**row, "lottery_name": db_name})
-            time.sleep(0.15)
+        # Hub API solo si las páginas de tanda no entregaron historial suficiente
+        if len(raw_rows) < max(3, days // 5):
+            hub_rows, hub = _hub_rows_for_lottery(days, db_name, scraper.get_hub_rows(days))
+            if not hub.get("ok") and hub.get("error"):
+                hub_errors.append(str(hub.get("error")))
+            raw_rows.extend(hub_rows)
+        elif not raw_rows:
+            hub_errors.append("Páginas de tanda sin filas parseables (parser Nuxt)")
 
         if pages and not page_dates_from_draw_pages:
             only_today_warning = True
@@ -613,7 +641,7 @@ def import_conectate_lottery_history(lottery_name: str, days: int = 90, draw_nam
     rows = _filter_rows_by_days(raw_rows, days, draw_name=draw_name)
 
     imported = updated = 0
-    errors = []
+    errors = list(hub_errors)
     for row in rows:
         try:
             _, action = upsert_result(
@@ -650,6 +678,7 @@ def import_conectate_lottery_history(lottery_name: str, days: int = 90, draw_nam
         "dates_found": dates_found,
         "rows_found": len(raw_rows),
         "rows_saved": len(rows),
+        "parser": "nuxt_draw_pages",
         "supports_full_history": not only_today_warning or len(dates_found) > 3,
         "only_today_warning": only_today_warning and len(dates_found) <= 1,
         "message": msg,

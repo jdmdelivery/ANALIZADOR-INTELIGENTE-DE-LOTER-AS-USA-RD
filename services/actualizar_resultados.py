@@ -80,6 +80,7 @@ def _rd_respuesta_cache(lot=None, lottery_name: str = "", parser: str = "leidsa"
         "latest_date": get_max_draw_date(lottery_id) if lottery_id else None,
         "message": "⚠️ No se pudo actualizar en vivo; se mantienen los resultados guardados en BD.",
         "errors": [],
+        "live_failed": True,
     }
 
 
@@ -118,9 +119,12 @@ def actualizar_resultados_rd(
     if fb:
         fb["sources_tried"] = result.get("sources_tried", [])
         fb["errors"] = result.get("errors", [])
-        fb["mensaje"] = ALT_RD_MSG + " Se mantienen resultados guardados."
+        err_detail = result.get("error_detail") or "; ".join(result.get("errors", [])[:5])
+        fb["error_detail"] = err_detail
+        fb["mensaje"] = err_detail or (ALT_RD_MSG + " Se mantienen resultados guardados.")
         fb["message"] = fb["mensaje"]
         fb["warning"] = True
+        fb["live_failed"] = True
         return fb
     return result
 

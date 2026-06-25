@@ -369,16 +369,16 @@ def import_conectate_hub(lottery_name: str, days: int = 30) -> dict:
         hub = fetch_hub_rows(days=days, source_label="conectate_api")
         if hub.get("ok"):
             raw = _filter_lottery(hub.get("rows") or [], lottery_name)
-
-    logo_map = build_logo_main_page()
-    for days_ago in range(min(days, 14)):
-        dt = datetime.now() - timedelta(days=days_ago)
-        date_param = dt.strftime("%d-%m-%Y")
-        hub = fetch_rd_url(f"{CONECTATE_BASE}/loterias/?date={date_param}", source="conectate_hub")
-        if hub.get("ok"):
-            page_date = _date_param_to_iso(date_param)
-            raw.extend(_parse_kiskoo_main(hub["html"], hub["url"], logo_map, str(dt.year), page_date))
-        time.sleep(0.15)
+        elif hub.get("error"):
+            return {
+                **hub,
+                "fuente": "conectate",
+                "fuente_label": "Conectate.com.do",
+                "rows_found": 0,
+                "imported": 0,
+                "updated": 0,
+                "message": hub.get("error"),
+            }
 
     raw = _dedupe_rows(_filter_lottery(_filter_days(raw, days), lottery_name))
     batch = save_rd_rows(raw, fuente="conectate_rd", days=days, lottery_name=lottery_name)

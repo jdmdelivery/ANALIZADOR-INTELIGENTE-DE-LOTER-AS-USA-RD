@@ -262,6 +262,55 @@
         refreshResultsStatus.className = 'refresh-status-msg' + (kind ? ` is-${kind}` : '');
     }
 
+    function formatSourcesTriedErrors(sources) {
+        if (!sources?.length) return '';
+        return sources
+            .filter((s) => !s.ok || s.error)
+            .map((s) => `${s.fuente_label || s.fuente}: ${s.error || 'sin filas'}`)
+            .slice(0, 5)
+            .join(' · ');
+    }
+
+    function formatUpdateError(data, res, err) {
+        const parts = [];
+        if (err) {
+            if (err.name === 'SyntaxError') {
+                parts.push(`JSON inválido: ${err.message}`);
+            } else if (err.message?.includes('Failed to fetch') || err.message?.includes('NetworkError')) {
+                parts.push(`Error de red / timeout: ${err.message}`);
+            } else {
+                parts.push(err.message || String(err));
+            }
+        }
+        if (res && !res.ok) {
+            parts.push(`HTTP ${res.status} ${res.statusText || ''}`.trim());
+        }
+        if (data?.error_detail) parts.push(data.error_detail);
+        if (data?.error) parts.push(data.error);
+        if (data?.traceback) {
+            console.error('[RD UPDATE] traceback', data.traceback);
+            parts.push(`Exception: ${(data.traceback.split('\n').slice(-2).join(' ')).trim()}`);
+        }
+        if (data?.errors?.length) {
+            parts.push(data.errors.slice(0, 5).join(' · '));
+        }
+        const srcErr = formatSourcesTriedErrors(data?.sources_tried);
+        if (srcErr) parts.push(srcErr);
+        return parts.filter(Boolean).join(' · ') || 'Error desconocido al actualizar';
+    }
+
+    async function parseJsonResponse(res) {
+        const text = await res.text();
+        try {
+            return JSON.parse(text);
+        } catch (parseErr) {
+            const snippet = text.replace(/\s+/g, ' ').slice(0, 240);
+            throw new Error(
+                `JSON inválido (HTTP ${res.status}): ${parseErr.message}. Respuesta: ${snippet}`
+            );
+        }
+    }
+
     async function refreshResultsNow() {
         if (!currentLotteryId || !btnRefreshResultsNow || refreshResultsInProgress) return;
 
@@ -290,7 +339,8 @@
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(body),
             });
-            const data = await res.json();
+            const data = await parseJsonResponse(res);
+            const isRd = selectCountry.value === 'RD' || data.pais === 'DO';
 
             if (data.hub_url || data.status_code != null) {
                 console.info('[Illinois Hub]', {
@@ -299,6 +349,14 @@
                     from_cache: data.from_cache,
                     used_db_fallback: data.used_db_fallback,
                     saved_count: data.saved_count,
+                });
+            }
+            if (isRd && (data.sources_tried || data.parser)) {
+                console.info('[RD UPDATE]', {
+                    parser: data.parser,
+                    fuente: data.fuente_usada || data.fuente,
+                    sources_tried: data.sources_tried,
+                    live_failed: data.live_failed,
                 });
             }
 
@@ -323,23 +381,30 @@
             }
 
             if (data.warning || data.used_db_fallback || data.status === 'cached_fallback' || data.cache) {
-                const warnMsg = data.mensaje || data.message
+                let warnMsg = data.mensaje || data.message
                     || '⚠️ Mostrando resultados guardados.';
-                setRefreshStatus(warnMsg, 'muted');
-                lastResultsError = '';
+                if (isRd && (data.live_failed || data.errors?.length)) {
+                    const detail = formatUpdateError(data, res);
+                    if (detail && !warnMsg.includes(detail)) {
+                        warnMsg = `${warnMsg} ${detail}`;
+                    }
+                }
+                setRefreshStatus(warnMsg, data.live_failed ? 'error' : 'muted');
+                lastResultsError = data.live_failed ? formatUpdateError(data, res) : '';
                 return;
             }
 
             if (!data.ok || data.status === 'error') {
                 const hasSaved = (data.saved_count || 0) > 0;
-                const errMsg = hasSaved
+                const detail = formatUpdateError(data, res);
+                const errMsg = hasSaved && !isRd
                     ? (data.mensaje || data.message || '⚠️ No se pudo actualizar ahora, pero se muestran resultados guardados.')
-                    : (data.error || data.mensaje || data.message || '⚠️ Illinois Results Hub no respondió. Mostrando últimos resultados guardados.');
+                    : (detail || data.error || data.mensaje || data.message || 'Error al actualizar resultados.');
                 setRefreshStatus(
-                    errMsg.startsWith('⚠') ? errMsg : `⚠️ ${errMsg}`,
-                    hasSaved ? 'muted' : 'error'
+                    errMsg.startsWith('⚠') || errMsg.startsWith('Error') ? errMsg : `⚠️ ${errMsg}`,
+                    hasSaved && !isRd ? 'muted' : 'error'
                 );
-                lastResultsError = hasSaved ? '' : errMsg;
+                lastResultsError = errMsg;
                 return;
             }
 
@@ -367,12 +432,10 @@
                 );
             }
         } catch (e) {
-            console.error('[Illinois Hub] fetch error', e);
-            setRefreshStatus(
-                '⚠️ No se pudo actualizar ahora. Se mantienen los últimos resultados guardados.',
-                'muted'
-            );
-            lastResultsError = e.message || String(e);
+            console.error('[Actualizar resultados] fetch error', e);
+            const errMsg = formatUpdateError(null, null, e);
+            setRefreshStatus(`⚠️ ${errMsg}`, 'error');
+            lastResultsError = errMsg;
             await loadRecentResults(true);
         } finally {
             refreshResultsInProgress = false;
@@ -1031,11 +1094,9 @@
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ country: 'RD', refresh_all_rd: true, days: 30 }),
             });
-            const data = await res.json();
+            const data = await parseJsonResponse(res);
             if (!data.ok && !data.leidsa_ok && !(data.imported + data.updated)) {
-                const err = (data.errors && data.errors.length)
-                    ? data.errors.slice(0, 3).join(' · ')
-                    : (data.message || 'Error al actualizar RD');
+                const err = formatUpdateError(data, res);
                 setLeidsaStatus(err, 'error');
                 lastResultsError = err;
                 await loadLeidsaBoard();
@@ -1054,7 +1115,9 @@
             await loadLeidsaBoard();
             if (currentLotteryId) await loadRecentResults(true);
         } catch (e) {
-            setLeidsaStatus('Error al actualizar resultados RD', 'error');
+            const err = formatUpdateError(null, null, e);
+            setLeidsaStatus(err, 'error');
+            lastResultsError = err;
         } finally {
             btnRefreshRdAll.disabled = false;
         }

@@ -299,6 +299,8 @@ def logout():
 def health():
     """Liveness/readiness para Render, balanceadores, etc."""
     from models import DATABASE, get_connection
+    from services.rd_results_debug import _git_commit_short
+    from scrapers.kiskoo_nuxt_parser import KISKOO_PARSER_VERSION
 
     db_ok = False
     try:
@@ -314,6 +316,8 @@ def health():
         "status": "healthy" if db_ok else "degraded",
         "production": IS_PRODUCTION,
         "database": DATABASE,
+        "git_commit": _git_commit_short(),
+        "rd_parser_version": KISKOO_PARSER_VERSION,
     }), status
 
 
@@ -633,10 +637,16 @@ def _format_actualizar_api_response(result: dict) -> tuple[dict, int]:
     if result.get("ok"):
         if result.get("used_db_fallback") or result.get("status") == "cached_fallback":
             mensaje = raw_msg or "Mostrando resultados guardados."
+            if result.get("live_failed") and (result.get("error_detail") or errors):
+                detail = result.get("error_detail") or "; ".join(str(e) for e in errors[:5])
+                if detail and detail not in mensaje:
+                    mensaje = f"{mensaje} Detalle: {detail}"
             base.update({
                 "ok": True,
                 "warning": True,
                 "cache": True,
+                "live_failed": bool(result.get("live_failed")),
+                "error_detail": result.get("error_detail") or (errors[0] if errors else ""),
                 "mensaje": mensaje,
                 "message": mensaje,
             })
@@ -702,6 +712,10 @@ def _format_actualizar_api_response(result: dict) -> tuple[dict, int]:
         return base, 200
 
     base.update({"ok": False, "error": err, "message": err, "mensaje": err})
+    if result.get("error_detail"):
+        base["error_detail"] = result["error_detail"]
+    if result.get("sources_tried"):
+        base["sources_tried"] = result["sources_tried"]
     return base, 500
 
 
@@ -748,8 +762,17 @@ def _actualizar_resultados_api(data=None):
                 logger.warning("[API] Advertencias scraper: %s", errors[:3])
         return payload, status
     except Exception as exc:
+        import traceback
+
         logger.exception("[API] Excepción actualizando resultados")
-        return {"ok": False, "error": str(exc), "message": str(exc), "mensaje": str(exc)}, 500
+        return {
+            "ok": False,
+            "error": str(exc),
+            "message": str(exc),
+            "mensaje": str(exc),
+            "error_detail": str(exc),
+            "traceback": traceback.format_exc(),
+        }, 500
 
 
 @app.route("/api/resultados/actualizar", methods=["POST"])
@@ -781,6 +804,21 @@ def api_resultados_debug():
 
     report = build_usa_debug_report(probe_live=probe)
     return jsonify(report)
+
+
+@app.route("/api/resultados/rd/diagnostico", methods=["GET"])
+@login_required
+def api_resultados_rd_diagnostico():
+    """Diagnóstico fuentes RD: commit, parser Nuxt, APIs Conectate/LD."""
+    if not current_user.is_admin():
+        return jsonify({
+            "ok": False,
+            "error": "Solo administradores pueden ver el diagnóstico RD.",
+        }), 403
+    probe = request.args.get("probe", "1").strip().lower() not in ("0", "false", "no")
+    from services.rd_results_debug import build_rd_debug_report
+
+    return jsonify(build_rd_debug_report(probe_live=probe))
 
 
 def _run_leidsa_update():

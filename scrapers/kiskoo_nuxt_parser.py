@@ -7,12 +7,24 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from datetime import datetime, timedelta
 
 import requests
 
+from services.rd_update_log import log_rd_update
+
 logger = logging.getLogger(__name__)
 LOG = "[RD SCRAPER]"
+KISKOO_PARSER_VERSION = "nuxt-sessions-v2"
+_HUB_ROWS_CACHE: dict[tuple, tuple[float, dict]] = {}
+HUB_CACHE_TTL_SEC = 600
+JSON_TIMEOUT_SEC = 20
+SESSIONS_TIMEOUT_SEC = 18
+
+
+def clear_hub_cache() -> None:
+    _HUB_ROWS_CACHE.clear()
 
 CONECTATE_API = "https://api.conectate.com.do"
 LD_API = "https://api.loteriasdominicanas.com"
@@ -220,11 +232,12 @@ def parse_page_quiniela_rows(html: str, source_url: str, *, days: int = 90) -> l
     ]
 
 
-def fetch_json(url: str, *, source: str = "kiskoo") -> dict:
+def fetch_json(url: str, *, source: str = "kiskoo", timeout: int | None = None) -> dict:
     t0 = datetime.now()
+    req_timeout = timeout if timeout is not None else JSON_TIMEOUT_SEC
     try:
         logger.info("%s GET %s | fuente=%s", LOG, url, source)
-        resp = requests.get(url, headers=RD_FETCH_HEADERS, timeout=45)
+        resp = requests.get(url, headers=RD_FETCH_HEADERS, timeout=req_timeout)
         elapsed = (datetime.now() - t0).total_seconds()
         logger.info(
             "%s respuesta | url=%s | status=%s | bytes=%s | tiempo=%ss",
@@ -235,23 +248,46 @@ def fetch_json(url: str, *, source: str = "kiskoo") -> dict:
             round(elapsed, 2),
         )
         if resp.status_code >= 400:
+            err = f"HTTP {resp.status_code}"
+            log_rd_update(
+                fuente=source,
+                url=url,
+                status=resp.status_code,
+                tiempo=round(elapsed, 2),
+                error=err,
+            )
             return {
                 "ok": False,
                 "status_code": resp.status_code,
                 "url": url,
                 "elapsed": round(elapsed, 2),
-                "error": f"HTTP {resp.status_code}",
+                "error": err,
             }
         try:
             data = resp.json()
         except json.JSONDecodeError as exc:
+            err = f"JSON inválido: {exc}"
+            log_rd_update(
+                fuente=source,
+                url=url,
+                status=resp.status_code,
+                tiempo=round(elapsed, 2),
+                error=err,
+            )
             return {
                 "ok": False,
                 "status_code": resp.status_code,
                 "url": url,
                 "elapsed": round(elapsed, 2),
-                "error": f"JSON inválido: {exc}",
+                "error": err,
             }
+        log_rd_update(
+            fuente=source,
+            url=url,
+            status=resp.status_code,
+            tiempo=round(elapsed, 2),
+            resultados=len(data) if isinstance(data, list) else 1,
+        )
         return {
             "ok": True,
             "data": data,
@@ -262,11 +298,15 @@ def fetch_json(url: str, *, source: str = "kiskoo") -> dict:
     except requests.RequestException as exc:
         elapsed = (datetime.now() - t0).total_seconds()
         logger.warning("%s error GET %s: %s", LOG, url, exc)
+        err = str(exc)
+        if "timeout" in err.lower() or "timed out" in err.lower():
+            err = f"Timeout: {err}"
+        log_rd_update(fuente=source, url=url, tiempo=round(elapsed, 2), error=err)
         return {
             "ok": False,
             "url": url,
             "elapsed": round(elapsed, 2),
-            "error": str(exc),
+            "error": err,
         }
 
 
@@ -289,7 +329,11 @@ def build_game_title_map(payload: list) -> dict[str, str]:
 
 
 def fetch_sessions(api_base: str = CONECTATE_API, *, source: str = "conectate_api") -> dict:
-    return fetch_json(f"{api_base.rstrip('/')}/conectate/sessions", source=source)
+    return fetch_json(
+        f"{api_base.rstrip('/')}/conectate/sessions",
+        source=source,
+        timeout=SESSIONS_TIMEOUT_SEC,
+    )
 
 
 def sessions_to_rows(
@@ -356,19 +400,28 @@ def fetch_hub_rows(
     source_label: str = "conectate_api",
 ) -> dict:
     """Todas las quinielas RD desde API sessions + mapa de títulos."""
+    cache_key = (api_base, payload_url, int(days), source_label)
+    now = time.monotonic()
+    cached = _HUB_ROWS_CACHE.get(cache_key)
+    if cached and (now - cached[0]) < HUB_CACHE_TTL_SEC:
+        return cached[1]
+
     cutoff = (datetime.now() - timedelta(days=max(1, days))).strftime("%Y-%m-%d")
     payload_resp = fetch_json(payload_url, source=f"{source_label}_payload")
     if not payload_resp.get("ok"):
-        return {**payload_resp, "rows": []}
+        out = {**payload_resp, "rows": [], "parser": KISKOO_PARSER_VERSION}
+        return out
 
     payload = payload_resp["data"]
     if not isinstance(payload, list):
-        return {"ok": False, "error": "Payload inesperado", "rows": []}
+        out = {"ok": False, "error": "Payload inesperado", "rows": [], "parser": KISKOO_PARSER_VERSION}
+        return out
 
     game_map = build_game_title_map(payload)
     sess_resp = fetch_sessions(api_base, source=source_label)
     if not sess_resp.get("ok"):
-        return {**sess_resp, "rows": []}
+        out = {**sess_resp, "rows": [], "parser": KISKOO_PARSER_VERSION}
+        return out
 
     rows = sessions_to_rows(
         sess_resp["data"],
@@ -376,11 +429,24 @@ def fetch_hub_rows(
         cutoff=cutoff,
         source_url=sess_resp.get("url", api_base),
     )
-    return {
+    elapsed = (payload_resp.get("elapsed") or 0) + (sess_resp.get("elapsed") or 0)
+    out = {
         "ok": True,
         "rows": rows,
         "game_map_size": len(game_map),
         "status_code": sess_resp.get("status_code"),
         "url": sess_resp.get("url"),
-        "elapsed": (payload_resp.get("elapsed") or 0) + (sess_resp.get("elapsed") or 0),
+        "elapsed": elapsed,
+        "parser": KISKOO_PARSER_VERSION,
     }
+    log_rd_update(
+        fuente=source_label,
+        url=out.get("url", ""),
+        status=out.get("status_code"),
+        tiempo=elapsed,
+        resultados=len(rows),
+        guardados=0,
+        actualizados=0,
+    )
+    _HUB_ROWS_CACHE[cache_key] = (now, out)
+    return out
