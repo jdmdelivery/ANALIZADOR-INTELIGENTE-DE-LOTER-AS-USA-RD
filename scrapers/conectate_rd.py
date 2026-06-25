@@ -6,10 +6,10 @@ Fuente: https://www.conectate.com.do/loterias/
 import re
 import time
 from datetime import datetime, timedelta
-
-import requests
+from urllib.parse import urlencode
 
 from models import upsert_result, format_numbers, get_all_lotteries, get_db
+from scrapers.rd_http import fetch_rd_url
 from services.lottery_normalize import (
     find_lottery_in_list,
     lottery_names_match,
@@ -262,8 +262,6 @@ class ConectateRDScraper:
     base_url = BASE_URL
 
     def __init__(self):
-        self.session = requests.Session()
-        self.session.headers.update(HEADERS)
         self._hub_cache: dict | None = None
         self._hub_cache_days: int | None = None
 
@@ -277,12 +275,21 @@ class ConectateRDScraper:
 
     def fetch_page(self, path="", params=None):
         url = self.base_url.rstrip("/") + "/" + path.lstrip("/")
-        try:
-            resp = self.session.get(url, params=params or {}, timeout=20)
-            resp.raise_for_status()
-            return {"ok": True, "html": resp.text, "url": resp.url}
-        except requests.RequestException as e:
-            return {"ok": False, "message": str(e)}
+        if params:
+            url = f"{url}?{urlencode(params)}"
+        page = fetch_rd_url(url, source="conectate_rd")
+        if page.get("ok"):
+            return {
+                "ok": True,
+                "html": page["html"],
+                "url": page.get("url", url),
+                "status_code": page.get("status_code"),
+            }
+        return {
+            "ok": False,
+            "message": page.get("error") or page.get("message") or "Error HTTP",
+            "status_code": page.get("status_code"),
+        }
 
     def scrape_draw_page(self, path, draw_name, draw_time, year_hint, days: int = 90):
         page = self.fetch_page(path)
@@ -661,6 +668,17 @@ def import_conectate_lottery_history(lottery_name: str, days: int = 90, draw_nam
             errors.append(str(e))
 
     dates_found = sorted({r.get("draw_date") for r in rows if r.get("draw_date")}, reverse=True)
+    saved_total = imported + updated
+    hub_status = None
+    if hub_errors:
+        for part in hub_errors:
+            if "403" in part:
+                hub_status = 403
+                break
+    ok = saved_total > 0 or len(rows) > 0
+    if not ok and hub_errors:
+        ok = False
+
     msg = (
         f"{db_name}: historial {days} días — {len(rows)} sorteos guardados "
         f"({imported} nuevos, {updated} actualizados)."
@@ -669,7 +687,7 @@ def import_conectate_lottery_history(lottery_name: str, days: int = 90, draw_nam
         msg += " Esta fuente solo entregó resultados del día actual en las páginas de tanda."
 
     return {
-        "ok": True,
+        "ok": ok,
         "source": "conectate_rd",
         "imported": imported,
         "updated": updated,
@@ -678,6 +696,7 @@ def import_conectate_lottery_history(lottery_name: str, days: int = 90, draw_nam
         "dates_found": dates_found,
         "rows_found": len(raw_rows),
         "rows_saved": len(rows),
+        "status_code": hub_status,
         "parser": "nuxt_draw_pages",
         "supports_full_history": not only_today_warning or len(dates_found) > 3,
         "only_today_warning": only_today_warning and len(dates_found) <= 1,

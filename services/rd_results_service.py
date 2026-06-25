@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 LOG = "[RD]"
 
 SOURCE_LABELS = {
+    "conectate_api": "Conectate API",
     "conectate": "Conectate.com.do",
     "conectate_primary": "Conectate.com.do",
     "loteriasdominicanas": "LoteriasDominicanas.com",
@@ -51,7 +52,12 @@ def _rows_found(res: dict) -> int:
 
 
 def _needs_fallback(res: dict) -> bool:
-    if not res or not res.get("ok"):
+    if not res:
+        return True
+    status = int(res.get("status_code") or 0)
+    if status == 403 or status >= 500:
+        return True
+    if not res.get("ok"):
         return True
     if _saved(res):
         return False
@@ -89,6 +95,21 @@ def _record(sources: list, key: str, res: dict, *, lottery_name: str = "") -> No
         actualizados=entry["updated"],
         error=err,
     )
+    try:
+        from services.rd_scraper_diagnostic import record_scraper_run
+
+        dates = res.get("dates_found") or []
+        record_scraper_run(
+            key,
+            {
+                **entry,
+                "ok": entry["ok"],
+                "ultima_fecha": dates[0] if dates else None,
+                "lottery_name": lottery_name,
+            },
+        )
+    except Exception:
+        pass
 
 
 def _log_result(label: str, lottery_name: str, res: dict) -> None:
@@ -238,13 +259,40 @@ def actualizar_rd_loteria(lottery_name: str, days: int = 30) -> dict:
     logger.info("%s === Inicio %s — multi-fuente ===", LOG, db_name)
     t0 = time.monotonic()
 
-    # 1 — Fuente actual (Conectate scraper existente)
+    # 1 — API Kiskoo (Conectate → LD automático ante 403)
+    try:
+        from scrapers.rd_fallback_scrapers import import_conectate_api
+
+        api = import_conectate_api(db_name, days)
+        api["elapsed"] = api.get("elapsed") or round(time.monotonic() - t0, 2)
+        _record(sources_tried, "conectate_api", api, lottery_name=db_name)
+        if not _needs_fallback(api):
+            out = _success(api, fuente_key="conectate_api", lottery_name=db_name, sources_tried=sources_tried)
+            out["elapsed_total"] = round(time.monotonic() - t0, 2)
+            out["tiempo"] = out["elapsed_total"]
+            return out
+        if api.get("message"):
+            errors.append(api["message"])
+    except Exception as exc:
+        logger.exception("%s Conectate API error %s", LOG, db_name)
+        errors.append(str(exc))
+        _record(
+            sources_tried,
+            "conectate_api",
+            {"ok": False, "error": str(exc), "message": str(exc)},
+            lottery_name=db_name,
+        )
+
+    # 2 — Conectate HTML (páginas de tanda)
     try:
         primary = _run_conectate_primary(db_name, days)
         primary["elapsed"] = round(time.monotonic() - t0, 2)
         _record(sources_tried, "conectate_primary", primary, lottery_name=db_name)
         if not _needs_fallback(primary):
-            return _success(primary, fuente_key="conectate", lottery_name=db_name, sources_tried=sources_tried)
+            out = _success(primary, fuente_key="conectate", lottery_name=db_name, sources_tried=sources_tried)
+            out["elapsed_total"] = round(time.monotonic() - t0, 2)
+            out["tiempo"] = out["elapsed_total"]
+            return out
         if primary.get("message"):
             errors.append(primary["message"])
     except Exception as exc:
@@ -257,20 +305,23 @@ def actualizar_rd_loteria(lottery_name: str, days: int = 30) -> dict:
             lottery_name=db_name,
         )
 
-    # 2–5 — Fallbacks
+    # 3–6 — Fallbacks HTML
     for fuente_key, fn_name in FALLBACK_CHAIN:
         logger.info("%s %s — probando %s", LOG, db_name, SOURCE_LABELS.get(fuente_key, fuente_key))
         try:
             fb = _run_fallback(fuente_key, fn_name, db_name, days)
             _record(sources_tried, fuente_key, fb, lottery_name=db_name)
             if fb.get("ok") and (_saved(fb) or _rows_found(fb) > 0):
-                return _success(
+                out = _success(
                     fb,
                     fuente_key=fuente_key,
                     lottery_name=db_name,
                     sources_tried=sources_tried,
                     warning=True,
                 )
+                out["elapsed_total"] = round(time.monotonic() - t0, 2)
+                out["tiempo"] = out["elapsed_total"]
+                return out
             if fb.get("message"):
                 errors.append(fb["message"])
         except Exception as exc:
@@ -283,11 +334,13 @@ def actualizar_rd_loteria(lottery_name: str, days: int = 30) -> dict:
                 lottery_name=db_name,
             )
 
-    # 6 — Caché BD
+    # 7 — Caché BD (solo si TODAS las fuentes fallaron)
     cached = _cache_response(lot, errors=errors)
     if cached:
         cached["sources_tried"] = sources_tried
         cached["errors"] = errors[:10]
+        cached["elapsed_total"] = round(time.monotonic() - t0, 2)
+        cached["tiempo"] = cached["elapsed_total"]
         logger.info("%s %s — usando caché BD (%s registros)", LOG, db_name, cached["saved_count"])
         return cached
 

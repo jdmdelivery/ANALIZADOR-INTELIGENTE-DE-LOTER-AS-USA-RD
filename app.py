@@ -616,10 +616,32 @@ def _api_actualizar_resultados_payload(data=None):
     }
 
 
+def _api_json_error(
+    error: str,
+    *,
+    detalle: str = "",
+    fuente: str = "api",
+    status: int = 500,
+    extra: dict | None = None,
+) -> tuple[dict, int]:
+    payload = {
+        "ok": False,
+        "error": error,
+        "detalle": detalle or error,
+        "fuente": fuente,
+        "status": status,
+        "message": error,
+        "mensaje": error,
+    }
+    if extra:
+        payload.update(extra)
+    return payload, status
+
+
 def _format_actualizar_api_response(result: dict) -> tuple[dict, int]:
     """JSON estándar para /api/resultados/actualizar (+ alias actualizar-ahora)."""
     if not isinstance(result, dict):
-        return {"ok": False, "error": "Respuesta inválida del servicio de actualización"}, 500
+        return _api_json_error("Respuesta inválida del servicio de actualización")
 
     imported = int(result.get("imported") or 0)
     updated = int(result.get("updated") or 0)
@@ -712,11 +734,20 @@ def _format_actualizar_api_response(result: dict) -> tuple[dict, int]:
         return base, 200
 
     base.update({"ok": False, "error": err, "message": err, "mensaje": err})
+    base["detalle"] = result.get("error_detail") or err
+    base["fuente"] = result.get("fuente") or fuente or "rd"
+    base["status"] = 500
     if result.get("error_detail"):
         base["error_detail"] = result["error_detail"]
     if result.get("sources_tried"):
         base["sources_tried"] = result["sources_tried"]
-    return base, 500
+    return _api_json_error(
+        err,
+        detalle=base["detalle"],
+        fuente=base["fuente"],
+        status=500,
+        extra={k: v for k, v in base.items() if k not in ("ok", "error", "detalle", "fuente", "status")},
+    )
 
 
 def _actualizar_resultados_api(data=None):
@@ -765,14 +796,14 @@ def _actualizar_resultados_api(data=None):
         import traceback
 
         logger.exception("[API] Excepción actualizando resultados")
-        return {
-            "ok": False,
-            "error": str(exc),
-            "message": str(exc),
-            "mensaje": str(exc),
-            "error_detail": str(exc),
-            "traceback": traceback.format_exc(),
-        }, 500
+        tb = traceback.format_exc()
+        return _api_json_error(
+            str(exc),
+            detalle=tb,
+            fuente="api",
+            status=500,
+            extra={"traceback": tb},
+        )
 
 
 @app.route("/api/resultados/actualizar", methods=["POST"])
@@ -783,6 +814,9 @@ def api_actualizar_resultados_ahora():
         return jsonify({
             "ok": False,
             "error": "Solo administradores pueden actualizar resultados.",
+            "detalle": "Acceso denegado — rol insuficiente",
+            "fuente": "api",
+            "status": 403,
             "message": "Solo administradores pueden actualizar resultados.",
         }), 403
     data = request.get_json(silent=True) or {}
@@ -814,11 +848,32 @@ def api_resultados_rd_diagnostico():
         return jsonify({
             "ok": False,
             "error": "Solo administradores pueden ver el diagnóstico RD.",
+            "detalle": "Acceso denegado",
+            "fuente": "api",
+            "status": 403,
         }), 403
     probe = request.args.get("probe", "1").strip().lower() not in ("0", "false", "no")
     from services.rd_results_debug import build_rd_debug_report
 
     return jsonify(build_rd_debug_report(probe_live=probe))
+
+
+@app.route("/api/admin/rd/diagnostico-scrapers", methods=["GET"])
+@admin_required
+def api_admin_rd_diagnostico_scrapers():
+    probe = request.args.get("probe", "1").strip().lower() not in ("0", "false", "no")
+    from services.rd_scraper_diagnostic import build_scrapers_admin_report
+
+    return jsonify(build_scrapers_admin_report(probe_live=probe))
+
+
+@app.route("/admin/diagnostico-scrapers")
+@admin_required
+def admin_diagnostico_scrapers():
+    return render_template(
+        "admin_diagnostico_scrapers.html",
+        disclaimer=DISCLAIMER,
+    )
 
 
 def _run_leidsa_update():
@@ -910,8 +965,30 @@ def api_actualizar_leidsa_historial():
 @app.errorhandler(404)
 def not_found(err):
     if request.path.startswith("/api/") or request.path.startswith("/debug/"):
-        return jsonify({"ok": False, "message": "Recurso no encontrado."}), 404
+        return jsonify({
+            "ok": False,
+            "error": "Recurso no encontrado.",
+            "detalle": str(err),
+            "fuente": "api",
+            "status": 404,
+            "message": "Recurso no encontrado.",
+        }), 404
     return render_template("login.html", disclaimer=DISCLAIMER), 404
+
+
+@app.errorhandler(403)
+def forbidden(err):
+    if request.path.startswith("/api/") or request.path.startswith("/debug/"):
+        return jsonify({
+            "ok": False,
+            "error": "Acceso denegado.",
+            "detalle": str(err),
+            "fuente": "api",
+            "status": 403,
+            "message": "Acceso denegado.",
+        }), 403
+    flash("Acceso denegado.", "danger")
+    return redirect(url_for("index"))
 
 
 @app.errorhandler(500)
@@ -919,11 +996,34 @@ def server_error(err):
     logger.exception("Error interno: %s", err)
     if request.path.startswith("/api/") or request.path.startswith("/debug/"):
         msg = "Error interno del servidor." if IS_PRODUCTION else str(err)
-        return jsonify({"ok": False, "message": msg}), 500
+        return jsonify({
+            "ok": False,
+            "error": msg,
+            "detalle": str(err),
+            "fuente": "api",
+            "status": 500,
+            "message": msg,
+        }), 500
     if current_user.is_authenticated:
         flash("Ocurrió un error interno. Intenta de nuevo.", "danger")
         return redirect(url_for("index"))
     return redirect(url_for("login"))
+
+
+@app.errorhandler(Exception)
+def unhandled_exception(err):
+    if request.path.startswith("/api/") or request.path.startswith("/debug/"):
+        logger.exception("Excepción no capturada en API: %s", err)
+        msg = "Error interno del servidor." if IS_PRODUCTION else str(err)
+        return jsonify({
+            "ok": False,
+            "error": msg,
+            "detalle": str(err),
+            "fuente": "api",
+            "status": 500,
+            "message": msg,
+        }), 500
+    raise err
 
 
 @app.route("/debug/leidsa")

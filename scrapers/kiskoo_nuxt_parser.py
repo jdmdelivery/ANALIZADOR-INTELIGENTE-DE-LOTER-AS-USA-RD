@@ -10,8 +10,7 @@ import re
 import time
 from datetime import datetime, timedelta
 
-import requests
-
+from scrapers.rd_http import fetch_rd_json
 from services.rd_update_log import log_rd_update
 
 logger = logging.getLogger(__name__)
@@ -233,81 +232,39 @@ def parse_page_quiniela_rows(html: str, source_url: str, *, days: int = 90) -> l
 
 
 def fetch_json(url: str, *, source: str = "kiskoo", timeout: int | None = None) -> dict:
-    t0 = datetime.now()
     req_timeout = timeout if timeout is not None else JSON_TIMEOUT_SEC
-    try:
-        logger.info("%s GET %s | fuente=%s", LOG, url, source)
-        resp = requests.get(url, headers=RD_FETCH_HEADERS, timeout=req_timeout)
-        elapsed = (datetime.now() - t0).total_seconds()
-        logger.info(
-            "%s respuesta | url=%s | status=%s | bytes=%s | tiempo=%ss",
-            LOG,
-            url,
-            resp.status_code,
-            len(resp.content),
-            round(elapsed, 2),
-        )
-        if resp.status_code >= 400:
-            err = f"HTTP {resp.status_code}"
-            log_rd_update(
-                fuente=source,
-                url=url,
-                status=resp.status_code,
-                tiempo=round(elapsed, 2),
-                error=err,
-            )
-            return {
-                "ok": False,
-                "status_code": resp.status_code,
-                "url": url,
-                "elapsed": round(elapsed, 2),
-                "error": err,
-            }
-        try:
-            data = resp.json()
-        except json.JSONDecodeError as exc:
-            err = f"JSON inválido: {exc}"
-            log_rd_update(
-                fuente=source,
-                url=url,
-                status=resp.status_code,
-                tiempo=round(elapsed, 2),
-                error=err,
-            )
-            return {
-                "ok": False,
-                "status_code": resp.status_code,
-                "url": url,
-                "elapsed": round(elapsed, 2),
-                "error": err,
-            }
+    out = fetch_rd_json(url, source=source, timeout=req_timeout)
+    if out.get("ok"):
+        data = out["data"]
         log_rd_update(
             fuente=source,
             url=url,
-            status=resp.status_code,
-            tiempo=round(elapsed, 2),
+            status=out.get("status_code"),
+            tiempo=out.get("elapsed"),
             resultados=len(data) if isinstance(data, list) else 1,
         )
         return {
             "ok": True,
             "data": data,
-            "status_code": resp.status_code,
-            "url": url,
-            "elapsed": round(elapsed, 2),
+            "status_code": out.get("status_code"),
+            "url": out.get("url", url),
+            "elapsed": out.get("elapsed"),
         }
-    except requests.RequestException as exc:
-        elapsed = (datetime.now() - t0).total_seconds()
-        logger.warning("%s error GET %s: %s", LOG, url, exc)
-        err = str(exc)
-        if "timeout" in err.lower() or "timed out" in err.lower():
-            err = f"Timeout: {err}"
-        log_rd_update(fuente=source, url=url, tiempo=round(elapsed, 2), error=err)
-        return {
-            "ok": False,
-            "url": url,
-            "elapsed": round(elapsed, 2),
-            "error": err,
-        }
+    err = out.get("error") or "Error de red"
+    log_rd_update(
+        fuente=source,
+        url=url,
+        status=out.get("status_code") or "",
+        tiempo=out.get("elapsed"),
+        error=err,
+    )
+    return {
+        "ok": False,
+        "status_code": out.get("status_code"),
+        "url": out.get("url", url),
+        "elapsed": out.get("elapsed"),
+        "error": err,
+    }
 
 
 def build_game_title_map(payload: list) -> dict[str, str]:

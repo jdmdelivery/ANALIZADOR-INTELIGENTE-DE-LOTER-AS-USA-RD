@@ -315,13 +315,73 @@ def save_rd_rows(
 
     saved = imported + updated
     return {
-        "ok": saved > 0 or bool(rows),
+        "ok": saved > 0 or (bool(rows) and not errors),
         "imported": imported,
         "updated": updated,
         "rows_found": len(rows),
         "rows_saved": len(saved_rows),
         "errors": errors[:10],
         "saved_rows": saved_rows,
+    }
+
+
+def import_conectate_api(lottery_name: str, days: int = 30) -> dict:
+    """API Kiskoo sessions — Conectate, luego Loterías Dominicanas si 403 o sin filas."""
+    from scrapers.kiskoo_nuxt_parser import (
+        CONECTATE_API,
+        CONECTATE_PAYLOAD,
+        LD_API,
+        LD_PAYLOAD,
+        fetch_hub_rows,
+    )
+
+    attempts = [
+        (CONECTATE_API, CONECTATE_PAYLOAD, "Conectate API", "conectate_api"),
+        (LD_API, LD_PAYLOAD, "Loterías Dominicanas API", "ld_api"),
+    ]
+    errors: list[str] = []
+    for api_base, payload_url, label, key in attempts:
+        hub = fetch_hub_rows(
+            api_base=api_base,
+            payload_url=payload_url,
+            days=days,
+            source_label=key,
+        )
+        status = hub.get("status_code")
+        if status == 403 or (not hub.get("ok") and status and int(status) >= 400):
+            errors.append(f"{label}: HTTP {status}")
+            logger.warning("%s %s HTTP %s — probando siguiente API", LOG, label, status)
+            continue
+        if not hub.get("ok"):
+            err = hub.get("error") or "sin datos"
+            errors.append(f"{label}: {err}")
+            continue
+        raw = _filter_lottery(hub.get("rows") or [], lottery_name)
+        raw = _dedupe_rows(_filter_days(raw, days))
+        if not raw:
+            errors.append(f"{label}: 0 filas para {lottery_name}")
+            continue
+        batch = save_rd_rows(raw, fuente="conectate_api", days=days, lottery_name=lottery_name)
+        return {
+            **batch,
+            "fuente": "conectate_api",
+            "fuente_label": label,
+            "parser": hub.get("parser") or "nuxt-sessions-v2",
+            "url": hub.get("url"),
+            "status_code": status,
+            "elapsed": hub.get("elapsed"),
+            "message": f"{label}: {batch.get('rows_saved', 0)} sorteos.",
+        }
+    return {
+        "ok": False,
+        "fuente": "conectate_api",
+        "fuente_label": "Conectate API",
+        "rows_found": 0,
+        "imported": 0,
+        "updated": 0,
+        "errors": errors,
+        "message": errors[-1] if errors else "API Kiskoo sin filas",
+        "error": errors[-1] if errors else "API Kiskoo sin filas",
     }
 
 

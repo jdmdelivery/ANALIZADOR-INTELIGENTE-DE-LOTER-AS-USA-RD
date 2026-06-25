@@ -269,6 +269,51 @@
         refreshResultsStatus.className = 'refresh-status-msg' + (kind ? ` is-${kind}` : '');
     }
 
+    function formatRdUpdateStatus(data) {
+        const fuente = data.fuente_usada || data.fuente_label || data.fuente || 'RD';
+        const tiempo = data.tiempo ?? data.elapsed_total ?? data.elapsed;
+        const tiempoTxt = tiempo != null ? `${tiempo}s` : '—';
+        const imported = data.imported ?? 0;
+        const updated = data.updated ?? 0;
+        const ultima = data.ultima_fecha || data.latest_date || '—';
+
+        if (data.used_db_fallback || data.status === 'cached_fallback' || (data.cache && data.live_failed)) {
+            const srcErr = formatSourcesTriedErrors(data.sources_tried);
+            let msg = `⚠️ Caché BD (última fecha: ${ultima}). Todas las fuentes en vivo fallaron.`;
+            if (srcErr) msg += ` ${srcErr}`;
+            return { text: msg, kind: 'error' };
+        }
+
+        if (!data.ok || data.status === 'error') {
+            const failed = (data.sources_tried || []).find((s) => !s.ok && s.error);
+            const next = (data.sources_tried || []).find((s) => s.ok);
+            let msg = `❌ Fuente: ${failed?.fuente_label || fuente}`;
+            if (failed?.status_code) msg += ` HTTP ${failed.status_code}`;
+            if (failed?.error) msg += ` — ${failed.error}`;
+            if (next) msg += ` · Probando ${next.fuente_label}…`;
+            return { text: msg, kind: 'error' };
+        }
+
+        if (data.warning && imported + updated > 0) {
+            return {
+                text: `✅ Fuente: ${fuente} · Tiempo: ${tiempoTxt} · Nuevos: ${imported} · Actualizados: ${updated} · Última fecha: ${ultima} (fuente alternativa)`,
+                kind: 'muted',
+            };
+        }
+
+        if (imported + updated > 0 || data.status === 'updated') {
+            return {
+                text: `✅ Fuente: ${fuente} · Tiempo: ${tiempoTxt} · Nuevos: ${imported} · Actualizados: ${updated} · Última fecha: ${ultima}`,
+                kind: 'ok',
+            };
+        }
+
+        return {
+            text: data.mensaje || data.message || `⚪ Sin resultados nuevos · Última fecha: ${ultima}`,
+            kind: 'muted',
+        };
+    }
+
     function formatSourcesTriedErrors(sources) {
         if (!sources?.length) return '';
         return sources
@@ -388,6 +433,12 @@
             }
 
             if (data.warning || data.used_db_fallback || data.status === 'cached_fallback' || data.cache) {
+                if (isRd) {
+                    const rd = formatRdUpdateStatus(data);
+                    setRefreshStatus(rd.text, rd.kind);
+                    lastResultsError = data.live_failed ? formatUpdateError(data, res) : '';
+                    return;
+                }
                 let warnMsg = data.mensaje || data.message
                     || '⚠️ Mostrando resultados guardados.';
                 if (isRd && (data.live_failed || data.errors?.length)) {
@@ -402,6 +453,12 @@
             }
 
             if (!data.ok || data.status === 'error') {
+                if (isRd) {
+                    const rd = formatRdUpdateStatus(data);
+                    setRefreshStatus(rd.text, rd.kind);
+                    lastResultsError = formatUpdateError(data, res);
+                    return;
+                }
                 const hasSaved = (data.saved_count || 0) > 0;
                 const detail = formatUpdateError(data, res);
                 const errMsg = hasSaved && !isRd
@@ -416,6 +473,11 @@
             }
 
             lastResultsError = '';
+            if (isRd && (data.fuente_usada || data.sources_tried)) {
+                const rd = formatRdUpdateStatus(data);
+                setRefreshStatus(rd.text, rd.kind);
+                return;
+            }
             if (data.from_cache) {
                 setRefreshStatus(
                     data.message || '⚠️ Illinois Results Hub no respondió. Datos desde caché local.',

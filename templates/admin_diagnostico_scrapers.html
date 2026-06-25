@@ -1,0 +1,134 @@
+{% extends "base.html" %}
+
+{% block title %}Diagnóstico Scrapers RD{% endblock %}
+
+{% block content %}
+<div class="container admin-container py-4">
+    <div class="d-flex flex-wrap justify-content-between align-items-center mb-4 gap-2">
+        <h1 class="section-title mb-0">Diagnóstico Scrapers RD</h1>
+        <div class="d-flex gap-2">
+            <button type="button" class="btn btn-outline-light btn-sm" id="btnProbeLive">🔍 Sondeo en vivo</button>
+            <button type="button" class="btn btn-outline-secondary btn-sm" id="btnProbeCache">📋 Solo caché local</button>
+            <a href="/admin" class="btn btn-outline-secondary btn-sm">← Panel Admin</a>
+        </div>
+    </div>
+
+    <div id="diagStatus" class="alert alert-info">Cargando diagnóstico…</div>
+
+    <div class="card bg-dark border-secondary mb-4">
+        <div class="card-body">
+            <h2 class="h5 text-light">Resumen</h2>
+            <dl class="row mb-0 small text-secondary" id="diagSummary"></dl>
+        </div>
+    </div>
+
+    <h2 class="h5 text-light mb-3">Estado por fuente</h2>
+    <div class="table-responsive mb-4">
+        <table class="table table-dark table-hover admin-table" id="diagScrapersTable">
+            <thead>
+                <tr>
+                    <th>Fuente</th>
+                    <th>Parser</th>
+                    <th>Probe vivo</th>
+                    <th>Última ejecución</th>
+                    <th>Tiempo</th>
+                    <th>Sorteos</th>
+                    <th>Última fecha</th>
+                    <th>Error</th>
+                </tr>
+            </thead>
+            <tbody></tbody>
+        </table>
+    </div>
+
+    <h2 class="h5 text-light mb-3">Base de datos RD</h2>
+    <div class="table-responsive">
+        <table class="table table-dark table-sm admin-table" id="diagDbTable">
+            <thead>
+                <tr>
+                    <th>Lotería</th>
+                    <th>Sorteos en BD</th>
+                    <th>Última fecha</th>
+                </tr>
+            </thead>
+            <tbody></tbody>
+        </table>
+    </div>
+</div>
+
+<script>
+(function () {
+    const statusEl = document.getElementById('diagStatus');
+    const summaryEl = document.getElementById('diagSummary');
+    const scrapersBody = document.querySelector('#diagScrapersTable tbody');
+    const dbBody = document.querySelector('#diagDbTable tbody');
+
+    function badge(ok) {
+        if (ok === true) return '<span class="text-success">✔ OK</span>';
+        if (ok === false) return '<span class="text-danger">✖ Fallo</span>';
+        return '<span class="text-muted">—</span>';
+    }
+
+    function render(data) {
+        const ok = data.ok;
+        statusEl.className = 'alert ' + (ok ? 'alert-success' : 'alert-warning');
+        statusEl.textContent = data.message || (ok ? 'Fuentes RD operativas.' : 'Hay problemas con fuentes RD.');
+
+        summaryEl.innerHTML = `
+            <dt class="col-sm-3">Commit</dt><dd class="col-sm-9">${data.git_commit || '—'}</dd>
+            <dt class="col-sm-3">Parser</dt><dd class="col-sm-9">${data.parser_version || '—'}</dd>
+            <dt class="col-sm-3">Fuente activa</dt><dd class="col-sm-9">${data.fuente_activa_sugerida || '—'}</dd>
+            <dt class="col-sm-3">Tiempo probe</dt><dd class="col-sm-9">${data.elapsed_total != null ? data.elapsed_total + 's' : '—'}</dd>
+        `;
+
+        scrapersBody.innerHTML = (data.scrapers || []).map((s) => `
+            <tr>
+                <td><strong>${s.nombre}</strong><br><small class="text-muted">${s.key}</small></td>
+                <td><small>${s.parser}</small></td>
+                <td>${badge(s.probe_ok)} ${s.probe_status ? 'HTTP ' + s.probe_status : ''}</td>
+                <td><small>${s.ultima_ejecucion || '—'}</small></td>
+                <td>${s.ultimo_tiempo != null ? s.ultimo_tiempo + 's' : (s.probe_elapsed != null ? s.probe_elapsed + 's' : '—')}</td>
+                <td>${s.ultimos_sorteos ?? '—'}</td>
+                <td>${s.ultima_fecha_obtenida || '—'}</td>
+                <td><small class="text-warning">${s.ultimo_error || s.probe_error || ''}</small></td>
+            </tr>
+        `).join('');
+
+        dbBody.innerHTML = (data.loterias_bd || []).map((r) => `
+            <tr>
+                <td>${r.lottery}</td>
+                <td>${r.sorteos}</td>
+                <td>${r.ultima_fecha || '—'}</td>
+            </tr>
+        `).join('');
+    }
+
+    async function load(probe) {
+        statusEl.className = 'alert alert-info';
+        statusEl.textContent = probe ? 'Sondeo en vivo…' : 'Cargando desde caché de proceso…';
+        try {
+            const res = await fetch('/api/admin/rd/diagnostico-scrapers?probe=' + (probe ? '1' : '0'));
+            const text = await res.text();
+            let data;
+            try {
+                data = JSON.parse(text);
+            } catch (e) {
+                throw new Error('JSON inválido (HTTP ' + res.status + '): ' + text.slice(0, 120));
+            }
+            if (!res.ok && data.error) {
+                statusEl.className = 'alert alert-danger';
+                statusEl.textContent = data.error + (data.detalle ? ' — ' + data.detalle : '');
+            }
+            render(data);
+        } catch (e) {
+            statusEl.className = 'alert alert-danger';
+            statusEl.textContent = 'Error: ' + e.message;
+        }
+    }
+
+    document.getElementById('btnProbeLive').addEventListener('click', () => load(true));
+    document.getElementById('btnProbeCache').addEventListener('click', () => load(false));
+    load(true);
+})();
+</script>
+{% endblock %}

@@ -1,6 +1,7 @@
 """Cliente HTTP compartido para scrapers RD (local + Render)."""
 from __future__ import annotations
 
+import json
 import logging
 import os
 import time
@@ -107,4 +108,68 @@ def fetch_rd_url(
         "elapsed": round(time.monotonic() - t0, 2),
         "error": last_error or "Error de red",
         "message": last_error or "Error de red",
+    }
+
+
+def fetch_rd_json(
+    url: str,
+    *,
+    source: str = "rd",
+    timeout: int | None = None,
+    retries: int | None = None,
+) -> dict:
+    """GET JSON con cloudscraper (misma sesión que HTML). Evita HTTP 403 en Render."""
+    timeout = timeout or DEFAULT_TIMEOUT
+    retries = retries or DEFAULT_RETRIES
+    session = get_rd_session()
+    headers = {
+        **RD_HEADERS,
+        "Accept": "application/json, text/plain, */*",
+    }
+    last_error = None
+    status_code = None
+    t0 = time.monotonic()
+
+    for attempt in range(1, retries + 1):
+        try:
+            logger.info("%s GET JSON %s | fuente=%s | intento=%s/%s", LOG, url, source, attempt, retries)
+            resp = session.get(url, headers=headers, timeout=timeout)
+            status_code = resp.status_code
+            elapsed = round(time.monotonic() - t0, 2)
+            logger.info(
+                "%s respuesta JSON | url=%s | status=%s | bytes=%s | tiempo=%ss",
+                LOG,
+                url,
+                status_code,
+                len(resp.content),
+                elapsed,
+            )
+            if status_code >= 400:
+                last_error = f"HTTP {status_code}"
+                time.sleep(1.5 * attempt)
+                continue
+            try:
+                data = resp.json()
+            except json.JSONDecodeError as exc:
+                last_error = f"JSON inválido: {exc}"
+                time.sleep(1.0 * attempt)
+                continue
+            return {
+                "ok": True,
+                "data": data,
+                "status_code": status_code,
+                "url": resp.url,
+                "elapsed": elapsed,
+            }
+        except requests.RequestException as exc:
+            last_error = str(exc)
+            logger.warning("%s error GET JSON %s: %s", LOG, url, exc)
+            time.sleep(1.5 * attempt)
+
+    return {
+        "ok": False,
+        "url": url,
+        "status_code": status_code,
+        "elapsed": round(time.monotonic() - t0, 2),
+        "error": last_error or "Error de red",
     }

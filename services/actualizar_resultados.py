@@ -145,22 +145,44 @@ def _finalize_rd_scrape(lot: dict, scrape: dict, days: int) -> dict:
         "updated": updated,
         "days": days,
         "latest_date": latest_date,
+        "ultima_fecha": latest_date,
         "parser": scrape.get("parser"),
         "errors": scrape.get("errors", []),
         "fuente_usada": scrape.get("fuente_usada") or scrape.get("fuente_label"),
         "sources_tried": scrape.get("sources_tried", []),
         "warning": scrape.get("warning", False),
+        "tiempo": scrape.get("tiempo") or scrape.get("elapsed_total") or scrape.get("elapsed"),
+        "elapsed_total": scrape.get("elapsed_total") or scrape.get("elapsed"),
+        "cache": bool(scrape.get("cache") or scrape.get("used_db_fallback")),
+        "live_failed": bool(scrape.get("live_failed")),
     }
 
-    if saved == 0:
+    fuente_label = base["fuente_usada"] or "RD"
+    tiempo = base.get("tiempo")
+
+    if scrape.get("used_db_fallback") or scrape.get("status") == "cached_fallback":
+        base["status"] = "cached_fallback"
+        latest = latest_date or scrape.get("latest_date") or "desconocida"
+        base["message"] = scrape.get("mensaje") or scrape.get("message") or (
+            f"⚠️ Todas las fuentes fallaron. Última fecha en BD: {latest}."
+        )
+    elif saved == 0:
         base["status"] = "no_new"
         base["message"] = scrape.get("mensaje") or scrape.get("message") or "No hay resultados nuevos en el rango"
     else:
         base["status"] = "updated"
+        tiempo_txt = f"{tiempo}s" if tiempo else "—"
         if scrape.get("warning"):
-            base["message"] = ALT_RD_MSG
+            base["message"] = (
+                f"✅ Fuente: {fuente_label} · Tiempo: {tiempo_txt} · "
+                f"Nuevos: {imported} · Actualizados: {updated} · Última fecha: {latest_date or '—'}. "
+                f"{ALT_RD_MSG}"
+            )
         else:
-            base["message"] = scrape.get("mensaje") or scrape.get("message") or f"✅ RD actualizado ({saved} registros)."
+            base["message"] = (
+                f"✅ Fuente: {fuente_label} · Tiempo: {tiempo_txt} · "
+                f"Nuevos: {imported} · Actualizados: {updated} · Última fecha: {latest_date or '—'}"
+            )
     base["mensaje"] = base["message"]
     return base
 
