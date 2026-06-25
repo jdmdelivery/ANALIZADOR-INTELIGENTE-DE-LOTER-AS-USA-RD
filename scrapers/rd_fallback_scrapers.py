@@ -21,6 +21,10 @@ CONECTATE_BASE = "https://www.conectate.com.do"
 LD_BASE = "https://loteriasdominicanas.com"
 LOTDOM_BASE = "https://www.loteriadominicana.com.do"
 ENLOTERIA_BASE = "https://enloteria.com"
+CONECTATE_API = "https://api.conectate.com.do"
+LD_API = "https://api.loteriasdominicanas.com"
+CONECTATE_PAYLOAD = "https://www.conectate.com.do/loterias/_payload.json"
+LD_PAYLOAD = "https://loteriasdominicanas.com/_payload.json"
 
 MONTHS_ES = {
     "enero": 1, "febrero": 2, "marzo": 3, "abril": 4, "mayo": 5, "junio": 6,
@@ -168,60 +172,45 @@ def _extract_three_numbers(chunk: str) -> list[str] | None:
     return [_pad(n) for n in nums]
 
 
-def _parse_kiskoo_main(html: str, base_url: str, logo_map: dict, year_hint: str, page_date: str | None = None) -> list[dict]:
-    rows: list[dict] = []
-    blocks = list(re.finditer(r'class="game-block\s+company-block-(\d+)\s+(\w+)"', html))
-    for i, m in enumerate(blocks):
-        start = m.start()
-        end = blocks[i + 1].start() if i + 1 < len(blocks) else start + 2000
-        chunk = html[start:end]
-        logo_m = re.search(r'data-src="[^"]*/([^"/]+)\.png"', chunk)
-        if not logo_m:
-            continue
-        mapping = logo_map.get(logo_m.group(1))
-        if not mapping:
-            continue
-        lottery_name, draw_name = mapping
-        nums = _extract_three_numbers(chunk)
-        if not nums:
-            continue
-        date_m = re.search(r'class="session-date[^"]*"[^>]*>\s*([^<]+)', chunk)
-        draw_date = page_date or _normalize_date_raw(date_m.group(1).strip() if date_m else "", year_hint)
-        if not draw_date:
-            continue
-        rows.append({
-            "lottery_name": lottery_name,
-            "draw_name": draw_name,
-            "draw_date": draw_date,
-            "numbers": nums,
-            "source_url": base_url,
-        })
-    return rows
+def _parse_kiskoo_history(html: str, lottery_name: str, draw_name: str, draw_time: str, year_hint: str, source_url: str, days: int = 90) -> list[dict]:
+    from scrapers.kiskoo_nuxt_parser import parse_page_quiniela_rows
 
-
-def _parse_kiskoo_history(html: str, lottery_name: str, draw_name: str, draw_time: str, year_hint: str, source_url: str) -> list[dict]:
-    rows: list[dict] = []
-    blocks = list(re.finditer(r'<div class="game-block[^"]*"', html))
-    for i, m in enumerate(blocks):
-        start = m.start()
-        end = blocks[i + 1].start() if i + 1 < len(blocks) else start + 1500
-        chunk = html[start:end]
-        nums = _extract_three_numbers(chunk)
-        if not nums:
-            continue
-        date_m = re.search(r'class="session-date[^"]*"[^>]*>\s*([^<]+)', chunk)
-        draw_date = _normalize_date_raw(date_m.group(1).strip() if date_m else "", year_hint)
-        if not draw_date:
-            continue
-        rows.append({
+    return [
+        {
             "lottery_name": lottery_name,
             "draw_name": draw_name,
             "draw_time": draw_time,
-            "draw_date": draw_date,
-            "numbers": nums,
+            "draw_date": row["draw_date"],
+            "numbers": row["numbers"],
             "source_url": source_url,
-        })
-    return rows
+        }
+        for row in parse_page_quiniela_rows(html, source_url, days=days)
+    ]
+
+
+def _parse_kiskoo_main(html: str, base_url: str, logo_map: dict, year_hint: str, page_date: str | None = None, days: int = 30) -> list[dict]:
+    """Hub/portada — API sessions Kiskoo (HTML hub sin scores SSR)."""
+    from scrapers.kiskoo_nuxt_parser import fetch_hub_rows
+
+    api_base = CONECTATE_API if "conectate" in base_url else LD_API
+    payload_url = CONECTATE_PAYLOAD if "conectate" in base_url else LD_PAYLOAD
+    label = "conectate_api" if "conectate" in base_url else "loteriasdominicanas_api"
+    hub = fetch_hub_rows(api_base=api_base, payload_url=payload_url, days=days, source_label=label)
+    if not hub.get("ok"):
+        return []
+    rows = hub.get("rows") or []
+    if page_date:
+        rows = [r for r in rows if r.get("draw_date") == page_date]
+    return [
+        {
+            "lottery_name": r["lottery_name"],
+            "draw_name": r["draw_name"],
+            "draw_date": r["draw_date"],
+            "numbers": r["numbers"],
+            "source_url": r.get("source_url", base_url),
+        }
+        for r in rows
+    ]
 
 
 def _cutoff_iso(days: int) -> str:
@@ -371,8 +360,15 @@ def import_conectate_hub(lottery_name: str, days: int = 30) -> dict:
         )
     if not raw:
         logo_map = build_logo_main_page()
-        raw = _parse_kiskoo_main(page["html"], page["url"], logo_map, year_hint)
+        raw = _parse_kiskoo_main(page["html"], page["url"], logo_map, year_hint, days=days)
         raw = _filter_lottery(raw, lottery_name)
+
+    if not raw:
+        from scrapers.kiskoo_nuxt_parser import fetch_hub_rows
+
+        hub = fetch_hub_rows(days=days, source_label="conectate_api")
+        if hub.get("ok"):
+            raw = _filter_lottery(hub.get("rows") or [], lottery_name)
 
     logo_map = build_logo_main_page()
     for days_ago in range(min(days, 14)):
@@ -419,8 +415,20 @@ def import_loteriasdominicanas(lottery_name: str, days: int = 30) -> dict:
             )
         )
     if not raw:
-        raw = _parse_kiskoo_main(page["html"], page["url"], LD_LOGO_MAP, year_hint)
+        raw = _parse_kiskoo_main(page["html"], page["url"], LD_LOGO_MAP, year_hint, days=days)
         raw = _filter_lottery(raw, lottery_name)
+
+    if not raw:
+        from scrapers.kiskoo_nuxt_parser import fetch_hub_rows
+
+        hub = fetch_hub_rows(
+            api_base=LD_API,
+            payload_url=LD_PAYLOAD,
+            days=days,
+            source_label="loteriasdominicanas_api",
+        )
+        if hub.get("ok"):
+            raw = _filter_lottery(hub.get("rows") or [], lottery_name)
 
     for days_ago in range(min(days, 14)):
         dt = datetime.now() - timedelta(days=days_ago)

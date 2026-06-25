@@ -63,13 +63,20 @@ def _extract_block_chunk(html, label):
 
 
 def _extract_three_numbers(chunk):
-    scores_m = re.search(r'class="game-scores[^"]*"[^>]*>(.*?)</div>', chunk, re.S)
-    if not scores_m:
-        return None
-    nums = re.findall(r'class="score[^"]*"[^>]*>\s*(\d{1,2})\s*<', scores_m.group(1))
-    if len(nums) != 3:
-        return None
-    return [n.zfill(2) for n in nums]
+    """Legacy game-block — delega al parser Nuxt si no hay marcadores viejos."""
+    if "game-scores" in chunk:
+        scores_m = re.search(r'class="game-scores[^"]*"[^>]*>(.*?)</div>', chunk, re.S)
+        if scores_m:
+            nums = re.findall(r'class="score[^"]*"[^>]*>\s*(\d{1,2})\s*<', scores_m.group(1))
+            if len(nums) == 3:
+                return [n.zfill(2) for n in nums]
+    return None
+
+
+def _parse_draw_page_nuxt(html: str, source_url: str, days: int = 90) -> list[dict]:
+    from scrapers.kiskoo_nuxt_parser import parse_page_quiniela_rows
+
+    return parse_page_quiniela_rows(html, source_url, days=days)
 
 
 def _date_param_to_iso(date_param):
@@ -96,130 +103,106 @@ def _normalize_date(date_raw, year_hint):
 
 
 def parse_anguila_history_page(html, cfg, year_hint, source_url):
-    """Todos los game-block visibles en pagina de tanda (historial)."""
+    """Historial visible en página de tanda Anguila (Nuxt/Kiskoo)."""
+    from scrapers.kiskoo_nuxt_parser import parse_page_quiniela_rows
+
     results = []
-    blocks = list(re.finditer(r'<div class="game-block[^"]*"', html))
-    for i, m in enumerate(blocks):
-        start = m.start()
-        end = blocks[i + 1].start() if i + 1 < len(blocks) else start + 1500
-        chunk = html[start:end]
-        numbers = _extract_three_numbers(chunk)
-        if not numbers:
-            continue
-        date_m = re.search(r'class="session-date[^"]*"[^>]*>\s*([^<]+)', chunk)
-        draw_date = _normalize_date(date_m.group(1).strip() if date_m else "", year_hint)
-        if not draw_date:
-            continue
-        print("Guardando:", draw_date, cfg["draw_name"], cfg["time_display"], numbers)
+    for row in parse_page_quiniela_rows(html, source_url, days=90):
         results.append({
             "lottery_name": "Anguila",
             "draw_name": cfg["draw_name"],
             "draw_time": cfg["draw_time"],
             "time_display": cfg["time_display"],
-            "draw_date": draw_date,
-            "numbers": numbers,
+            "draw_date": row["draw_date"],
+            "numbers": row["numbers"],
             "source_url": source_url,
         })
     return results
 
 
 def parse_anguila_blocks(html, year_hint, source_url, page_date=None):
-    """Bloques por texto en portada ?date= (fecha principal = page_date)."""
+    """Bloques Anguila desde hub — usa API sessions (el hub Nuxt ya no incluye scores SSR)."""
+    from scrapers.kiskoo_nuxt_parser import fetch_hub_rows
+
+    hub = fetch_hub_rows(days=30)
+    if not hub.get("ok"):
+        return []
+    target_date = page_date
     results = []
-    for block_cfg in ANGUILA_BLOCKS:
-        chunk = _extract_block_chunk(html, block_cfg["block_text"])
-        if not chunk:
+    for row in hub.get("rows") or []:
+        if row.get("lottery_name") != "Anguila":
             continue
-        numbers = _extract_three_numbers(chunk)
-        if not numbers:
-            print(f"Resultado aún no disponible — {block_cfg['block_text']}")
+        if target_date and row.get("draw_date") != target_date:
             continue
-        date_m = re.search(r'class="session-date[^"]*"[^>]*>\s*([^<]+)', chunk)
-        draw_date = page_date or _normalize_date(date_m.group(1).strip() if date_m else "", year_hint)
-        if not draw_date:
-            continue
-        print("Guardando:", draw_date, block_cfg["draw_name"], block_cfg["time_display"], numbers)
+        draw_name = row.get("draw_name", "mañana")
+        cfg = next((b for b in ANGUILA_BLOCKS if b["draw_name"] == draw_name), None)
         results.append({
             "lottery_name": "Anguila",
-            "draw_name": block_cfg["draw_name"],
-            "draw_time": block_cfg["draw_time"],
-            "time_display": block_cfg["time_display"],
-            "draw_date": draw_date,
-            "numbers": numbers,
+            "draw_name": draw_name,
+            "draw_time": cfg["draw_time"] if cfg else "",
+            "time_display": cfg["time_display"] if cfg else "",
+            "draw_date": row["draw_date"],
+            "numbers": row["numbers"],
             "source_url": source_url,
         })
     return results
 
 
 def scrape_anguila_all_visible(scraper, year_hint, days_back=60):
-    print("Leyendo TODO el historial visible")
-    all_rows = []
+    from scrapers.kiskoo_nuxt_parser import fetch_hub_rows
+
+    all_rows: list[dict] = []
     for cfg in ANGUILA_DRAW_PAGES:
         page = scraper.fetch_page(cfg["path"])
         if page.get("ok"):
             all_rows.extend(parse_anguila_history_page(page["html"], cfg, year_hint, page["url"]))
         time.sleep(0.3)
-    for days_ago in range(days_back):
-        dt = datetime.now() - timedelta(days=days_ago)
-        date_param = dt.strftime("%d-%m-%Y")
-        page = scraper.fetch_page("/loterias/", params={"date": date_param})
-        if page.get("ok"):
-            page_date = _date_param_to_iso(date_param)
-            all_rows.extend(parse_anguila_blocks(page["html"], str(dt.year), page["url"], page_date=page_date))
-        time.sleep(0.3)
+
+    hub = fetch_hub_rows(days=days_back)
+    if hub.get("ok"):
+        for row in hub.get("rows") or []:
+            if row.get("lottery_name") != "Anguila":
+                continue
+            draw_name = row.get("draw_name", "mañana")
+            block_cfg = next((b for b in ANGUILA_BLOCKS if b["draw_name"] == draw_name), None)
+            all_rows.append({
+                "lottery_name": "Anguila",
+                "draw_name": draw_name,
+                "draw_time": block_cfg["draw_time"] if block_cfg else "",
+                "time_display": block_cfg["time_display"] if block_cfg else "",
+                "draw_date": row["draw_date"],
+                "numbers": row["numbers"],
+                "source_url": row.get("source_url", BASE_URL),
+            })
+
     dates = [r["draw_date"] for r in all_rows if r.get("draw_date")]
     fecha_max = max(dates) if dates else None
-    print("Fecha más nueva detectada:", fecha_max)
-    print("Mostrando en últimos resultados solo:", fecha_max)
     return all_rows, fecha_max
 
 
-def _parse_session_blocks(html):
-    games = []
-    blocks = list(re.finditer(r'<div class="game-block[^"]*"', html))
-    for i, m in enumerate(blocks):
-        start = m.start()
-        end = blocks[i + 1].start() if i + 1 < len(blocks) else start + 1500
-        chunk = html[start:end]
-        date_m = re.search(r'class="session-date[^"]*"[^>]*>\s*([^<]+)', chunk)
-        nums = _extract_three_numbers(chunk)
-        if nums:
-            games.append({
-                "date_raw": date_m.group(1).strip() if date_m else "",
-                "numbers": nums,
-            })
-    return games
+def _parse_session_blocks(html, days: int = 90):
+    return _parse_draw_page_nuxt(html, "", days=days)
 
 
-def _parse_main_page_blocks(html, year_hint, page_date=None):
-    results = []
-    blocks = list(re.finditer(r'class="game-block\s+company-block-(\d+)\s+(\w+)"', html))
-    for i, m in enumerate(blocks):
-        start = m.start()
-        end = blocks[i + 1].start() if i + 1 < len(blocks) else start + 2000
-        chunk = html[start:end]
-        logo_m = re.search(r'data-src="[^"]*/([^"/]+)\.png"', chunk)
-        if not logo_m:
+def _parse_main_page_blocks(html, year_hint, page_date=None, days: int = 30):
+    """Hub por fecha — API sessions (HTML Nuxt del hub ya no trae scores)."""
+    from scrapers.kiskoo_nuxt_parser import fetch_hub_rows
+
+    hub = fetch_hub_rows(days=days)
+    if not hub.get("ok"):
+        return []
+    rows = []
+    for row in hub.get("rows") or []:
+        if page_date and row.get("draw_date") != page_date:
             continue
-        mapping = LOGO_MAIN_PAGE.get(logo_m.group(1))
-        if not mapping:
-            continue
-        lottery_name, draw_name = mapping
-        date_m = re.search(r'class="session-date[^"]*"[^>]*>\s*([^<]+)', chunk)
-        nums = _extract_three_numbers(chunk)
-        if not nums:
-            continue
-        draw_date = page_date or _normalize_date(date_m.group(1).strip() if date_m else "", year_hint)
-        if not draw_date:
-            continue
-        results.append({
-            "lottery_name": lottery_name,
-            "draw_name": draw_name,
-            "draw_date": draw_date,
-            "numbers": nums,
-            "source_url": BASE_URL + "/loterias/",
+        rows.append({
+            "lottery_name": row["lottery_name"],
+            "draw_name": row["draw_name"],
+            "draw_date": row["draw_date"],
+            "numbers": row["numbers"],
+            "source_url": row.get("source_url", BASE_URL + "/loterias/"),
         })
-    return results
+    return rows
 
 
 def _find_lottery_id(lotteries, name):
@@ -273,29 +256,24 @@ class ConectateRDScraper:
         except requests.RequestException as e:
             return {"ok": False, "message": str(e)}
 
-    def scrape_draw_page(self, path, draw_name, draw_time, year_hint):
+    def scrape_draw_page(self, path, draw_name, draw_time, year_hint, days: int = 90):
         page = self.fetch_page(path)
         if not page.get("ok"):
             return []
         rows = []
-        for s in _parse_session_blocks(page["html"]):
-            draw_date = _normalize_date(s["date_raw"], year_hint)
-            if draw_date:
-                rows.append({
-                    "draw_name": draw_name,
-                    "draw_time": draw_time,
-                    "draw_date": draw_date,
-                    "numbers": s["numbers"],
-                    "source_url": page["url"],
-                })
+        for s in _parse_draw_page_nuxt(page["html"], page.get("url", ""), days=days):
+            rows.append({
+                "draw_name": draw_name,
+                "draw_time": draw_time,
+                "draw_date": s["draw_date"],
+                "numbers": s["numbers"],
+                "source_url": page["url"],
+            })
         return rows
 
-    def scrape_main_for_date(self, date_param, year_hint):
-        page = self.fetch_page("/loterias/", params={"date": date_param})
-        if not page.get("ok"):
-            return []
+    def scrape_main_for_date(self, date_param, year_hint, days: int = 30):
         page_date = _date_param_to_iso(date_param)
-        return _parse_main_page_blocks(page["html"], year_hint, page_date=page_date)
+        return _parse_main_page_blocks("", year_hint, page_date=page_date, days=days)
 
 
 def import_conectate_rd_new_lotteries_only(days_back=30, delay_seconds=0.25):
