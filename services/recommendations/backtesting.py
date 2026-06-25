@@ -118,10 +118,8 @@ def evaluate_pending_backtests() -> int:
 
 def run_backtest_summary(days: int = 30) -> dict:
     """Compatibilidad — delega al módulo de precisión."""
-    from services.precision.evaluator import evaluate_all_pending
     from services.precision.dashboard import get_dashboard
 
-    evaluate_all_pending(limit=200)
-    dash = get_dashboard()
+    dash = get_dashboard(force_refresh=True)
     dash["days"] = days
     return dash

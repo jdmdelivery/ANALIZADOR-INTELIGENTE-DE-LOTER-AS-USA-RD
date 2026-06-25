@@ -6,6 +6,7 @@ from datetime import datetime
 
 from models import format_numbers, get_connection, get_lottery, parse_numbers
 
+from services.precision.cache import invalidate as invalidate_precision_cache
 from services.precision.constants import ALGORITHM_VERSION
 
 
@@ -138,6 +139,7 @@ def save_precision_evaluation(
             (run_id,),
         )
         conn.commit()
+        invalidate_precision_cache()
         return cur.lastrowid
     except Exception:
         return None

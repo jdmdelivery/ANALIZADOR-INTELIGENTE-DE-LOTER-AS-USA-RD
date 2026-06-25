@@ -1046,11 +1046,19 @@ def precision_page():
     return render_template("precision.html", disclaimer=DISCLAIMER)
 
 
+@app.route("/api/precision/lottery/<int:lottery_id>")
+@login_required
+def api_precision_lottery(lottery_id):
+    from services.precision.analytics import get_lottery_intelligence
+    return jsonify(get_lottery_intelligence(lottery_id))
+
+
 @app.route("/api/precision/dashboard")
 @login_required
 def api_precision_dashboard():
     from services.precision.dashboard import get_dashboard
-    return jsonify(get_dashboard())
+    force = request.args.get("refresh") == "1"
+    return jsonify(get_dashboard(force_refresh=force))
 
 
 @app.route("/api/precision/history")

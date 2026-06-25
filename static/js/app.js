@@ -817,25 +817,15 @@
         try {
             const res = await fetch('/api/recommendations/backtest?days=30');
             const data = await res.json();
-            if (!data.ok || !data.total) {
+            const total = data.kpis?.total_evaluated ?? data.total ?? 0;
+            if (!data.ok || !total) {
                 panel.style.display = 'none';
                 return;
             }
-            const periods = data.periods || {};
-            const rows = [
-                ['7 días', periods['7']],
-                ['30 días', periods['30']],
-                ['90 días', periods['90']],
-            ].filter(([, p]) => p && p.total > 0);
-            let html = `<p class="rec-paste-item">Evaluaciones: <strong>${data.total}</strong> · Mejor lotería: ${escapeHtml(data.best_lottery || '—')} · Peor: ${escapeHtml(data.worst_lottery || '—')}</p>`;
-            html += `<p class="rec-paste-item">Aciertos promedio: exactos ${data.avg_exact_hits} · posición ${data.avg_position_hits} · box ${data.avg_box_hits ?? '—'}</p>`;
-            if (rows.length) {
-                html += '<div class="rec-backtest-grid">';
-                rows.forEach(([label, p]) => {
-                    html += `<div class="rec-backtest-card"><span class="rec-bt-label">${escapeHtml(label)}</span><span class="rec-bt-val">${p.avg_exact_hits} exactos</span><span class="rec-bt-sub">${p.total} eval.</span></div>`;
-                });
-                html += '</div>';
-            }
+            const exec = data.executive || {};
+            let html = `<p class="rec-paste-item">Evaluaciones: <strong>${total}</strong> · Mejor: ${escapeHtml(data.kpis?.best_lottery || data.best_lottery || '—')}</p>`;
+            html += `<p class="rec-paste-item">Precisión 7d: ${exec.precision_7d ?? '—'}% · 30d: ${exec.precision_30d ?? '—'}%</p>`;
+            html += `<p class="rec-paste-item"><a href="/precision">Ver dashboard completo →</a></p>`;
             content.innerHTML = html;
             panel.style.display = 'block';
         } catch (_) {

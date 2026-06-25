@@ -6,68 +6,141 @@
 {% endblock %}
 {% block content %}
 <div class="precision-page animate-fade-in">
-    <header class="precision-header glass-panel">
-        <h1 class="precision-title">📊 Precisión del Analizador</h1>
-        <p class="precision-sub">Historial de recomendaciones vs resultados oficiales — sin garantías de premio.</p>
-    </header>
-
-    <div id="precisionLoading" class="precision-loading">Cargando estadísticas…</div>
+    <div id="precisionLoading" class="precision-loading glass-panel">
+        <div class="loader-ring-sm"></div>
+        <p>Cargando centro de inteligencia…</p>
+    </div>
     <div id="precisionError" class="analysis-error" style="display:none;"></div>
 
     <div id="precisionContent" style="display:none;">
-        <section class="precision-kpi-grid glass-panel">
-            <div class="precision-kpi"><span class="kpi-label">Recomendaciones hoy</span><strong id="kpiRecToday">—</strong></div>
-            <div class="precision-kpi"><span class="kpi-label">Aciertos hoy</span><strong id="kpiHitsToday">—</strong></div>
-            <div class="precision-kpi"><span class="kpi-label">Aciertos semana</span><strong id="kpiHitsWeek">—</strong></div>
-            <div class="precision-kpi"><span class="kpi-label">Aciertos mes</span><strong id="kpiHitsMonth">—</strong></div>
-            <div class="precision-kpi"><span class="kpi-label">Precisión general</span><strong id="kpiOverall">—</strong></div>
-            <div class="precision-kpi"><span class="kpi-label">Score promedio</span><strong id="kpiAvgScore">—</strong></div>
+        <!-- 11. Dashboard ejecutivo -->
+        <section class="exec-banner glass-panel" id="execBanner">
+            <div class="exec-main">
+                <span class="exec-label">Estado general del analizador</span>
+                <h1 class="exec-status" id="execStatus">—</h1>
+            </div>
+            <div class="exec-metrics">
+                <div class="exec-metric"><span>Histórico</span><strong id="execHist">—</strong></div>
+                <div class="exec-metric"><span>30 días</span><strong id="exec30">—</strong></div>
+                <div class="exec-metric"><span>7 días</span><strong id="exec7">—</strong></div>
+                <div class="exec-metric"><span>Hoy</span><strong id="execToday">—</strong></div>
+            </div>
+            <p class="exec-updated">⏱ Última actualización: <span id="lastUpdated">—</span></p>
         </section>
 
-        <section class="precision-highlights glass-panel">
-            <div class="highlight-item"><span>🏆 Mejor lotería</span><strong id="bestLottery">—</strong></div>
-            <div class="highlight-item"><span>📉 Peor lotería</span><strong id="worstLottery">—</strong></div>
-            <div class="highlight-item"><span>🧠 Mejor algoritmo</span><strong id="bestAlgo">—</strong></div>
-            <div class="highlight-item"><span>⚠️ Peor algoritmo</span><strong id="worstAlgo">—</strong></div>
+        <!-- 1. KPIs -->
+        <section class="precision-kpi-grid" id="kpiGrid"></section>
+
+        <!-- Precisión por tipo de juego -->
+        <section class="glass-panel section-block">
+            <h2 class="section-title">Precisión por tipo de juego</h2>
+            <p class="section-desc">Separado por familia — sin mezclar algoritmos distintos.</p>
+            <div id="gameTypeCards" class="game-type-grid"></div>
         </section>
 
-        <section class="precision-charts glass-panel">
-            <h2 class="panel-title">Gráficos</h2>
-            <div class="chart-grid">
-                <div class="chart-box"><canvas id="chartByDay" aria-label="Precisión por día"></canvas></div>
-                <div class="chart-box"><canvas id="chartByLottery" aria-label="Precisión por lotería"></canvas></div>
-                <div class="chart-box"><canvas id="chartByAlgo" aria-label="Precisión por algoritmo"></canvas></div>
-                <div class="chart-box"><canvas id="chartScoreHist" aria-label="Historial de score"></canvas></div>
+        <!-- Preguntas inteligencia -->
+        <section class="glass-panel section-block" id="iqSection">
+            <h2 class="section-title">🧠 Inteligencia del sistema</h2>
+            <div id="iqAnswers" class="iq-grid"></div>
+        </section>
+
+        <!-- 9. Autoaprendizaje -->
+        <section class="glass-panel section-block">
+            <h2 class="section-title">El sistema aprendió</h2>
+            <ul id="learningList" class="learning-list"></ul>
+        </section>
+
+        <!-- 9 factores -->
+        <section class="glass-panel section-block">
+            <h2 class="section-title">Factores que más aportan</h2>
+            <div id="factorBars" class="factor-bars"></div>
+        </section>
+
+        <!-- 2. Tabla loterías -->
+        <section class="glass-panel section-block">
+            <h2 class="section-title">Precisión por lotería</h2>
+            <div class="precision-table-wrap">
+                <table class="precision-table" id="lotteryTable">
+                    <thead>
+                        <tr>
+                            <th>Lotería</th><th>País</th><th>Tipo</th><th>Rec.</th><th>Aciertos</th>
+                            <th>Precisión</th><th>Score</th><th>Estado</th><th></th>
+                        </tr>
+                    </thead>
+                    <tbody id="lotteryTableBody"></tbody>
+                </table>
             </div>
         </section>
 
-        <section class="precision-stats-limits glass-panel">
-            <h2 class="panel-title">Estadísticas por volumen</h2>
-            <div id="statsLimits" class="stats-limits-grid"></div>
-        </section>
-
-        <section class="precision-rankings glass-panel">
-            <h2 class="panel-title">Rankings</h2>
-            <div class="rankings-grid">
-                <div><h3>Top 20 mejores</h3><ul id="rankBest" class="rank-list"></ul></div>
-                <div><h3>Top 20 peores</h3><ul id="rankWorst" class="rank-list"></ul></div>
-                <div><h3>Top 20 mayor score</h3><ul id="rankScore" class="rank-list"></ul></div>
+        <!-- 3. Ranking algoritmos -->
+        <section class="glass-panel section-block">
+            <h2 class="section-title">Ranking de algoritmos</h2>
+            <div class="precision-table-wrap">
+                <table class="precision-table">
+                    <thead>
+                        <tr>
+                            <th>Motor</th><th>Precisión</th><th>Aciertos</th><th>Errores</th>
+                            <th>Último acierto</th><th>Último fallo</th><th>Estado</th>
+                        </tr>
+                    </thead>
+                    <tbody id="algoTableBody"></tbody>
+                </table>
             </div>
         </section>
 
-        <section class="precision-compare glass-panel">
-            <h2 class="panel-title">🔍 Comparar recomendación vs resultado</h2>
-            <p class="precision-sub">Selecciona una fila del historial o ingresa ID de evaluación.</p>
+        <!-- 4. Ranking loterías -->
+        <section class="glass-panel section-block">
+            <h2 class="section-title">Ranking de loterías</h2>
+            <div class="rank-bars-grid">
+                <div><h3>Top 10 mejores</h3><div id="rankTop10"></div></div>
+                <div><h3>Top 10 peores</h3><div id="rankBottom10"></div></div>
+            </div>
+        </section>
+
+        <!-- 8. Evolución -->
+        <section class="glass-panel section-block">
+            <h2 class="section-title">Evolución semanal</h2>
+            <div id="evolutionTimeline" class="evolution-timeline"></div>
+        </section>
+
+        <!-- 7. Gráficos -->
+        <section class="glass-panel section-block">
+            <h2 class="section-title">Gráficos</h2>
+            <div class="chart-grid chart-grid-lg">
+                <div class="chart-box"><h4>Precisión diaria</h4><canvas id="chartDaily"></canvas></div>
+                <div class="chart-box"><h4>Precisión semanal</h4><canvas id="chartWeekly"></canvas></div>
+                <div class="chart-box"><h4>Precisión mensual</h4><canvas id="chartMonthly"></canvas></div>
+                <div class="chart-box"><h4>Por lotería</h4><canvas id="chartLottery"></canvas></div>
+                <div class="chart-box"><h4>Por algoritmo</h4><canvas id="chartAlgo"></canvas></div>
+                <div class="chart-box"><h4>Score promedio</h4><canvas id="chartScore"></canvas></div>
+                <div class="chart-box"><h4>Recomendaciones</h4><canvas id="chartRecs"></canvas></div>
+                <div class="chart-box"><h4>Cantidad de aciertos</h4><canvas id="chartHits"></canvas></div>
+            </div>
+        </section>
+
+        <!-- 6. Comparador -->
+        <section class="glass-panel section-block compare-section" id="compareSection">
+            <h2 class="section-title">Comparar recomendación vs resultado</h2>
             <div class="compare-controls">
                 <input type="number" id="compareIdInput" class="premium-select" placeholder="ID evaluación" min="1">
-                <button type="button" id="btnLoadCompare" class="btn-rec-action">Ver comparación</button>
+                <button type="button" id="btnLoadCompare" class="btn-rec-action">Ver análisis</button>
             </div>
-            <div id="compareDetail" class="compare-detail" style="display:none;"></div>
+            <div id="compareDetail" class="compare-visual" style="display:none;"></div>
         </section>
 
-        <section class="precision-table-section glass-panel">
+        <!-- 12. Inteligencia por lotería -->
+        <section class="glass-panel section-block" id="lotteryIntelPanel" style="display:none;">
+            <div class="intel-header">
+                <h2 class="section-title" id="intelTitle">Inteligencia por lotería</h2>
+                <button type="button" id="btnCloseIntel" class="btn-table-link">Cerrar</button>
+            </div>
+            <div id="lotteryIntelBody"></div>
+        </section>
+
+        <!-- 5. Historial -->
+        <section class="glass-panel section-block">
             <div class="table-toolbar">
-                <h2 class="panel-title">Historial evaluado</h2>
+                <h2 class="section-title">Historial de análisis</h2>
                 <select id="historyLimit" class="premium-select">
                     <option value="100">Últimos 100</option>
                     <option value="500">Últimos 500</option>
@@ -76,20 +149,15 @@
                 </select>
             </div>
             <div class="precision-table-wrap">
-                <table class="precision-table" id="precisionTable">
+                <table class="precision-table" id="historyTable">
                     <thead>
                         <tr>
-                            <th>Fecha</th>
-                            <th>Lotería</th>
-                            <th>Recomendación</th>
-                            <th>Resultado</th>
-                            <th>Aciertos</th>
-                            <th>Score</th>
-                            <th>Estado</th>
-                            <th></th>
+                            <th>Fecha</th><th>Hora</th><th>Lotería</th><th>Tipo</th>
+                            <th>Recomendación</th><th>Resultado</th><th>Aciertos</th>
+                            <th>Score</th><th>Conf.</th><th>Estado</th><th></th>
                         </tr>
                     </thead>
-                    <tbody id="precisionTableBody"></tbody>
+                    <tbody id="historyTableBody"></tbody>
                 </table>
             </div>
         </section>
