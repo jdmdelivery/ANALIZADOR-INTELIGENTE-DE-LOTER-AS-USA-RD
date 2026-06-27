@@ -11,7 +11,7 @@ if ROOT not in sys.path:
 _test_db = os.path.join(tempfile.gettempdir(), "lottery_test_rec_nocache.db")
 os.environ["DATABASE_PATH"] = _test_db
 
-from models import format_numbers, get_lottery_by_slug, init_db, upsert_result  # noqa: E402
+from models import format_numbers, get_lottery_by_slug, init_db, parse_numbers, upsert_result  # noqa: E402
 from services.recommendations.engine import (  # noqa: E402
     DATA_SOURCE_LABEL,
     generate_recommendation,
@@ -71,7 +71,7 @@ class RecommendationNoCacheTests(unittest.TestCase):
         )
 
     def test_sql_orders_by_date_and_time_desc(self):
-        lot = _seed_quiniela(5)
+        lot = _seed_quiniela(12)
         upsert_result(
             lot["id"],
             "noche",
@@ -88,9 +88,10 @@ class RecommendationNoCacheTests(unittest.TestCase):
             format_numbers(["11", "22", "33"]),
             fuente="test",
         )
-        ctx = load_draw_history(lot["id"], "noche", limit=5)
-        first = ctx["per_draw_main"][0]
-        self.assertEqual(first, ["11", "22", "33"])
+        from models import get_results_for_analysis
+        rows = get_results_for_analysis(lot["id"], "noche", limit=5)
+        first_nums = parse_numbers(rows[0].get("numbers"))
+        self.assertEqual(first_nums, ["11", "22", "33"])
 
     def test_has_analyzer_log_fields(self):
         lot = _seed_quiniela(12)

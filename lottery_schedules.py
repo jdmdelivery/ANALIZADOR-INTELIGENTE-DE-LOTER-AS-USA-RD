@@ -179,6 +179,13 @@ def get_schedule_slot(lottery_name, draw_name):
     for slot in schedule:
         if slot_draw_name(slot).casefold() == target:
             return slot
+        if (slot.get("label") or "").casefold() == target:
+            return slot
+        if (slot.get("time") or "").casefold() == target:
+            return slot
+        dt24 = time_12h_to_24h(slot.get("time", ""))
+        if dt24 and dt24.casefold() == target:
+            return slot
     return None
 
 

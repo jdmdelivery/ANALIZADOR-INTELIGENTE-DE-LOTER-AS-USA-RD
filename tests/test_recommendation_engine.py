@@ -178,7 +178,7 @@ class RecommendationEngineTests(unittest.TestCase):
         r = generate_recommendation(lot["id"], "mañana")
         if r.get("ok"):
             self.skipTest("Hay historial en mañana")
-        self.assertIn("insuficiente", (r.get("message") or "").lower())
+        self.assertIn("suficientes", (r.get("message") or "").lower())
 
     def test_rd_usa_not_mixed(self):
         self.assertEqual(game_family({"country": "RD", "type": "rd_loteka", "name": "Loteka"}), "quiniela_rd")

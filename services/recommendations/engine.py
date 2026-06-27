@@ -81,6 +81,7 @@ def _attach_analyzer_metadata(
     rec_nums = result.get("generated_numbers") or result.get("recommended_numbers") or []
     s1, s2, s3 = _position_top_scores(result)
     diag = _build_diagnostic(ctx, result, generated_at)
+    latest_row = (ctx.get("rows") or [{}])[0] if ctx.get("rows") else {}
     result["created_at"] = generated_at
     result["engine"] = "recommendations_v2"
     result["from_cache"] = False
@@ -88,6 +89,17 @@ def _attach_analyzer_metadata(
     result["analyzer_diagnostic"] = diag
     result["latest_result_date"] = diag.get("last_result_date")
     result["history_count"] = diag.get("draws_analyzed", 0)
+    result["draw_name"] = draw_name
+    result["sorteo_usado"] = draw_name
+    result["fecha_usada"] = diag.get("last_result_date")
+    result["hora_usada"] = diag.get("last_result_time")
+    result["resultado_usado"] = latest_row.get("numbers") or (
+        "-".join(per_draw[0]) if per_draw else []
+    )
+    result["numeros_recomendados"] = list(rec_nums)
+    result["cantidad_resultados_analizados"] = diag.get("draws_analyzed", 0)
+    result["fuente"] = DATA_SOURCE_LABEL
+    result["cache_usada"] = "NO"
 
     log_analyzer(
         loteria=lottery.get("name", ""),
@@ -113,7 +125,13 @@ def generate_recommendation(
     """Recalcula siempre desde la base de datos (force_refresh ignorado: siempre fresco)."""
     del force_refresh  # API compat — nunca se usa caché
 
-    result, lottery, config, ctx = _run_adapter(lottery_id, draw_name)
+    from services.recommendations.draw_resolver import resolve_prediction_draw
+
+    resolved, lottery, err = resolve_prediction_draw(lottery_id, draw_name=draw_name)
+    if err or not resolved:
+        return {"ok": False, "message": err or "Sorteo no válido."}
+
+    result, lottery, config, ctx = _run_adapter(lottery_id, resolved)
     if not lottery:
         return result if isinstance(result, dict) else {"ok": False, "message": "Lotería no encontrada."}
     if not result.get("ok"):
@@ -123,7 +141,7 @@ def generate_recommendation(
     result = _attach_analyzer_metadata(
         result,
         lottery=lottery,
-        draw_name=draw_name,
+        draw_name=resolved,
         ctx=ctx or {},
         generated_at=generated_at,
     )

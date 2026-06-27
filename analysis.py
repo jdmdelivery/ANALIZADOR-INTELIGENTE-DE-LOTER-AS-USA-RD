@@ -1209,31 +1209,49 @@ def generar_jugada_inteligente(lottery_id, draw_name, force_refresh=True):
 
 
 def _resolve_draw_name_for_lottery(lottery: dict, draw_label: str) -> str:
-    """Convierte '8:00 PM' o label UI → draw_name interno (noche, tarde, …)."""
+    """Convierte '6:00 PM', 'Tardía' o draw_name interno → tarde / tardía / noche / …"""
     from models import get_draw_times
     from services.leidsa_config import get_game_schedule_for_ui
+    from lottery_schedules import get_lottery_schedule, slot_draw_name, time_12h_to_24h
 
     label = (draw_label or "noche").strip()
-    if label.lower() in ("tarde", "noche", "mañana", "tardía", "sorteo"):
-        return label.lower().replace("tardía", "tardia") if label == "tardía" else label.lower()
+    if not label:
+        return "noche"
+
+    folded = label.casefold()
+    schedule = get_game_schedule_for_ui(lottery.get("name", "")) or get_lottery_schedule(
+        lottery.get("name", "")
+    )
+    if schedule:
+        for slot in schedule:
+            dn = slot_draw_name(slot)
+            if folded == dn.casefold():
+                return dn
+            if folded == (slot.get("label") or "").casefold():
+                return dn
+            if label == slot.get("time") or folded == (slot.get("time") or "").casefold():
+                return dn
+            dt24 = time_12h_to_24h(slot.get("time", ""))
+            if dt24 and (label == dt24 or folded == dt24.casefold()):
+                return dn
 
     for d in get_draw_times(lottery["id"], active_only=True):
-        if d.get("draw_name") == label:
+        if d.get("draw_name") == label or (d.get("draw_name") or "").casefold() == folded:
             return d["draw_name"]
         if d.get("draw_time") == label:
             return d["draw_name"]
 
-    for slot in get_game_schedule_for_ui(lottery.get("name", "")) or []:
-        if slot.get("time") == label or slot.get("label") == label:
-            return slot.get("draw_name", label)
+    aliases = {
+        "manana": "mañana",
+        "tardia": "tardía",
+        "tarde": "tarde",
+        "tardía": "tardía",
+        "noche": "noche",
+        "sorteo": "sorteo",
+    }
+    if folded in aliases:
+        return aliases[folded]
 
-    try:
-        from lottery_schedules import get_schedule_slot
-        slot = get_schedule_slot(lottery.get("name", ""), label)
-        if slot and slot.get("draw_name"):
-            return slot["draw_name"]
-    except Exception:
-        pass
     return label
 
 

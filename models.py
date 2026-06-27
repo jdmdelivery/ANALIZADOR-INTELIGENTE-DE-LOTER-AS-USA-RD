@@ -106,6 +106,20 @@ def normalize_draw_time(draw_time: str | None) -> str:
         return raw
 
 
+def _migrate_normalize_result_draw_times(conn) -> None:
+    """Normaliza horas 12h (9:00 PM) → 24h (21:00) para orden SQL correcto."""
+    rows = conn.execute(
+        "SELECT id, draw_time FROM lottery_results WHERE draw_time IS NOT NULL"
+    ).fetchall()
+    for row in rows:
+        normalized = normalize_draw_time(row["draw_time"])
+        if normalized and normalized != (row["draw_time"] or "").strip():
+            conn.execute(
+                "UPDATE lottery_results SET draw_time = ? WHERE id = ?",
+                (normalized, row["id"]),
+            )
+
+
 def _migrate_results_unique_with_time(conn) -> None:
     """Unicidad por lotería + fecha + tanda + hora (no sobrescribir 6PM con 2:30)."""
     conn.execute("""
@@ -139,6 +153,7 @@ def migrate_db():
     """Migraciones incrementales sobre DB existente."""
     conn = get_connection()
     try:
+        _migrate_normalize_result_draw_times(conn)
         _migrate_results_unique_with_time(conn)
         for col in ("main_numbers", "bonus_numbers", "bonus_label", "game_name"):
             try:
@@ -922,15 +937,24 @@ def get_results_for_analysis(lottery_id, draw_name, limit=None):
     with get_db() as conn:
         sql = """SELECT * FROM lottery_results
                WHERE lottery_id = ? AND draw_name = ?
-               ORDER BY draw_date DESC,
-                        COALESCE(NULLIF(TRIM(draw_time), ''), '00:00') DESC,
-                        id DESC"""
+               ORDER BY draw_date DESC, id DESC"""
         params: list = [lottery_id, draw_name]
-        if limit is not None:
-            sql += " LIMIT ?"
-            params.append(int(limit))
+        fetch_limit = int(limit) if limit is not None else 500
+        sql += " LIMIT ?"
+        params.append(max(fetch_limit, 50) if limit is not None else 500)
         rows = conn.execute(sql, params).fetchall()
-        return [row_to_dict(r) for r in rows]
+        results = [row_to_dict(r) for r in rows]
+        results.sort(
+            key=lambda r: (
+                r.get("draw_date") or "",
+                normalize_draw_time(r.get("draw_time") or "") or "00:00",
+                int(r.get("id") or 0),
+            ),
+            reverse=True,
+        )
+        if limit is not None:
+            results = results[: int(limit)]
+        return results
 
 
 def enrich_result_row(row, lottery=None):

@@ -42,6 +42,8 @@
     let refreshResultsInProgress = false;
     let lastPredictionData = null;
     let lastPredictionDrawBtn = null;
+    let predictionAbortController = null;
+    let predictionRequestSeq = 0;
 
     const TANDA_CSS = {
         'mañana': 'rc-manana',
@@ -712,7 +714,7 @@
         }
         currentDrawName = btn.draw_name || '';
         loadRecentResults(true);
-        getPrediction(btn);
+        getPrediction(btn, { force: true });
     }
 
     function renderDrawScheduleButtons(buttons) {
@@ -764,7 +766,10 @@
     async function loadDrawButtons() {
         clearDrawScheduleUi();
         try {
-            const res = await fetch(`/api/draw-times?lottery_id=${currentLotteryId}`);
+            const res = await fetch(
+                `/api/draw-times?lottery_id=${currentLotteryId}&t=${Date.now()}`,
+                { cache: 'no-store' }
+            );
             const data = await res.json();
             renderDrawScheduleButtons(data.buttons || []);
         } catch (e) {
@@ -792,24 +797,46 @@
         const panel = $('predictionDiag');
         if (!panel || !data?.ok) return;
         const diag = data.analyzer_diagnostic || {};
+        const fecha = data.fecha_usada || diag.last_result_date || '';
+        const hora = data.hora_usada || diag.last_result_time || '';
+        const sorteo = data.sorteo_usado || data.draw_name || '';
         const lastUsed = diag.last_result_used
-            || data.latest_result_date
+            || (fecha && hora ? `${fecha} ${hora}` : data.latest_result_date)
             || '—';
-        const draws = diag.draws_analyzed ?? data.total_results ?? data.history_count ?? '—';
+        const draws = data.cantidad_resultados_analizados
+            ?? diag.draws_analyzed
+            ?? data.total_results
+            ?? data.history_count
+            ?? '—';
         const recalcAt = diag.recalculated_at || data.created_at || '—';
-        let source = diag.source || diag.data_source || data.data_source || 'BASE DE DATOS';
-        if (data.from_cache) {
+        let source = data.fuente || diag.source || diag.data_source || data.data_source || 'BASE DE DATOS';
+        const cacheFlag = data.cache_usada || (data.from_cache ? 'SI' : 'NO');
+        if (cacheFlag === 'SI' || data.from_cache) {
             source = 'CACHÉ (no debe usarse)';
         }
         const lastEl = $('diagLastResult');
         const countEl = $('diagDrawCount');
         const atEl = $('diagRecalcAt');
         const srcEl = $('diagDataSource');
-        if (lastEl) lastEl.textContent = lastUsed;
+        if (lastEl) {
+            lastEl.textContent = sorteo ? `${lastUsed} (${sorteo})` : lastUsed;
+        }
         if (countEl) countEl.textContent = String(draws);
         if (atEl) atEl.textContent = recalcAt;
-        if (srcEl) srcEl.textContent = source;
+        if (srcEl) srcEl.textContent = `${source} · caché: ${cacheFlag}`;
         panel.style.display = 'block';
+    }
+
+    function clearPredictionDisplay() {
+        lastPredictionData = null;
+        $('analysisContent').style.display = 'none';
+        $('analysisError').style.display = 'none';
+        const balls = $('predictionBalls');
+        if (balls) balls.innerHTML = '<p class="empty-msg">Calculando…</p>';
+        const reason = $('predictionReason');
+        if (reason) reason.textContent = '';
+        const diag = $('predictionDiag');
+        if (diag) diag.style.display = 'none';
     }
 
     function showLoading(show) {
@@ -1036,33 +1063,53 @@
 
     async function getPrediction(btn, opts = {}) {
         const force = Boolean(opts.force);
+        const reqId = ++predictionRequestSeq;
         lastPredictionDrawBtn = btn;
+        if (predictionAbortController) {
+            predictionAbortController.abort();
+        }
+        predictionAbortController = new AbortController();
+
         showLoading(true);
         $('analysisPlaceholder').style.display = 'none';
-        $('analysisContent').style.display = 'none';
-        $('analysisError').style.display = 'none';
+        clearPredictionDisplay();
 
         const isUsa = selectCountry.value === 'USA';
-        const controller = isUsa ? new AbortController() : null;
         let timeoutId = null;
-        if (controller) {
+        const controller = predictionAbortController;
+        if (isUsa) {
             timeoutId = setTimeout(() => controller.abort(), 15000);
         }
 
+        const sorteoTime = encodeURIComponent(btn.time_display || btn.time || btn.draw_name || '');
+        const sorteoName = encodeURIComponent(btn.draw_name || '');
+
         try {
-            const fetchOpts = controller ? { signal: controller.signal, cache: 'no-store' } : { cache: 'no-store' };
+            const fetchOpts = {
+                cache: 'no-store',
+                signal: controller.signal,
+                credentials: 'same-origin',
+            };
             const forceQs = force ? '&force=1&recalc=1' : '';
-            const bustQs = `&_t=${Date.now()}`;
+            const bustQs = `&t=${Date.now()}`;
             const res = await fetch(
-                `/api/prediction?lottery_id=${currentLotteryId}&draw_name=${encodeURIComponent(btn.draw_name)}${forceQs}${bustQs}`,
+                `/api/prediction?lottery_id=${currentLotteryId}`
+                + `&draw_name=${sorteoName}`
+                + `&sorteo=${sorteoTime}`
+                + `&fecha=latest`
+                + `${forceQs}${bustQs}`,
                 fetchOpts
             );
+            if (reqId !== predictionRequestSeq) return;
+
             let data;
             try {
                 data = await res.json();
             } catch (parseErr) {
                 throw new Error('Respuesta inválida del servidor');
             }
+
+            if (reqId !== predictionRequestSeq) return;
 
             if (!res.ok && !data?.ok) {
                 $('analysisError').style.display = 'block';
@@ -1072,7 +1119,7 @@
 
             if (!data.ok) {
                 $('analysisError').style.display = 'block';
-                $('analysisErrorMsg').textContent = data.message || 'Histórico insuficiente';
+                $('analysisErrorMsg').textContent = data.message || 'No hay resultados suficientes para esta tanda';
                 return;
             }
 
@@ -1178,6 +1225,9 @@
             $('analysisContent').style.display = 'block';
             scrollToEl('analisis');
         } catch (e) {
+            if (e && (e.name === 'AbortError' || String(e.message || '').includes('aborted'))) {
+                return;
+            }
             $('analysisError').style.display = 'block';
             const timedOut = e && (e.name === 'AbortError' || String(e.message || '').includes('aborted'));
             $('analysisErrorMsg').textContent = timedOut

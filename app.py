@@ -1098,21 +1098,56 @@ def api_analisis_leidsa():
 
 
 @app.route("/api/prediction")
+@app.route("/api/prediccion")
 def api_prediction():
     try:
         lottery_id = request.args.get("lottery_id", type=int)
-        draw_name = request.args.get("draw_name", "").strip()
-        if not lottery_id or not draw_name:
-            return jsonify({"ok": False, "message": "lottery_id y draw_name son requeridos"}), 400
+        loteria_name = (request.args.get("loteria") or request.args.get("lottery") or "").strip()
+        draw_raw = (
+            request.args.get("draw_name")
+            or request.args.get("sorteo")
+            or request.args.get("sorteo_time")
+            or ""
+        ).strip()
+        fecha_mode = (request.args.get("fecha") or "latest").strip()
 
-        lottery = get_lottery(lottery_id)
+        if not lottery_id and loteria_name:
+            from services.lottery_normalize import find_lottery_in_list
+            lot_match = find_lottery_in_list(
+                get_all_lotteries(), loteria_name, country="RD"
+            ) or find_lottery_in_list(get_all_lotteries(), loteria_name, country="USA")
+            if lot_match:
+                lottery_id = lot_match["id"]
+
+        if not lottery_id or not draw_raw:
+            return jsonify({
+                "ok": False,
+                "message": "lottery_id (o loteria) y draw_name/sorteo son requeridos",
+            }), 400
+
+        from services.recommendations.draw_resolver import resolve_prediction_draw
+
+        draw_name, lottery, resolve_err = resolve_prediction_draw(
+            lottery_id,
+            draw_name=draw_raw,
+            sorteo=draw_raw,
+        )
+        if resolve_err or not draw_name:
+            return jsonify({"ok": False, "message": resolve_err or "Sorteo no válido"}), 400
+
+        lottery = lottery or get_lottery(lottery_id)
         if not lottery:
             return jsonify({"ok": False, "message": "Lotería no encontrada.", "error": "not_found"}), 404
 
         def build():
             force = request.args.get("force") == "1" or request.args.get("recalc") == "1"
             result = generar_jugada_inteligente(lottery_id, draw_name, force_refresh=force)
-            return _enrich_prediction_payload(result, lottery_id, draw_name, lottery)
+            result = _enrich_prediction_payload(result, lottery_id, draw_name, lottery)
+            if fecha_mode == "latest" and result.get("ok"):
+                diag = result.get("analyzer_diagnostic") or {}
+                result.setdefault("fecha_usada", diag.get("last_result_date"))
+                result.setdefault("hora_usada", diag.get("last_result_time"))
+            return result
 
         if lottery.get("country") == "USA":
             result, err = _run_usa_analysis_timed(build, "prediction")
