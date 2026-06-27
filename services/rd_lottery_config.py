@@ -110,6 +110,8 @@ LOTTERY_CONFIG: dict[str, dict] = {
         "fallback_ld_path": "/loteria-nacional",
         "conectate_pages": [
             {"path": "/loterias/nacional/quiniela", "draw_name": "tarde", "draw_time": "14:30"},
+            {"path": "/loterias/nacional/juega-mas-pega-mas", "draw_name": "tardía", "draw_time": "18:00"},
+            {"path": "/loterias/nacional/quiniela-noche", "draw_name": "noche", "draw_time": "21:00"},
         ],
         "logo_keys": ["loteria-nacional", "gana-mas-loteria-nacional", "juega-mas-pega-mas-loteria-nacional"],
     },

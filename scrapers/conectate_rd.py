@@ -200,6 +200,7 @@ def _parse_main_page_blocks(html, year_hint, page_date=None, days: int = 30, hub
         rows.append({
             "lottery_name": row["lottery_name"],
             "draw_name": row["draw_name"],
+            "draw_time": row.get("draw_time") or "",
             "draw_date": row["draw_date"],
             "numbers": row["numbers"],
             "source_url": row.get("source_url", BASE_URL + "/loterias/"),
@@ -249,7 +250,12 @@ def _dedupe_rows(rows: list) -> list:
     seen: set[tuple] = set()
     out = []
     for r in rows:
-        key = (r.get("draw_date"), r.get("draw_name"), tuple(r.get("numbers") or []))
+        key = (
+            r.get("draw_date"),
+            r.get("draw_name"),
+            r.get("draw_time") or "",
+            tuple(r.get("numbers") or []),
+        )
         if key in seen:
             continue
         seen.add(key)
@@ -265,11 +271,11 @@ class ConectateRDScraper:
         self._hub_cache: dict | None = None
         self._hub_cache_days: int | None = None
 
-    def get_hub_rows(self, days: int = 30) -> dict:
-        if self._hub_cache is None or self._hub_cache_days != days:
+    def get_hub_rows(self, days: int = 30, *, force_refresh: bool = False) -> dict:
+        if self._hub_cache is None or self._hub_cache_days != days or force_refresh:
             from scrapers.kiskoo_nuxt_parser import fetch_hub_rows
 
-            self._hub_cache = fetch_hub_rows(days=days, source_label="conectate_api")
+            self._hub_cache = fetch_hub_rows(days=days, source_label="conectate_api", force_refresh=force_refresh)
             self._hub_cache_days = days
         return self._hub_cache
 
@@ -628,14 +634,21 @@ def import_conectate_lottery_history(lottery_name: str, days: int = 90, draw_nam
                     page_dates_from_draw_pages.add(row["draw_date"])
             time.sleep(0.2)
 
-        # Hub API solo si las páginas de tanda no entregaron historial suficiente
-        if len(raw_rows) < max(3, days // 5):
-            hub_rows, hub = _hub_rows_for_lottery(days, db_name, scraper.get_hub_rows(days))
-            if not hub.get("ok") and hub.get("error"):
-                hub_errors.append(str(hub.get("error")))
-            raw_rows.extend(hub_rows)
-        elif not raw_rows:
-            hub_errors.append("Páginas de tanda sin filas parseables (parser Nuxt)")
+        # Siempre complementar con API hub (todas las tandas del día)
+        hub = scraper.get_hub_rows(days, force_refresh=True)
+        hub_rows, hub_info = _hub_rows_for_lottery(days, db_name, hub)
+        if not hub_info.get("ok") and hub_info.get("error"):
+            hub_errors.append(str(hub_info.get("error")))
+        if hub_rows:
+            from services.resultados_log import log_resultados
+
+            log_resultados(
+                fecha_consultada=cutoff,
+                cantidad_api=len(hub_rows),
+                loteria=db_name,
+                extra="fuente=conectate_api_hub",
+            )
+        raw_rows.extend(hub_rows)
 
         if pages and not page_dates_from_draw_pages:
             only_today_warning = True
@@ -649,6 +662,15 @@ def import_conectate_lottery_history(lottery_name: str, days: int = 90, draw_nam
 
     imported = updated = 0
     errors = list(hub_errors)
+    from models import count_results_for_date
+    from services.resultados_log import log_resultados
+
+    log_resultados(
+        fecha_consultada=cutoff,
+        cantidad_api=len(rows),
+        loteria=db_name,
+        extra=f"filas_tras_dedupe={len(raw_rows)}",
+    )
     for row in rows:
         try:
             _, action = upsert_result(
@@ -664,6 +686,16 @@ def import_conectate_lottery_history(lottery_name: str, days: int = 90, draw_nam
             )
             updated += action == "updated"
             imported += action == "inserted"
+            dd = row.get("draw_date") or ""
+            log_resultados(
+                fecha_consultada=dd,
+                cantidad_api=len(rows),
+                loteria=db_name,
+                sorteo=row.get("draw_name") or "",
+                hora=row.get("draw_time") or "",
+                accion=action,
+                total_fecha_bd=count_results_for_date(lottery_id, dd) if dd else "",
+            )
         except Exception as e:
             errors.append(str(e))
 

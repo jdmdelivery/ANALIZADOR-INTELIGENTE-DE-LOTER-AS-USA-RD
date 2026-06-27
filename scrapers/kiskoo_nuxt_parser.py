@@ -312,6 +312,8 @@ def sessions_to_rows(
         if not mapping:
             continue
         lottery_name, draw_name = mapping
+        from scrapers.rd_fallback_scrapers import _draw_time_for
+        draw_time = _draw_time_for(lottery_name, draw_name)
 
         for sess in item.get("sessions") or []:
             if not isinstance(sess, dict):
@@ -341,6 +343,7 @@ def sessions_to_rows(
             rows.append({
                 "lottery_name": lottery_name,
                 "draw_name": draw_name,
+                "draw_time": draw_time,
                 "draw_date": draw_date,
                 "numbers": nums,
                 "source_url": source_url,
@@ -355,13 +358,15 @@ def fetch_hub_rows(
     payload_url: str = CONECTATE_PAYLOAD,
     days: int = 30,
     source_label: str = "conectate_api",
+    force_refresh: bool = False,
 ) -> dict:
     """Todas las quinielas RD desde API sessions + mapa de títulos."""
     cache_key = (api_base, payload_url, int(days), source_label)
     now = time.monotonic()
-    cached = _HUB_ROWS_CACHE.get(cache_key)
-    if cached and (now - cached[0]) < HUB_CACHE_TTL_SEC:
-        return cached[1]
+    if not force_refresh:
+        cached = _HUB_ROWS_CACHE.get(cache_key)
+        if cached and (now - cached[0]) < HUB_CACHE_TTL_SEC:
+            return cached[1]
 
     cutoff = (datetime.now() - timedelta(days=max(1, days))).strftime("%Y-%m-%d")
     payload_resp = fetch_json(payload_url, source=f"{source_label}_payload")

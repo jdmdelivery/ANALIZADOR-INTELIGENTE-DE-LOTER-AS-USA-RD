@@ -244,15 +244,20 @@ def _resolve_db_name(lottery_name: str) -> str:
 
 
 def _draw_time_for(lottery_name: str, draw_name: str) -> str:
+    from lottery_schedules import get_schedule_slot, time_12h_to_24h
+
+    slot = get_schedule_slot(lottery_name, draw_name)
+    if slot and slot.get("time"):
+        return time_12h_to_24h(slot["time"])
     cfg = get_rd_lottery_config(lottery_name)
     if not cfg:
         return ""
-    draw_map = cfg.get("draw_map") or {}
     for page in cfg.get("conectate_pages") or []:
         if page.get("draw_name") == draw_name:
             return page.get("draw_time", "")
+    draw_map = cfg.get("draw_map") or {}
     if draw_name in draw_map:
-        return draw_map[draw_name]
+        return time_12h_to_24h(draw_map[draw_name])
     return ""
 
 
@@ -299,15 +304,19 @@ def save_rd_rows(
             )
             updated += action == "updated"
             imported += action == "inserted"
-            saved_rows.append({**row, "lottery_name": db_name})
-            logger.info(
-                "%s guardado | fuente=%s | lotería=%s | fecha=%s | tanda=%s | nums=%s",
-                LOG,
-                fuente,
-                db_name,
-                dd,
-                draw_name,
-                nums,
+            saved_rows.append({**row, "lottery_name": db_name, "draw_time": draw_time})
+            from models import count_results_for_date
+            from services.resultados_log import log_resultados
+
+            total_dia = count_results_for_date(lot["id"], dd)
+            log_resultados(
+                fecha_consultada=dd,
+                cantidad_api=len(rows),
+                loteria=db_name,
+                sorteo=draw_name,
+                hora=draw_time,
+                accion=action,
+                total_fecha_bd=total_dia,
             )
         except Exception as exc:
             errors.append(str(exc))
@@ -325,7 +334,7 @@ def save_rd_rows(
     }
 
 
-def import_conectate_api(lottery_name: str, days: int = 30) -> dict:
+def import_conectate_api(lottery_name: str, days: int = 30, *, force_refresh: bool = False) -> dict:
     """API Kiskoo sessions — Conectate, luego Loterías Dominicanas si 403 o sin filas."""
     from scrapers.kiskoo_nuxt_parser import (
         CONECTATE_API,
@@ -346,6 +355,7 @@ def import_conectate_api(lottery_name: str, days: int = 30) -> dict:
             payload_url=payload_url,
             days=days,
             source_label=key,
+            force_refresh=force_refresh,
         )
         status = hub.get("status_code")
         if status == 403 or (not hub.get("ok") and status and int(status) >= 400):

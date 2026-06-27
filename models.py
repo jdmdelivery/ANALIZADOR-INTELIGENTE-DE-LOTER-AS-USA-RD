@@ -1,6 +1,7 @@
 import sqlite3
 import json
 import os
+import re
 from datetime import datetime, timedelta
 from contextlib import contextmanager
 
@@ -90,25 +91,55 @@ def _sync_lottery_draw_schedules(conn):
                 )
 
 
+def normalize_draw_time(draw_time: str | None) -> str:
+    """Hora 24h HH:MM para claves únicas y orden."""
+    raw = (draw_time or "").strip()
+    if not raw:
+        return ""
+    if re.match(r"^\d{1,2}:\d{2}$", raw) and "M" not in raw.upper():
+        parts = raw.split(":")
+        return f"{int(parts[0]):02d}:{int(parts[1]):02d}"
+    try:
+        from lottery_schedules import time_12h_to_24h
+        return time_12h_to_24h(raw) or raw
+    except ImportError:
+        return raw
+
+
+def _migrate_results_unique_with_time(conn) -> None:
+    """Unicidad por lotería + fecha + tanda + hora (no sobrescribir 6PM con 2:30)."""
+    conn.execute("""
+        UPDATE lottery_results
+        SET draw_time = TRIM(draw_time)
+        WHERE draw_time IS NOT NULL
+    """)
+    conn.execute("DROP INDEX IF EXISTS idx_results_lottery_date_draw")
+    conn.execute("""
+        DELETE FROM lottery_results
+        WHERE id NOT IN (
+            SELECT MAX(id) FROM lottery_results
+            GROUP BY lottery_id, draw_date, draw_name,
+                     COALESCE(NULLIF(TRIM(draw_time), ''), '00:00')
+        )
+    """)
+    conn.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_results_lottery_date_draw_time
+        ON lottery_results (
+            lottery_id, draw_date, draw_name,
+            COALESCE(NULLIF(TRIM(draw_time), ''), '00:00')
+        )
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_results_lottery_draw_date
+        ON lottery_results (lottery_id, draw_name, draw_date DESC)
+    """)
+
+
 def migrate_db():
     """Migraciones incrementales sobre DB existente."""
     conn = get_connection()
     try:
-        conn.execute("""
-            DELETE FROM lottery_results
-            WHERE id NOT IN (
-                SELECT MAX(id) FROM lottery_results
-                GROUP BY lottery_id, draw_date, draw_name
-            )
-        """)
-        conn.execute("""
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_results_lottery_date_draw
-            ON lottery_results (lottery_id, draw_date, draw_name)
-        """)
-        conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_results_lottery_draw_date
-            ON lottery_results (lottery_id, draw_name, draw_date DESC)
-        """)
+        _migrate_results_unique_with_time(conn)
         for col in ("main_numbers", "bonus_numbers", "bonus_label", "game_name"):
             try:
                 conn.execute(f"ALTER TABLE lottery_results ADD COLUMN {col} TEXT")
@@ -739,6 +770,11 @@ def _draw_sort_key(draw_name):
     return RD_DRAW_ORDER.get(draw_name or "", 99)
 
 
+def _result_time_sort_key(row: dict) -> tuple:
+    t = normalize_draw_time(row.get("draw_time") or "") or "00:00"
+    return (t, _draw_sort_key(row.get("draw_name")))
+
+
 def get_max_draw_date(lottery_id):
     with get_db() as conn:
         row = conn.execute(
@@ -761,6 +797,17 @@ def count_results_for_lottery(lottery_id, draw_name=None):
                 "SELECT COUNT(*) AS c FROM lottery_results WHERE lottery_id = ?",
                 (lottery_id,),
             ).fetchone()
+        return int(row["c"]) if row else 0
+
+
+def count_results_for_date(lottery_id, draw_date, draw_name=None):
+    with get_db() as conn:
+        q = "SELECT COUNT(*) AS c FROM lottery_results WHERE lottery_id = ? AND draw_date = ?"
+        params: list = [lottery_id, draw_date]
+        if draw_name:
+            q += " AND draw_name = ?"
+            params.append(draw_name)
+        row = conn.execute(q, params).fetchone()
         return int(row["c"]) if row else 0
 
 
@@ -789,7 +836,7 @@ def get_results_for_latest_date(lottery_id, draw_name=None):
             params.append(draw_name)
         rows = conn.execute(q, params).fetchall()
         results = [row_to_dict(r) for r in rows]
-        results.sort(key=lambda r: _draw_sort_key(r.get("draw_name")))
+        results.sort(key=lambda r: _result_time_sort_key(r))
         return results, max_date
 
 
@@ -822,7 +869,7 @@ def get_results_grouped_by_date(lottery_id, limit_days=30, draw_name=None):
                 rparams.append(draw_name)
             rows = conn.execute(rq, rparams).fetchall()
             results = [row_to_dict(r) for r in rows]
-            results.sort(key=lambda r: _draw_sort_key(r.get("draw_name")))
+            results.sort(key=lambda r: _result_time_sort_key(r))
             groups.append({"draw_date": draw_date, "results": results})
         return groups
 
@@ -839,7 +886,7 @@ def get_results_history(lottery_id, draw_name=None, days=30, limit=500):
         if draw_name:
             q += " AND draw_name = ?"
             params.append(draw_name)
-        q += " ORDER BY draw_date DESC, draw_name DESC, id DESC LIMIT ?"
+        q += " ORDER BY draw_date DESC, draw_time DESC, draw_name DESC, id DESC LIMIT ?"
         params.append(limit)
         rows = conn.execute(q, params).fetchall()
         return [row_to_dict(r) for r in rows]
@@ -932,7 +979,8 @@ def upsert_result(lottery_id, draw_name, draw_time, draw_date, numbers,
                   bonus_number=None, fireball_number=None, source_url=None, confirmed=0,
                   main_numbers=None, bonus_numbers=None, bonus_label=None, game_name=None,
                   estado="publicado", fuente=None):
-    """INSERT o UPDATE por (lottery_id, draw_date, draw_name)."""
+    """INSERT o UPDATE por (lottery_id, draw_date, draw_name, draw_time)."""
+    draw_time = normalize_draw_time(draw_time) or "00:00"
     if isinstance(numbers, str) and numbers.startswith("["):
         nums = format_numbers(parse_numbers(numbers))
     else:
@@ -950,8 +998,9 @@ def upsert_result(lottery_id, draw_name, draw_time, draw_date, numbers,
     with get_db() as conn:
         existing = conn.execute(
             """SELECT id FROM lottery_results
-               WHERE lottery_id = ? AND draw_date = ? AND draw_name = ?""",
-            (lottery_id, draw_date, draw_name),
+               WHERE lottery_id = ? AND draw_date = ? AND draw_name = ?
+               AND COALESCE(NULLIF(TRIM(draw_time), ''), '00:00') = ?""",
+            (lottery_id, draw_date, draw_name, draw_time),
         ).fetchone()
         if existing:
             conn.execute(

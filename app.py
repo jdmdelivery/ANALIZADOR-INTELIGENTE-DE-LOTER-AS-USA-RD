@@ -471,12 +471,12 @@ def api_results():
         latest_date = get_max_draw_date(lottery_id)
         results = []
     elif lottery and lottery.get("country") == "RD" and mode == "latest":
-        results, latest_date = get_results_for_latest_date(lottery_id, draw_name)
+        # Últimos resultados: todas las tandas de la fecha más reciente (sin filtrar por tanda)
+        results, latest_date = get_results_for_latest_date(lottery_id, None)
         today_results = [r for r in results if r.get("draw_date") == today_iso]
         if today_results:
             results = today_results
             latest_date = today_iso
-        # Si hoy aún no hay sorteo, mantener la fecha más reciente real en BD
     elif lottery and lottery.get("country") == "RD":
         results = get_results_history(
             lottery_id, draw_name=draw_name, days=limit_days or 30, limit=500

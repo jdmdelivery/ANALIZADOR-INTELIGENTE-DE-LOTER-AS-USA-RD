@@ -618,16 +618,19 @@
         }
         try {
             const isRD = currentCountry === 'RD' || selectCountry.value === 'RD';
-            let url = `/api/results?lottery_id=${currentLotteryId}&limit=30`;
+            let url = `/api/results?lottery_id=${currentLotteryId}&limit=30&t=${Date.now()}`;
             if (isRD) {
                 url += `&mode=${resultsViewMode}`;
                 if (resultsViewMode === 'all') url += `&days=${historyDays}`;
-            }
-            if (currentDrawName) {
+                // En «últimos resultados» mostrar todas las tandas del día; tanda solo en historial
+                if (resultsViewMode === 'all' && currentDrawName) {
+                    url += `&draw_name=${encodeURIComponent(currentDrawName)}`;
+                }
+            } else if (currentDrawName) {
                 url += `&draw_name=${encodeURIComponent(currentDrawName)}`;
             }
 
-            const res = await fetch(url, { credentials: 'same-origin' });
+            const res = await fetch(url, { credentials: 'same-origin', cache: 'no-store' });
             const data = await parseJsonResponse(res);
 
             if (res.status === 401) {

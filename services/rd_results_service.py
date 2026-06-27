@@ -263,10 +263,24 @@ def actualizar_rd_loteria(lottery_name: str, days: int = 30) -> dict:
     try:
         from scrapers.rd_fallback_scrapers import import_conectate_api
 
-        api = import_conectate_api(db_name, days)
+        api = import_conectate_api(db_name, days, force_refresh=True)
         api["elapsed"] = api.get("elapsed") or round(time.monotonic() - t0, 2)
         _record(sources_tried, "conectate_api", api, lottery_name=db_name)
         if not _needs_fallback(api):
+            # Complementar con páginas Conectate (todas las tandas del día)
+            try:
+                supplement = _run_conectate_primary(db_name, days)
+                supplement["elapsed"] = round(time.monotonic() - t0, 2)
+                _record(sources_tried, "conectate_primary", supplement, lottery_name=db_name)
+                api["imported"] = int(api.get("imported") or 0) + int(supplement.get("imported") or 0)
+                api["updated"] = int(api.get("updated") or 0) + int(supplement.get("updated") or 0)
+                if supplement.get("dates_found"):
+                    api["dates_found"] = sorted(
+                        set((api.get("dates_found") or []) + supplement["dates_found"]),
+                        reverse=True,
+                    )
+            except Exception as exc:
+                logger.warning("%s complemento Conectate HTML falló %s: %s", LOG, db_name, exc)
             out = _success(api, fuente_key="conectate_api", lottery_name=db_name, sources_tried=sources_tried)
             out["elapsed_total"] = round(time.monotonic() - t0, 2)
             out["tiempo"] = out["elapsed_total"]
