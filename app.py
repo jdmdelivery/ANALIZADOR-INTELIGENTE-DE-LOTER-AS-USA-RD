@@ -868,16 +868,34 @@ def _actualizar_resultados_api(data=None):
 @app.route("/api/resultados/actualizar-ahora", methods=["POST"])
 @login_required
 def api_actualizar_resultados_ahora():
-    if not current_user.is_admin():
-        return jsonify({
-            "ok": False,
-            "error": "Solo administradores pueden actualizar resultados.",
-            "detalle": "Acceso denegado — rol insuficiente",
-            "fuente": "api",
-            "status": 403,
-            "message": "Solo administradores pueden actualizar resultados.",
-        }), 403
     data = request.get_json(silent=True) or {}
+    pais = (
+        data.get("pais")
+        or data.get("country")
+        or request.form.get("pais")
+        or request.form.get("country")
+        or ""
+    ).strip()
+    from services.actualizar_resultados import es_pais_do, es_pais_us
+
+    if not current_user.is_admin():
+        if es_pais_us(pais):
+            return jsonify({
+                "ok": False,
+                "error": "Solo administradores pueden actualizar resultados USA.",
+                "detalle": "Acceso denegado — rol insuficiente",
+                "fuente": "api",
+                "status": 403,
+                "message": "Solo administradores pueden actualizar resultados USA.",
+            }), 403
+        if not es_pais_do(pais):
+            return jsonify({
+                "ok": False,
+                "error": "País no soportado.",
+                "fuente": "api",
+                "status": 400,
+                "message": "País no soportado.",
+            }), 400
     payload, status = _actualizar_resultados_api(data)
     return jsonify(payload), status
 

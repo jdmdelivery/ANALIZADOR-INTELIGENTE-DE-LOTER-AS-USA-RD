@@ -329,8 +329,18 @@
         }
 
         if (!data.ok || data.status === 'error') {
+            if (data.status === 403 || (data.error || '').toLowerCase().includes('administrador')) {
+                return {
+                    text: '⚠️ Solo administradores pueden actualizar. Los resultados en pantalla son los guardados en BD.',
+                    kind: 'muted',
+                };
+            }
             const failed = (data.sources_tried || []).find((s) => !s.ok && s.error);
             const next = (data.sources_tried || []).find((s) => s.ok);
+            const human = data.mensaje || data.message || data.error || data.detalle;
+            if (human && (fuente === 'api' || !failed)) {
+                return { text: `❌ ${human}`, kind: 'error' };
+            }
             let msg = `❌ Fuente: ${failed?.fuente_label || fuente}`;
             if (failed?.status_code) msg += ` HTTP ${failed.status_code}`;
             if (failed?.error) msg += ` — ${failed.error}`;
@@ -587,7 +597,7 @@
         const opt = selectLottery.options[selectLottery.selectedIndex];
         currentLotteryName = opt?.dataset?.name || opt?.textContent || '';
         currentCountry = selectCountry.value;
-        resultsViewMode = 'all';
+        resultsViewMode = 'latest';
         historyDays = 30;
         hideMain();
 
@@ -656,10 +666,7 @@
             if (isRD) {
                 url += `&mode=${resultsViewMode}`;
                 if (resultsViewMode === 'all') url += `&days=${historyDays}`;
-                // En «últimos resultados» mostrar todas las tandas del día; tanda solo en historial
-                if (resultsViewMode === 'all' && currentDrawName) {
-                    url += `&draw_name=${encodeURIComponent(currentDrawName)}`;
-                }
+                // Historial: todas las tandas del día (sin filtrar por tanda seleccionada)
             } else if (currentDrawName) {
                 url += `&draw_name=${encodeURIComponent(currentDrawName)}`;
             }
@@ -795,6 +802,12 @@
                 const buttonEl = drawButtons.querySelector(`[data-draw-name="${CSS.escape(drawName)}"]`);
                 selectDrawSchedule(btn, buttonEl);
             });
+        }
+
+        // Auto-seleccionar primera tanda para cargar recomendación
+        const firstBtn = drawButtons.querySelector('.btn-tanda');
+        if (firstBtn && buttons[0]) {
+            selectDrawSchedule(buttons[0], firstBtn);
         }
     }
 
