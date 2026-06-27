@@ -594,6 +594,30 @@ def debug_new_lotteries():
     return jsonify(run_debug())
 
 
+def _normalize_actualizar_body(data: dict | None) -> dict:
+    """Lee request solo en el hilo principal — seguro para pasar a workers."""
+    out = dict(data or {})
+    for key, form_key in (
+        ("pais", "pais"),
+        ("country", "country"),
+        ("state", "state"),
+        ("loteria", "loteria"),
+        ("lottery", "lottery"),
+        ("days", "days"),
+        ("refresh_all_rd", "refresh_all_rd"),
+        ("refresh_all_usa", "refresh_all_usa"),
+    ):
+        if out.get(key) in (None, ""):
+            val = request.form.get(form_key)
+            if val not in (None, ""):
+                out[key] = val
+    if not out.get("pais") and out.get("country"):
+        out["pais"] = out["country"]
+    if not out.get("loteria") and out.get("lottery"):
+        out["loteria"] = out["lottery"]
+    return out
+
+
 def _api_actualizar_resultados_payload(data=None):
     """Despacho estricto US vs DO — sin mezclar Illinois con RD."""
     from services.actualizar_resultados import (
@@ -604,24 +628,12 @@ def _api_actualizar_resultados_payload(data=None):
     )
 
     data = data or {}
-    pais = (
-        data.get("pais")
-        or data.get("country")
-        or request.form.get("pais")
-        or request.form.get("country")
-        or ""
-    ).strip()
-    state = (data.get("state") or request.form.get("state") or "").strip()
-    loteria = (
-        data.get("loteria")
-        or data.get("lottery")
-        or request.form.get("loteria")
-        or request.form.get("lottery")
-        or ""
-    ).strip()
-    refresh_all_rd = data.get("refresh_all_rd") or request.form.get("refresh_all_rd")
-    refresh_all_usa = data.get("refresh_all_usa") or request.form.get("refresh_all_usa")
-    days = int(data.get("days") or request.form.get("days") or 30)
+    pais = (data.get("pais") or data.get("country") or "").strip()
+    state = (data.get("state") or "").strip()
+    loteria = (data.get("loteria") or data.get("lottery") or "").strip()
+    refresh_all_rd = data.get("refresh_all_rd")
+    refresh_all_usa = data.get("refresh_all_usa")
+    days = int(data.get("days") or 30)
 
     if es_pais_us(pais):
         return actualizar_resultados_usa(
@@ -781,21 +793,9 @@ def _format_actualizar_api_response(result: dict) -> tuple[dict, int]:
 
 def _actualizar_resultados_api(data=None):
     """Lógica compartida POST /api/resultados/actualizar y /actualizar-ahora."""
-    data = data or {}
-    pais = (
-        data.get("pais")
-        or data.get("country")
-        or request.form.get("pais")
-        or request.form.get("country")
-        or ""
-    ).strip()
-    loteria = (
-        data.get("loteria")
-        or data.get("lottery")
-        or request.form.get("loteria")
-        or request.form.get("lottery")
-        or ""
-    ).strip()
+    data = _normalize_actualizar_body(data)
+    pais = (data.get("pais") or data.get("country") or "").strip()
+    loteria = (data.get("loteria") or data.get("lottery") or "").strip()
 
     logger.info(
         "[API] Iniciando actualización | país=%s | lotería=%s | path=%s",
@@ -805,36 +805,7 @@ def _actualizar_resultados_api(data=None):
     )
 
     try:
-        pais = (
-            data.get("pais")
-            or data.get("country")
-            or request.form.get("pais")
-            or request.form.get("country")
-            or ""
-        ).strip()
-        from services.actualizar_resultados import es_pais_do
-
-        if es_pais_do(pais):
-            result, err = _run_rd_update_timed(
-                lambda: _api_actualizar_resultados_payload(data),
-                "api_actualizar_rd",
-            )
-            if err == "timeout":
-                payload = {
-                    "ok": True,
-                    "warning": True,
-                    "live_failed": True,
-                    "timeout": True,
-                    "pais": "DO",
-                    "mensaje": "La actualización tardó demasiado; se mantienen resultados guardados.",
-                    "message": "La actualización tardó demasiado; se mantienen resultados guardados.",
-                    "error_detail": f"Timeout {RD_UPDATE_TIMEOUT_SEC}s",
-                }
-                return payload, 200
-            if err:
-                return _api_json_error(err, fuente="api", status=500)
-        else:
-            result = _api_actualizar_resultados_payload(data)
+        result = _api_actualizar_resultados_payload(data)
         payload, status = _format_actualizar_api_response(result)
         logger.info(
             "[API] Actualización finalizada | ok=%s | imported=%s | updated=%s | warning=%s | status=%s",
