@@ -180,11 +180,40 @@ def migrate_db():
             "ALTER TABLE lottery_results ADD COLUMN estado TEXT DEFAULT 'publicado'",
             "ALTER TABLE lottery_results ADD COLUMN fuente TEXT",
             "ALTER TABLE lottery_results ADD COLUMN updated_at TEXT",
+            "ALTER TABLE lottery_results ADD COLUMN fuentes_confirmadas TEXT",
+            "ALTER TABLE lottery_results ADD COLUMN confianza_fuente INTEGER",
+            "ALTER TABLE lottery_results ADD COLUMN raw_data TEXT",
+            "ALTER TABLE lottery_results ADD COLUMN primera TEXT",
+            "ALTER TABLE lottery_results ADD COLUMN segunda TEXT",
+            "ALTER TABLE lottery_results ADD COLUMN tercera TEXT",
         ):
             try:
                 conn.execute(col_sql)
             except sqlite3.OperationalError:
                 pass
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS recomendaciones_rd (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                fecha TEXT NOT NULL,
+                lottery_id INTEGER,
+                loteria TEXT NOT NULL,
+                sorteo TEXT NOT NULL,
+                horario TEXT,
+                numeros TEXT NOT NULL,
+                score_total REAL,
+                confianza INTEGER,
+                confianza_label TEXT,
+                explicacion TEXT,
+                rango_dias INTEGER,
+                algoritmo_version TEXT,
+                created_at TEXT DEFAULT (datetime('now')),
+                FOREIGN KEY (lottery_id) REFERENCES lotteries(id) ON DELETE SET NULL
+            )
+        """)
+        conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_recomendaciones_rd_unique
+            ON recomendaciones_rd (fecha, loteria, sorteo, COALESCE(NULLIF(TRIM(horario), ''), '00:00'))
+        """)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS leidsa_sync_log (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1072,6 +1101,215 @@ def upsert_result(lottery_id, draw_name, draw_time, draw_date, numbers,
         new_id = cur.lastrowid
         _notify_precision_hook(lottery_id, draw_name, draw_date, new_id)
         return new_id, "inserted"
+
+
+def upsert_rd_result(
+    lottery_id,
+    draw_name,
+    draw_time,
+    draw_date,
+    numbers,
+    *,
+    fuente: str = "",
+    fuentes_extra: list | None = None,
+    confianza_fuente: int | None = None,
+    raw_data=None,
+    primera=None,
+    segunda=None,
+    tercera=None,
+    source_url=None,
+    confirmed=1,
+):
+    """INSERT/UPDATE RD con fusión de fuentes_confirmadas."""
+    import json as _json
+
+    draw_time = normalize_draw_time(draw_time) or "00:00"
+    nums = format_numbers(parse_numbers(numbers) if not isinstance(numbers, list) else numbers)
+    src_list = sorted({s for s in ([fuente] + list(fuentes_extra or [])) if s})
+    conf = confianza_fuente if confianza_fuente is not None else min(100, 50 + 15 * len(src_list))
+    raw_json = _json.dumps(raw_data, ensure_ascii=False) if raw_data is not None else None
+    p, s, t = (primera, segunda, tercera)
+    if not p and len(nums) >= 3:
+        p, s, t = nums[0], nums[1], nums[2]
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    with get_db() as conn:
+        existing = conn.execute(
+            """SELECT id, numbers, fuentes_confirmadas FROM lottery_results
+               WHERE lottery_id = ? AND draw_date = ? AND draw_name = ?
+               AND COALESCE(NULLIF(TRIM(draw_time), ''), '00:00') = ?""",
+            (lottery_id, draw_date, draw_name, draw_time),
+        ).fetchone()
+        if existing:
+            merged_src = set(src_list)
+            if existing["fuentes_confirmadas"]:
+                try:
+                    merged_src.update(_json.loads(existing["fuentes_confirmadas"]))
+                except (TypeError, ValueError):
+                    pass
+            merged_src = sorted(s for s in merged_src if s)
+            conf = min(100, 50 + 15 * len(merged_src))
+            same_nums = format_numbers(parse_numbers(existing["numbers"])) == nums
+            if same_nums and set(merged_src) == set(src_list):
+                return existing["id"], "ignored", False
+            conn.execute(
+                """UPDATE lottery_results
+                   SET numbers = ?, fuente = ?, fuentes_confirmadas = ?,
+                       confianza_fuente = ?, raw_data = COALESCE(?, raw_data),
+                       primera = ?, segunda = ?, tercera = ?,
+                       source_url = COALESCE(?, source_url),
+                       confirmed = ?, updated_at = ?
+                   WHERE id = ?""",
+                (
+                    nums, fuente or merged_src[0] if merged_src else "",
+                    _json.dumps(merged_src), conf, raw_json, p, s, t,
+                    source_url, confirmed, now, existing["id"],
+                ),
+            )
+            action = "ignored" if same_nums else "updated"
+            _notify_precision_hook(lottery_id, draw_name, draw_date, existing["id"])
+            return existing["id"], action, not same_nums
+        cur = conn.execute(
+            """INSERT INTO lottery_results
+               (lottery_id, draw_name, draw_time, draw_date, numbers,
+                source_url, confirmed, estado, fuente, fuentes_confirmadas,
+                confianza_fuente, raw_data, primera, segunda, tercera, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                lottery_id, draw_name, draw_time, draw_date, nums,
+                source_url, confirmed, "publicado", fuente,
+                _json.dumps(src_list), conf, raw_json, p, s, t, now,
+            ),
+        )
+        new_id = cur.lastrowid
+        _notify_precision_hook(lottery_id, draw_name, draw_date, new_id)
+        return new_id, "inserted", True
+
+
+def save_recomendacion_rd(
+    *,
+    fecha: str,
+    lottery_id: int | None,
+    loteria: str,
+    sorteo: str,
+    horario: str,
+    numeros: list,
+    score_total: float,
+    confianza: int,
+    confianza_label: str,
+    explicacion: str,
+    rango_dias: int,
+    algoritmo_version: str,
+) -> int:
+    import json as _json
+
+    nums = format_numbers(numeros)
+    horario = normalize_draw_time(horario) or "00:00"
+    with get_db() as conn:
+        existing = conn.execute(
+            """SELECT id FROM recomendaciones_rd
+               WHERE fecha = ? AND loteria = ? AND sorteo = ?
+               AND COALESCE(NULLIF(TRIM(horario), ''), '00:00') = ?""",
+            (fecha, loteria, sorteo, horario),
+        ).fetchone()
+        if existing:
+            conn.execute(
+                """UPDATE recomendaciones_rd
+                   SET lottery_id = ?, numeros = ?, score_total = ?, confianza = ?,
+                       confianza_label = ?, explicacion = ?, rango_dias = ?,
+                       algoritmo_version = ?, created_at = datetime('now')
+                   WHERE id = ?""",
+                (
+                    lottery_id, _json.dumps(nums), score_total, confianza,
+                    confianza_label, explicacion, rango_dias, algoritmo_version,
+                    existing["id"],
+                ),
+            )
+            return existing["id"]
+        cur = conn.execute(
+            """INSERT INTO recomendaciones_rd
+               (fecha, lottery_id, loteria, sorteo, horario, numeros, score_total,
+                confianza, confianza_label, explicacion, rango_dias, algoritmo_version)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                fecha, lottery_id, loteria, sorteo, horario, _json.dumps(nums),
+                score_total, confianza, confianza_label, explicacion,
+                rango_dias, algoritmo_version,
+            ),
+        )
+        return cur.lastrowid
+
+
+def get_recomendacion_rd_hoy(loteria: str, sorteo: str, horario: str, fecha: str) -> dict | None:
+    import json as _json
+
+    horario = normalize_draw_time(horario) or "00:00"
+    with get_db() as conn:
+        row = conn.execute(
+            """SELECT * FROM recomendaciones_rd
+               WHERE fecha = ? AND loteria = ? AND sorteo = ?
+               AND COALESCE(NULLIF(TRIM(horario), ''), '00:00') = ?
+               ORDER BY id DESC LIMIT 1""",
+            (fecha, loteria, sorteo, horario),
+        ).fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        try:
+            d["numeros"] = _json.loads(d["numeros"])
+        except (TypeError, ValueError):
+            d["numeros"] = parse_numbers(d.get("numeros"))
+        return d
+
+
+def get_recent_recomendaciones_rd(
+    loteria: str,
+    sorteo: str,
+    horario: str = "",
+    *,
+    days: int = 7,
+) -> list[dict]:
+    import json as _json
+    from datetime import timedelta
+
+    horario_norm = normalize_draw_time(horario) or "00:00"
+    cutoff = (datetime.now() - timedelta(days=max(1, days))).strftime("%Y-%m-%d")
+    with get_db() as conn:
+        rows = conn.execute(
+            """SELECT * FROM recomendaciones_rd
+               WHERE loteria = ? AND sorteo = ?
+               AND fecha >= ?
+               AND (
+                   COALESCE(NULLIF(TRIM(horario), ''), '00:00') = ?
+                   OR ? = '00:00'
+               )
+               ORDER BY fecha DESC""",
+            (loteria, sorteo, cutoff, horario_norm, horario_norm),
+        ).fetchall()
+        out = []
+        for row in rows:
+            d = dict(row)
+            try:
+                d["numeros"] = _json.loads(d["numeros"])
+            except (TypeError, ValueError):
+                d["numeros"] = parse_numbers(d.get("numeros"))
+            out.append(d)
+        return out
+
+
+def get_recent_recomendaciones_rd_combos(
+    loteria: str,
+    sorteo: str,
+    *,
+    days: int = 7,
+) -> list[tuple]:
+    """Combinaciones recomendadas recientes (sin filtrar horario)."""
+    recent = get_recent_recomendaciones_rd(loteria, sorteo, "", days=days)
+    return [_combo_key_from_nums(r.get("numeros") or []) for r in recent]
+
+
+def _combo_key_from_nums(nums: list) -> tuple:
+    return tuple(str(n).zfill(2) for n in nums)
 
 
 def _notify_precision_hook(lottery_id, draw_name, draw_date, result_id):

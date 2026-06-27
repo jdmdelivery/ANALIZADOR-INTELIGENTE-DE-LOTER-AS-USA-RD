@@ -93,6 +93,11 @@ for msg in validate_production_config():
 
 init_auth(app)
 init_db()
+try:
+    from services.rd_cron import start_rd_cron
+    start_rd_cron()
+except Exception:
+    logger.exception("No se pudo iniciar RD cron")
 logger.info("App iniciada | production=%s | db=%s", IS_PRODUCTION, os.environ.get("DATABASE_PATH", "lottery.db"))
 
 DRAW_BUTTONS = {
@@ -915,11 +920,63 @@ def api_actualizar_rd_historial_completo():
 @app.route("/admin/resultados/rd/actualizar", methods=["POST"])
 @admin_required
 def admin_actualizar_rd():
-    result = refresh_all_rd_now(days=30)
+    days = request.form.get("days", type=int) or 30
+    from services.rd_resultados_service import actualizar_rd_todas
+    result = actualizar_rd_todas(days=days)
     if result.get("ok"):
         flash(result.get("message", "Resultados RD actualizados."), "success")
     else:
         flash(result.get("message", "Error al actualizar RD."), "danger")
+    return redirect(url_for("admin") + "#tabApi")
+
+
+@app.route("/admin/rd/actualizar-resultados", methods=["GET", "POST"])
+@admin_required
+def admin_rd_actualizar_resultados():
+    days = request.args.get("dias", type=int) or request.form.get("dias", type=int) or 100
+    from services.rd_resultados_service import actualizar_rd_todas
+    from services.rd_recomendacion_service import recalcular_todas_recomendaciones_rd
+
+    result = actualizar_rd_todas(days=min(days, 365))
+    recalc = recalcular_todas_recomendaciones_rd(rango_dias=min(days, 90))
+    result["recomendaciones"] = recalc
+    if request.method == "GET" or request.args.get("json") == "1":
+        return jsonify(result), 200 if result.get("ok") else 400
+    flash(result.get("message", "RD actualizado."), "success" if result.get("ok") else "warning")
+    return redirect(url_for("admin") + "#tabApi")
+
+
+@app.route("/admin/rd/test-resultados")
+@admin_required
+def admin_rd_test_resultados():
+    fecha = (request.args.get("fecha") or "").strip()
+    loteria = request.args.get("loteria") or None
+    if not fecha:
+        return jsonify({"ok": False, "message": "fecha=YYYY-MM-DD requerido"}), 400
+    from services.rd_resultados_service import test_resultados_fecha
+    return jsonify(test_resultados_fecha(fecha, loteria))
+
+
+@app.route("/admin/rd/fuentes-status")
+@admin_required
+def admin_rd_fuentes_status():
+    from services.rd_fuentes_service import get_fuentes_status, get_last_rd_update
+    return jsonify({
+        "ok": True,
+        "fuentes": get_fuentes_status(),
+        "ultima_actualizacion_rd": get_last_rd_update(),
+    })
+
+
+@app.route("/admin/rd/reparar-historico", methods=["POST", "GET"])
+@admin_required
+def admin_rd_reparar_historico():
+    days = request.args.get("dias", type=int) or 365
+    from services.rd_resultados_service import reparar_historico
+    result = reparar_historico(days=days)
+    if request.method == "GET" or request.args.get("json") == "1":
+        return jsonify(result), 200 if result.get("ok") else 400
+    flash(result.get("message", "Reparación histórica RD."), "success" if result.get("ok") else "warning")
     return redirect(url_for("admin") + "#tabApi")
 
 
@@ -1144,9 +1201,18 @@ def api_prediction():
             days = request.args.get("days", type=int)
             if days is None:
                 days = request.args.get("rango", type=int)
-            result = generar_jugada_inteligente(
-                lottery_id, draw_name, force_refresh=force, days=days
-            )
+            if lottery.get("country") == "RD":
+                from services.rd_recomendacion_service import generar_recomendacion_rd
+                result = generar_recomendacion_rd(
+                    lottery["name"],
+                    draw_name,
+                    rango_dias=days or 90,
+                    force=force,
+                )
+            else:
+                result = generar_jugada_inteligente(
+                    lottery_id, draw_name, force_refresh=force, days=days
+                )
             result = _enrich_prediction_payload(result, lottery_id, draw_name, lottery)
             if fecha_mode == "latest" and result.get("ok"):
                 diag = result.get("analyzer_diagnostic") or {}

@@ -870,6 +870,50 @@
         if (hashEl) hashEl.textContent = String(hash);
         if (atEl) atEl.textContent = recalcAt;
         if (srcEl) srcEl.textContent = `${source} · caché: ${cacheFlag}`;
+
+        const isRd = selectCountry && selectCountry.value === 'RD';
+        const rdRows = [
+            'diagRdLoteriaRow', 'diagRdHorarioRow', 'diagRdConfRow', 'diagRdAntiRepRow',
+            'diagRdAlgoRow', 'diagRdFuentesRow', 'diagRdUltActRow',
+        ];
+        rdRows.forEach((id) => {
+            const el = $(id);
+            if (el) el.style.display = isRd ? '' : 'none';
+        });
+        if (isRd) {
+            const lotEl = $('diagRdLoteria');
+            const horEl = $('diagRdHorario');
+            const confEl = $('diagRdConfianza');
+            const antiEl = $('diagRdAntiRep');
+            const algoEl = $('diagRdAlgo');
+            const fuentesEl = $('diagRdFuentes');
+            const ultEl = $('diagRdUltAct');
+            if (lotEl) lotEl.textContent = diag.loteria_exacta || data.lottery || '—';
+            if (horEl) horEl.textContent = diag.horario_exacto || hora || '—';
+            if (confEl) {
+                confEl.textContent = diag.confianza_label
+                    || data.confidence_label
+                    || String(diag.confianza ?? data.score ?? '—');
+            }
+            if (antiEl) antiEl.textContent = diag.anti_repeticion || 'No se repite con recomendaciones recientes';
+            if (algoEl) algoEl.textContent = diag.algoritmo_version || data.algoritmo_version || '—';
+            if (fuentesEl) {
+                const ok = diag.fuentes_disponibles;
+                const fail = (diag.fuentes_fallidas || []).length;
+                fuentesEl.textContent = ok != null ? `${ok} OK · ${fail} fallidas` : (diag.fuente_datos || '—');
+            }
+            if (ultEl) ultEl.textContent = diag.ultima_actualizacion_rd || '—';
+            const warnDatos = $('diagRdDatosWarn');
+            if (warnDatos) {
+                const msg = diag.datos_insuficientes || data.low_confidence_warning || '';
+                if (msg) {
+                    warnDatos.textContent = msg;
+                    warnDatos.style.display = 'block';
+                } else {
+                    warnDatos.style.display = 'none';
+                }
+            }
+        }
         panel.style.display = 'block';
     }
 
@@ -1194,7 +1238,10 @@
             const warnEl = $('predictionWarning');
             if (warnEl) {
                 const dup = (data.duplicates_found || []).length;
-                let warnText = data.warning || '';
+                let warnText = data.warning || data.low_confidence_warning || '';
+                if (data.rd_inteligente && data.confidence_level === 'bajo') {
+                    warnText = warnText || 'Confianza baja: usar como referencia, no jugada fuerte.';
+                }
                 if (dup > 0) {
                     warnText = `Nota: combinación con repetición limitada (${dup}). ${warnText}`.trim();
                 }
