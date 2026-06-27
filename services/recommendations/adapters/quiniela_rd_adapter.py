@@ -1,12 +1,14 @@
 """Quiniela RD 00–99 — Top 10/20/50, posiciones 1ra/2da/3ra."""
 from __future__ import annotations
 
+from collections import Counter
+
 from services.recommendations.adapters.base import BaseAdapter
 from services.recommendations.categories import (
     build_hot_cold_lists,
     position_frequency,
 )
-from services.recommendations.constants import MIN_HISTORY, STRONG_RECOMMENDATION_MIN
+from services.recommendations.constants import ANALYSIS_WINDOWS, MIN_HISTORY, STRONG_RECOMMENDATION_MIN
 from services.recommendations.profile_builder import build_scored_profiles
 from services.recommendations.scoring import (
     confidence_from_score,
@@ -27,7 +29,8 @@ class QuinielaRDAdapter(BaseAdapter):
         per_draw = ctx["per_draw_main"]
         dates = ctx.get("dates") or []
         draw_name = ctx.get("draw_name") or ""
-        if len(per_draw) < MIN_HISTORY:
+        min_req = int(ctx.get("effective_min_history") or MIN_HISTORY)
+        if len(per_draw) < min_req:
             return self.insufficient(ctx, len(per_draw))
 
         pad = int(config.get("pad", 2))
@@ -58,7 +61,7 @@ class QuinielaRDAdapter(BaseAdapter):
             key=lambda p: -p.get("draws_since", 0),
         )[:10]
 
-        primary = self._pick_primary_combo(scored_list, count, per_draw)
+        primary = self._pick_primary_combo(scored_list, count, per_draw, pos_freq)
         combo_score, digit_parts = score_combination(
             primary,
             per_draw,
@@ -75,7 +78,9 @@ class QuinielaRDAdapter(BaseAdapter):
         conf_key, conf_label = confidence_from_score(combo_score)
         strong = is_strong_recommendation(combo_score)
 
-        analysis_text = ". ".join(profiles[n]["reason"] for n in primary[:3])
+        analysis_text = ". ".join(
+            profiles.get(n, {}).get("reason", "") for n in primary[:3] if profiles.get(n)
+        )
         if not strong:
             analysis_text = f"Confianza baja (score {combo_score}). {analysis_text}"
 
@@ -132,27 +137,63 @@ class QuinielaRDAdapter(BaseAdapter):
             "overdue_numbers_detail": overdue,
             "number_profiles": profiles,
             "position_frequency": {k: dict(v) for k, v in pos_freq.items()},
-            "windows": {
-                "7": len(per_draw[:7]),
-                "15": len(per_draw[:15]),
-                "30": len(per_draw[:30]),
-                "100": len(per_draw[:100]),
-            },
+            "windows": {str(w): len(per_draw[:w]) for w in ANALYSIS_WINDOWS},
             "total_results": len(per_draw),
-            "analysis_window": 25,
+            "analysis_window": len(per_draw),
+            "selection_method": "multi_window_position_blend",
         }
 
-    def _pick_primary_combo(self, scored: list[dict], count: int, per_draw: list) -> list[str]:
+    def _pick_primary_combo(
+        self,
+        scored: list[dict],
+        count: int,
+        per_draw: list,
+        pos_freq: dict[int, Counter] | None = None,
+    ) -> list[str]:
+        """Mezcla score global + frecuencia por posición; evita repetir último sorteo."""
         last = set(per_draw[0]) if per_draw else set()
-        pool = [p["number"] for p in scored if p["number"] not in last]
-        if len(pool) < count:
-            pool = [p["number"] for p in scored]
+        scored_map = {p["number"]: p for p in scored}
         chosen: list[str] = []
-        for n in pool:
-            if n not in chosen:
-                chosen.append(n)
-            if len(chosen) >= count:
-                break
+
+        def _key(n) -> str:
+            z = _normalize(str(n), 2)
+            return z if z in scored_map else str(n)
+
+        if pos_freq and count <= 3:
+            for pos in range(count):
+                pf = pos_freq.get(pos) or Counter()
+                ranked = sorted(
+                    pf.keys(),
+                    key=lambda n: (
+                        -pf.get(n, 0),
+                        -scored_map.get(_key(n), {}).get("score", 0),
+                        _key(n),
+                    ),
+                )
+                picked = None
+                for n in ranked:
+                    kn = _key(n)
+                    if kn not in chosen and kn not in last:
+                        picked = kn
+                        break
+                if not picked:
+                    for p in scored:
+                        if p["number"] not in chosen and p["number"] not in last:
+                            picked = p["number"]
+                            break
+                if picked:
+                    chosen.append(picked)
+
+        if len(chosen) < count:
+            pool = [p["number"] for p in scored if p["number"] not in chosen and p["number"] not in last]
+            if len(pool) < count - len(chosen):
+                pool = [p["number"] for p in scored if p["number"] not in chosen]
+            for n in pool:
+                if n not in chosen:
+                    chosen.append(n)
+                if len(chosen) >= count:
+                    break
+
         if len(chosen) < count:
             for p in scored:
                 if p["number"] not in chosen:

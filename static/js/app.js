@@ -26,6 +26,7 @@
     const btnRefreshRdAll = $('btnRefreshRdAll');
     const btnRefreshRdHistoryFull = $('btnRefreshRdHistoryFull');
     const historyDaysFilters = $('historyDaysFilters');
+    const analysisDaysFilters = $('analysisDaysFilters');
 
     if (!selectCountry || !selectLottery) return;
 
@@ -34,6 +35,7 @@
     let currentCountry = '';
     let resultsViewMode = 'latest';
     let historyDays = 90;
+    let analysisDays = 90;
     let refreshTimer = null;
     let activeDrawBtn = null;
     let currentDrawButtons = [];
@@ -106,8 +108,38 @@
                 historyDaysFilters.querySelectorAll('.history-days-btn').forEach((b) => b.classList.remove('active'));
                 btn.classList.add('active');
                 historyDays = parseInt(btn.dataset.days, 10) || 90;
+                syncAnalysisDaysButtons(historyDays);
                 if (resultsViewMode === 'all') loadRecentResults();
+                recalcPredictionIfNeeded(true);
             });
+        });
+    }
+    if (analysisDaysFilters) {
+        analysisDaysFilters.querySelectorAll('.analysis-days-btn').forEach((btn) => {
+            btn.addEventListener('click', () => {
+                analysisDaysFilters.querySelectorAll('.analysis-days-btn').forEach((b) => b.classList.remove('active'));
+                btn.classList.add('active');
+                analysisDays = parseInt(btn.dataset.days, 10) || 90;
+                syncHistoryDaysButtons(analysisDays);
+                if (resultsViewMode === 'all') loadRecentResults();
+                recalcPredictionIfNeeded(true);
+            });
+        });
+    }
+
+    function syncAnalysisDaysButtons(days) {
+        analysisDays = days;
+        if (!analysisDaysFilters) return;
+        analysisDaysFilters.querySelectorAll('.analysis-days-btn').forEach((b) => {
+            b.classList.toggle('active', parseInt(b.dataset.days, 10) === days);
+        });
+    }
+
+    function syncHistoryDaysButtons(days) {
+        historyDays = days;
+        if (!historyDaysFilters) return;
+        historyDaysFilters.querySelectorAll('.history-days-btn').forEach((b) => {
+            b.classList.toggle('active', parseInt(b.dataset.days, 10) === days);
         });
     }
 
@@ -659,6 +691,9 @@
             if (historyDaysFilters) {
                 historyDaysFilters.style.display = (isRD && resultsViewMode === 'all') ? 'flex' : 'none';
             }
+            if (analysisDaysFilters) {
+                analysisDaysFilters.style.display = isRD ? 'flex' : 'none';
+            }
             if (latestDateBadge) {
                 if (isRD && data.latest_date && resultsViewMode === 'latest') {
                     latestDateBadge.style.display = 'inline-flex';
@@ -803,11 +838,16 @@
         const lastUsed = diag.last_result_used
             || (fecha && hora ? `${fecha} ${hora}` : data.latest_result_date)
             || '—';
-        const draws = data.cantidad_resultados_analizados
+        const draws = data.total_resultados_usados
+            ?? data.cantidad_resultados_analizados
+            ?? diag.total_resultados_usados
             ?? diag.draws_analyzed
             ?? data.total_results
             ?? data.history_count
             ?? '—';
+        const avail = data.total_resultados_disponibles ?? diag.total_resultados_disponibles ?? '—';
+        const rango = data.rango_usado ?? diag.rango_usado ?? `${analysisDays}_dias`;
+        const hash = data.hash_datos_usados ?? diag.hash_datos_usados ?? '—';
         const recalcAt = diag.recalculated_at || data.created_at || '—';
         let source = data.fuente || diag.source || diag.data_source || data.data_source || 'BASE DE DATOS';
         const cacheFlag = data.cache_usada || (data.from_cache ? 'SI' : 'NO');
@@ -822,6 +862,12 @@
             lastEl.textContent = sorteo ? `${lastUsed} (${sorteo})` : lastUsed;
         }
         if (countEl) countEl.textContent = String(draws);
+        const availEl = $('diagTotalAvail');
+        const rangoEl = $('diagRango');
+        const hashEl = $('diagHash');
+        if (availEl) availEl.textContent = String(avail);
+        if (rangoEl) rangoEl.textContent = String(rango);
+        if (hashEl) hashEl.textContent = String(hash);
         if (atEl) atEl.textContent = recalcAt;
         if (srcEl) srcEl.textContent = `${source} · caché: ${cacheFlag}`;
         panel.style.display = 'block';
@@ -1097,6 +1143,8 @@
                 + `&draw_name=${sorteoName}`
                 + `&sorteo=${sorteoTime}`
                 + `&fecha=latest`
+                + `&days=${analysisDays}`
+                + `&rango=${analysisDays}`
                 + `${forceQs}${bustQs}`,
                 fetchOpts
             );

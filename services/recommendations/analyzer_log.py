@@ -16,10 +16,18 @@ def log_analisis(
     ultimo_resultado: str = "",
     numeros_calculados: str = "",
     cache_usada: str = "NO",
+    rango: str = "",
+    total_usados: int | str = "",
+    total_disponibles: int | str = "",
+    hash_datos: str = "",
 ) -> None:
     lines = [
         f"{ANALISIS_TAG} loteria seleccionada: {loteria}",
         f"{ANALISIS_TAG} sorteo seleccionado: {sorteo}",
+        f"{ANALISIS_TAG} rango usado: {rango or '—'}",
+        f"{ANALISIS_TAG} total disponibles BD: {total_disponibles}",
+        f"{ANALISIS_TAG} sorteos usados en análisis: {total_usados}",
+        f"{ANALISIS_TAG} hash datos: {hash_datos or '—'}",
         f"{ANALISIS_TAG} últimos 10 resultados usados: {ultimos_10 or '—'}",
         f"{ANALISIS_TAG} último resultado usado: {ultimo_resultado or '—'}",
         f"{ANALISIS_TAG} números calculados: {numeros_calculados or '—'}",

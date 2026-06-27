@@ -6,18 +6,24 @@ RECOMMENDATION_DISCLAIMER = (
 )
 
 MIN_HISTORY = 10
-INSUFFICIENT_HISTORY_MSG = "Histórico insuficiente"
+INSUFFICIENT_HISTORY_MSG = "No hay resultados suficientes para esta tanda"
 
-# Pesos base (suman 1.0) — índice ponderado multi-factor
+# Ventanas de análisis (sorteos recientes)
+ANALYSIS_WINDOWS = (7, 15, 25, 50, 90)
+
+# Pesos multi-ventana — prioriza reciente sin ignorar historial largo
 DEFAULT_WEIGHTS = {
-    "freq_25": 0.22,
-    "freq_100": 0.18,
-    "trend_10": 0.18,
-    "delay": 0.14,
-    "stability": 0.10,
-    "context": 0.08,
-    "weekday": 0.07,
-    "draw_slot": 0.03,
+    "freq_7": 0.20,
+    "freq_15": 0.16,
+    "freq_25": 0.14,
+    "freq_50": 0.10,
+    "freq_90": 0.08,
+    "trend_10": 0.12,
+    "delay": 0.08,
+    "stability": 0.04,
+    "context": 0.04,
+    "weekday": 0.02,
+    "draw_slot": 0.02,
 }
 
 WEIGHT_MIN = 0.05

@@ -933,15 +933,20 @@ def get_recent_results_rows(limit=20):
         return [row_to_dict(r) for r in rows]
 
 
-def get_results_for_analysis(lottery_id, draw_name, limit=None):
+def get_results_for_analysis(lottery_id, draw_name, limit=None, days=None):
+    """Historial para análisis — filtro opcional por días calendario (7/30/90; 365=todo)."""
     with get_db() as conn:
         sql = """SELECT * FROM lottery_results
-               WHERE lottery_id = ? AND draw_name = ?
-               ORDER BY draw_date DESC, id DESC"""
+               WHERE lottery_id = ? AND draw_name = ?"""
         params: list = [lottery_id, draw_name]
-        fetch_limit = int(limit) if limit is not None else 500
-        sql += " LIMIT ?"
-        params.append(max(fetch_limit, 50) if limit is not None else 500)
+        if days is not None and int(days) > 0 and int(days) < 365:
+            cutoff = (datetime.now() - timedelta(days=int(days))).strftime("%Y-%m-%d")
+            sql += " AND draw_date >= ?"
+            params.append(cutoff)
+        sql += " ORDER BY draw_date DESC, id DESC"
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(max(int(limit), 50))
         rows = conn.execute(sql, params).fetchall()
         results = [row_to_dict(r) for r in rows]
         results.sort(
@@ -955,6 +960,19 @@ def get_results_for_analysis(lottery_id, draw_name, limit=None):
         if limit is not None:
             results = results[: int(limit)]
         return results
+
+
+def count_results_for_analysis(lottery_id, draw_name, days=None) -> int:
+    """Cuenta sorteos en BD para lotería+tanda (opcional filtro días)."""
+    with get_db() as conn:
+        sql = "SELECT COUNT(*) AS c FROM lottery_results WHERE lottery_id = ? AND draw_name = ?"
+        params: list = [lottery_id, draw_name]
+        if days is not None and int(days) > 0 and int(days) < 365:
+            cutoff = (datetime.now() - timedelta(days=int(days))).strftime("%Y-%m-%d")
+            sql += " AND draw_date >= ?"
+            params.append(cutoff)
+        row = conn.execute(sql, params).fetchone()
+        return int(row["c"]) if row else 0
 
 
 def enrich_result_row(row, lottery=None):

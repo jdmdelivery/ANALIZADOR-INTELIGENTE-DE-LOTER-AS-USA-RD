@@ -100,6 +100,16 @@ def _attach_analyzer_metadata(
     result["cantidad_resultados_analizados"] = diag.get("draws_analyzed", 0)
     result["fuente"] = DATA_SOURCE_LABEL
     result["cache_usada"] = "NO"
+    result["total_resultados_disponibles"] = ctx.get("total_resultados_disponibles", 0)
+    result["total_resultados_usados"] = ctx.get("total_resultados_usados") or diag.get("draws_analyzed", 0)
+    result["rango_usado"] = ctx.get("rango_usado", "todo")
+    result["hash_datos_usados"] = ctx.get("hash_datos_usados", "")
+    result["ultimo_resultado_usado"] = diag.get("last_result_used", "")
+    if ctx.get("hash_datos_usados"):
+        diag["hash_datos_usados"] = ctx["hash_datos_usados"]
+        diag["rango_usado"] = ctx.get("rango_usado")
+        diag["total_resultados_disponibles"] = ctx.get("total_resultados_disponibles")
+        diag["total_resultados_usados"] = ctx.get("total_resultados_usados")
 
     log_analyzer(
         loteria=lottery.get("name", ""),
@@ -121,6 +131,7 @@ def generate_recommendation(
     draw_name: str,
     *,
     force_refresh: bool = True,
+    days: int | None = None,
 ) -> dict:
     """Recalcula siempre desde la base de datos (force_refresh ignorado: siempre fresco)."""
     del force_refresh  # API compat — nunca se usa caché
@@ -131,7 +142,7 @@ def generate_recommendation(
     if err or not resolved:
         return {"ok": False, "message": err or "Sorteo no válido."}
 
-    result, lottery, config, ctx = _run_adapter(lottery_id, resolved)
+    result, lottery, config, ctx = _run_adapter(lottery_id, resolved, days=days)
     if not lottery:
         return result if isinstance(result, dict) else {"ok": False, "message": "Lotería no encontrada."}
     if not result.get("ok"):
@@ -218,13 +229,13 @@ def build_analysis_stats(lottery_id: int, draw_name: str, max_results=None) -> d
     }
 
 
-def _run_adapter(lottery_id: int, draw_name: str, max_results=None):
+def _run_adapter(lottery_id: int, draw_name: str, max_results=None, days=None):
     lottery = get_lottery(lottery_id)
     if not lottery:
         return {"ok": False, "message": "Lotería no encontrada."}, None, None, None
 
     _ensure_country_match(lottery)
-    ctx = load_draw_history(lottery_id, draw_name, limit=max_results)
+    ctx = load_draw_history(lottery_id, draw_name, limit=max_results, days=days)
     if not ctx.get("ok"):
         return ctx, lottery, None, ctx
 

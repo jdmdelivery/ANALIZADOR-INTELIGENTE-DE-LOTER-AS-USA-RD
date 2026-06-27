@@ -1141,7 +1141,12 @@ def api_prediction():
 
         def build():
             force = request.args.get("force") == "1" or request.args.get("recalc") == "1"
-            result = generar_jugada_inteligente(lottery_id, draw_name, force_refresh=force)
+            days = request.args.get("days", type=int)
+            if days is None:
+                days = request.args.get("rango", type=int)
+            result = generar_jugada_inteligente(
+                lottery_id, draw_name, force_refresh=force, days=days
+            )
             result = _enrich_prediction_payload(result, lottery_id, draw_name, lottery)
             if fecha_mode == "latest" and result.get("ok"):
                 diag = result.get("analyzer_diagnostic") or {}
