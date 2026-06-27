@@ -137,33 +137,20 @@ def fetch_sites_env_range(
     api_kind: str = "conectate",
     lottery_name: str | None = None,
 ) -> dict:
-    """Recorre fechas; si sites/env falla en todas, usa sessions hub una vez."""
+    """Intenta sites/env (hoy); si falla, usa sessions hub (una sola llamada)."""
     days = max(1, min(int(days or 30), 365))
-    all_rows: list[dict] = []
-    errors: list[str] = []
     today = datetime.now().date()
-    ok_dates = 0
+    fecha = today.strftime("%Y-%m-%d")
 
-    for offset in range(days):
-        fecha = (today - timedelta(days=offset)).strftime("%Y-%m-%d")
-        res = fetch_sites_env_for_date(fecha, api_kind=api_kind, lottery_name=lottery_name)
-        if res.get("ok") and res.get("rows"):
-            all_rows.extend(res["rows"])
-            ok_dates += 1
-        elif res.get("error"):
-            errors.append(f"{fecha}: {res['error']}")
-
-    if all_rows:
+    res = fetch_sites_env_for_date(fecha, api_kind=api_kind, lottery_name=lottery_name)
+    if res.get("ok") and res.get("rows"):
         return {
-            "ok": True,
-            "rows": all_rows,
-            "rows_found": len(all_rows),
-            "ok_dates": ok_dates,
-            "errors": errors[:5],
+            **res,
+            "rows_found": len(res["rows"]),
             "parser": "sites-env-v1",
         }
 
-    # Fallback: sessions API (más estable)
+    # Fallback: sessions API (más estable, una sola petición)
     api_base = CONECTATE_API if api_kind == "conectate" else LD_API
     payload_url = CONECTATE_PAYLOAD if api_kind == "conectate" else LD_PAYLOAD
     label = "conectate_api" if api_kind == "conectate" else "ld_api"
@@ -194,7 +181,7 @@ def fetch_sites_env_range(
         "rows_found": len(norm),
         "parser": "sessions-fallback",
         "fallback": True,
-        "errors": errors[:5],
+        "errors": [res.get("error")] if res.get("error") else [],
     }
 
 

@@ -262,20 +262,11 @@ def actualizar_resultados_rd(
 
 
 def actualizar_rd_todas(days: int = 100) -> dict:
-    """Actualiza todas las loterías RD habilitadas."""
+    """Actualiza todas las loterías RD — una pasada por lotería (sin duplicar 9 fuentes × N)."""
     days = max(7, min(int(days or 100), 365))
-    # Primero pasada global multi-fuente
-    global_res = actualizar_resultados_rd(days=days)
-    per_lot: list[dict] = []
-    for cfg in iter_enabled_conectate_configs():
-        name = cfg["db_names"][0]
-        r = actualizar_resultados_rd(days=days, lottery_name=name)
-        per_lot.append({"loteria": name, "imported": r.get("imported"), "updated": r.get("updated")})
-    return {
-        **global_res,
-        "por_loteria": per_lot,
-        "loterias": len(per_lot),
-    }
+    from services.rd_results_service import actualizar_rd_todas as _fast_todas
+
+    return _fast_todas(days=days)
 
 
 def test_resultados_fecha(fecha: str, lottery_name: str | None = None) -> dict:

@@ -110,12 +110,29 @@ DRAW_BUTTONS = {
 }
 
 USA_ANALYSIS_TIMEOUT_SEC = 15
+RD_UPDATE_TIMEOUT_SEC = int(os.environ.get("RD_UPDATE_TIMEOUT_SEC", "25"))
 
 
 def _usa_analysis_log(msg: str) -> None:
     line = f"[USA ANALISIS] {msg}"
     logger.info(line)
     print(line)
+
+
+def _run_rd_update_timed(fn, label: str = "actualizar_rd"):
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutTimeout
+
+    logger.info("[RD UPDATE] inicio %s", label)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        fut = pool.submit(fn)
+        try:
+            return fut.result(timeout=RD_UPDATE_TIMEOUT_SEC), None
+        except FutTimeout:
+            logger.error("[RD UPDATE] timeout (%ss) en %s", RD_UPDATE_TIMEOUT_SEC, label)
+            return None, "timeout"
+        except Exception as exc:
+            logger.exception("[RD UPDATE] error en %s", label)
+            return None, str(exc)
 
 
 def _run_usa_analysis_timed(fn, label: str = "analisis"):
@@ -788,7 +805,36 @@ def _actualizar_resultados_api(data=None):
     )
 
     try:
-        result = _api_actualizar_resultados_payload(data)
+        pais = (
+            data.get("pais")
+            or data.get("country")
+            or request.form.get("pais")
+            or request.form.get("country")
+            or ""
+        ).strip()
+        from services.actualizar_resultados import es_pais_do
+
+        if es_pais_do(pais):
+            result, err = _run_rd_update_timed(
+                lambda: _api_actualizar_resultados_payload(data),
+                "api_actualizar_rd",
+            )
+            if err == "timeout":
+                payload = {
+                    "ok": True,
+                    "warning": True,
+                    "live_failed": True,
+                    "timeout": True,
+                    "pais": "DO",
+                    "mensaje": "La actualización tardó demasiado; se mantienen resultados guardados.",
+                    "message": "La actualización tardó demasiado; se mantienen resultados guardados.",
+                    "error_detail": f"Timeout {RD_UPDATE_TIMEOUT_SEC}s",
+                }
+                return payload, 200
+            if err:
+                return _api_json_error(err, fuente="api", status=500)
+        else:
+            result = _api_actualizar_resultados_payload(data)
         payload, status = _format_actualizar_api_response(result)
         logger.info(
             "[API] Actualización finalizada | ok=%s | imported=%s | updated=%s | warning=%s | status=%s",
@@ -921,7 +967,7 @@ def api_actualizar_rd_historial_completo():
 @admin_required
 def admin_actualizar_rd():
     days = request.form.get("days", type=int) or 30
-    from services.rd_resultados_service import actualizar_rd_todas
+    from services.rd_results_service import actualizar_rd_todas
     result = actualizar_rd_todas(days=days)
     if result.get("ok"):
         flash(result.get("message", "Resultados RD actualizados."), "success")

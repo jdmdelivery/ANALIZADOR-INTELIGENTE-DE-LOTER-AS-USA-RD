@@ -20,12 +20,10 @@ def _run_rd_job() -> None:
     global _last_run
     t0 = time.monotonic()
     try:
-        from services.rd_resultados_service import actualizar_resultados_rd
-        from services.rd_recomendacion_service import recalcular_todas_recomendaciones_rd
+        from services.rd_results_service import actualizar_rd_loteria
 
         logger.info("[RD_CRON] Iniciando actualización RD (%s min)", INTERVAL_MIN)
-        actualizar_resultados_rd(days=30)
-        recalcular_todas_recomendaciones_rd(rango_dias=90)
+        actualizar_rd_loteria("Lotería Nacional", days=7)
         logger.info("[RD_CRON] Completado en %.1fs", time.monotonic() - t0)
     except Exception:
         logger.exception("[RD_CRON] Error en job RD")

@@ -97,10 +97,10 @@ def actualizar_resultados_rd(
     days = int(days or 30)
     logger.info("%s Actualizando resultados RD — lotería=%s", LOG_RD, loteria or "TODAS")
 
-    from services.rd_resultados_service import actualizar_rd_todas, actualizar_resultados_rd as _rd_sync
+    from services.rd_results_service import actualizar_rd_loteria, actualizar_rd_todas
 
     if refresh_all or not loteria:
-        logger.info("%s Historial completo RD (%s días) — multi-fuente inteligente", LOG_RD, days)
+        logger.info("%s Historial completo RD (%s días) — multi-fuente", LOG_RD, days)
         return actualizar_rd_todas(days=days)
 
     lot = _find_rd_lottery(loteria)
@@ -111,7 +111,7 @@ def actualizar_resultados_rd(
             "message": f"Lotería RD no encontrada: {loteria}",
         }
 
-    result = _rd_sync(days=days, lottery_name=lot["name"])
+    result = actualizar_rd_loteria(lot["name"], days=days)
     if result.get("ok"):
         return _finalize_rd_scrape(lot, result, days)
 
