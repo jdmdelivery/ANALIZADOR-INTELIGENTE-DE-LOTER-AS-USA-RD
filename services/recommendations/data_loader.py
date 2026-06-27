@@ -53,4 +53,5 @@ def load_draw_history(
         "dates": dates,
         "total_results": len(per_draw_main),
         "latest_result_date": dates[0] if dates else None,
+        "latest_result_time": rows[0].get("draw_time") if rows else None,
     }

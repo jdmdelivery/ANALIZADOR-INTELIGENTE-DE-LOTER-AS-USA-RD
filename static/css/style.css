@@ -673,6 +673,31 @@ body.premium-body {
     border: 1px solid rgba(255, 214, 102, 0.32);
     border-radius: 6px;
 }
+.prediction-diag {
+    margin: 0.65rem 0 0.85rem;
+    padding: 0.55rem 0.7rem;
+    border-radius: 8px;
+    background: rgba(8, 20, 48, 0.55);
+    border: 1px solid rgba(100, 180, 255, 0.22);
+    font-size: 0.74rem;
+    color: var(--text-muted);
+}
+.prediction-diag-title {
+    font-weight: 700;
+    color: #9ec5ff;
+    margin-bottom: 0.35rem;
+    font-size: 0.76rem;
+}
+.prediction-diag-grid {
+    display: grid;
+    gap: 0.25rem;
+}
+.prediction-diag .diag-label {
+    color: #7fa8d8;
+}
+.btn-recalc {
+    border-color: rgba(100, 200, 255, 0.45);
+}
 .analysis-schedule-sub {
     font-size: 0.82rem;
     color: var(--text-muted);

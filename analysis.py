@@ -1202,10 +1202,10 @@ def _bonus_label_for_type(lottery_type):
     }.get(lottery_type)
 
 
-def generar_jugada_inteligente(lottery_id, draw_name):
+def generar_jugada_inteligente(lottery_id, draw_name, force_refresh=True):
     from services.recommendations.engine import generate_recommendation
 
-    return generate_recommendation(lottery_id, draw_name)
+    return generate_recommendation(lottery_id, draw_name, force_refresh=force_refresh)
 
 
 def _resolve_draw_name_for_lottery(lottery: dict, draw_label: str) -> str:

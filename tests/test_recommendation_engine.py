@@ -87,7 +87,7 @@ class RecommendationEngineTests(unittest.TestCase):
             self.skipTest("Sin Pick 3/4 en BD")
         from services.recommendations.engine import _run_adapter
 
-        result, _, _ = _run_adapter(lot["id"], "Evening")
+        result, _, _, _ = _run_adapter(lot["id"], "Evening")
         if not result.get("ok"):
             self.skipTest(result.get("message"))
         top = result.get("top_combinations") or {}

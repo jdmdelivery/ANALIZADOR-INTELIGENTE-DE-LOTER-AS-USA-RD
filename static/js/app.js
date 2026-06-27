@@ -41,6 +41,7 @@
     let lastResultsError = '';
     let refreshResultsInProgress = false;
     let lastPredictionData = null;
+    let lastPredictionDrawBtn = null;
 
     const TANDA_CSS = {
         'mañana': 'rc-manana',
@@ -82,9 +83,18 @@
     const btnCopyPlay = $('btnCopyPlay');
     const btnShowExplain = $('btnShowExplain');
     const btnAnalyzePaste = $('btnAnalyzePaste');
+    const btnRecalcRecommendation = $('btnRecalcRecommendation');
     if (btnCopyPlay) btnCopyPlay.addEventListener('click', copyCurrentPlay);
     if (btnShowExplain) btnShowExplain.addEventListener('click', toggleExplainPanel);
     if (btnAnalyzePaste) btnAnalyzePaste.addEventListener('click', analyzePastedNumbers);
+    if (btnRecalcRecommendation) {
+        btnRecalcRecommendation.addEventListener('click', () => {
+            if (!currentLotteryId || !currentDrawName) return;
+            const btn = lastPredictionDrawBtn
+                || currentDrawButtons.find((b) => b.draw_name === currentDrawName);
+            if (btn) getPrediction(btn, { force: true });
+        });
+    }
     if (btnRefreshLeidsaHistory) {
         btnRefreshLeidsaHistory.addEventListener('click', refreshLeidsaHistoryNow);
     }
@@ -413,6 +423,7 @@
             }
 
             await loadRecentResults(true);
+            recalcPredictionIfNeeded(true);
 
             if (data.fuente === 'lotteryusa' && data.warning) {
                 setRefreshStatus(
@@ -513,6 +524,13 @@
             btnRefreshResultsNow.textContent = prevLabel;
             if (loadingOverlay) loadingOverlay.style.display = 'none';
         }
+    }
+
+    function recalcPredictionIfNeeded(force = true) {
+        if (!currentLotteryId || !currentDrawName) return;
+        const btn = lastPredictionDrawBtn
+            || currentDrawButtons.find((b) => b.draw_name === currentDrawName);
+        if (btn) getPrediction(btn, { force });
     }
 
     function stopAutoRefresh() {
@@ -755,12 +773,40 @@
         $('analysisPlaceholder').style.display = 'block';
         $('analysisContent').style.display = 'none';
         $('analysisError').style.display = 'none';
+        lastPredictionData = null;
+        lastPredictionDrawBtn = null;
+        const diag = $('predictionDiag');
+        if (diag) diag.style.display = 'none';
         if (activeDrawBtn) {
             activeDrawBtn.classList.remove('active');
             activeDrawBtn = null;
         }
         if (selectDraw) selectDraw.value = '';
         currentDrawName = '';
+    }
+
+    function renderPredictionDiagnostic(data) {
+        const panel = $('predictionDiag');
+        if (!panel || !data?.ok) return;
+        const diag = data.analyzer_diagnostic || {};
+        const lastUsed = diag.last_result_used
+            || data.latest_result_date
+            || '—';
+        const draws = diag.draws_analyzed ?? data.total_results ?? data.history_count ?? '—';
+        const recalcAt = diag.recalculated_at || data.created_at || '—';
+        let source = diag.source || diag.data_source || data.data_source || 'BASE DE DATOS';
+        if (data.from_cache) {
+            source = 'CACHÉ (no debe usarse)';
+        }
+        const lastEl = $('diagLastResult');
+        const countEl = $('diagDrawCount');
+        const atEl = $('diagRecalcAt');
+        const srcEl = $('diagDataSource');
+        if (lastEl) lastEl.textContent = lastUsed;
+        if (countEl) countEl.textContent = String(draws);
+        if (atEl) atEl.textContent = recalcAt;
+        if (srcEl) srcEl.textContent = source;
+        panel.style.display = 'block';
     }
 
     function showLoading(show) {
@@ -985,7 +1031,9 @@
         }
     }
 
-    async function getPrediction(btn) {
+    async function getPrediction(btn, opts = {}) {
+        const force = Boolean(opts.force);
+        lastPredictionDrawBtn = btn;
         showLoading(true);
         $('analysisPlaceholder').style.display = 'none';
         $('analysisContent').style.display = 'none';
@@ -999,9 +1047,11 @@
         }
 
         try {
-            const fetchOpts = controller ? { signal: controller.signal } : {};
+            const fetchOpts = controller ? { signal: controller.signal, cache: 'no-store' } : { cache: 'no-store' };
+            const forceQs = force ? '&force=1&recalc=1' : '';
+            const bustQs = `&_t=${Date.now()}`;
             const res = await fetch(
-                `/api/prediction?lottery_id=${currentLotteryId}&draw_name=${encodeURIComponent(btn.draw_name)}`,
+                `/api/prediction?lottery_id=${currentLotteryId}&draw_name=${encodeURIComponent(btn.draw_name)}${forceQs}${bustQs}`,
                 fetchOpts
             );
             let data;
@@ -1024,6 +1074,10 @@
             }
 
             lastPredictionData = data;
+            if (data.from_cache) {
+                console.warn('[ANALIZADOR] Respuesta marcada como caché — ignorada');
+            }
+            renderPredictionDiagnostic(data);
             const explainPanel = $('recExplainPanel');
             if (explainPanel) explainPanel.style.display = 'none';
 

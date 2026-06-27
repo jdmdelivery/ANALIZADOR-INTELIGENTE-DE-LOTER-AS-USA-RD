@@ -875,7 +875,9 @@ def get_results_for_analysis(lottery_id, draw_name, limit=None):
     with get_db() as conn:
         sql = """SELECT * FROM lottery_results
                WHERE lottery_id = ? AND draw_name = ?
-               ORDER BY draw_date DESC, id DESC"""
+               ORDER BY draw_date DESC,
+                        COALESCE(NULLIF(TRIM(draw_time), ''), '00:00') DESC,
+                        id DESC"""
         params: list = [lottery_id, draw_name]
         if limit is not None:
             sql += " LIMIT ?"

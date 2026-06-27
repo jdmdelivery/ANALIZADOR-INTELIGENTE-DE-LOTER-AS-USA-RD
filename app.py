@@ -1110,7 +1110,8 @@ def api_prediction():
             return jsonify({"ok": False, "message": "Lotería no encontrada.", "error": "not_found"}), 404
 
         def build():
-            result = generar_jugada_inteligente(lottery_id, draw_name)
+            force = request.args.get("force") == "1" or request.args.get("recalc") == "1"
+            result = generar_jugada_inteligente(lottery_id, draw_name, force_refresh=force)
             return _enrich_prediction_payload(result, lottery_id, draw_name, lottery)
 
         if lottery.get("country") == "USA":
@@ -1146,7 +1147,8 @@ def api_recommendations_v2():
     from services.recommendations.engine import generate_recommendation
 
     lottery = get_lottery(lottery_id)
-    result = generate_recommendation(lottery_id, draw_name)
+    force = request.args.get("force") == "1" or request.args.get("recalc") == "1"
+    result = generate_recommendation(lottery_id, draw_name, force_refresh=force)
     if lottery:
         result = _enrich_prediction_payload(result, lottery_id, draw_name, lottery)
     status = 200 if result.get("ok") else 400

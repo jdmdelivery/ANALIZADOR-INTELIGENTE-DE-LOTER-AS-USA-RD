@@ -139,8 +139,19 @@
                 <div id="predictionBalls" class="lottery-balls-hd lottery-balls-recommend"></div>
 
                 <div class="rec-actions-row">
+                    <button type="button" id="btnRecalcRecommendation" class="btn-rec-action btn-recalc" title="Recalcular desde base de datos">🔄 Recalcular ahora</button>
                     <button type="button" id="btnCopyPlay" class="btn-rec-action" title="Copiar jugada">📋 Copiar jugada</button>
                     <button type="button" id="btnShowExplain" class="btn-rec-action" title="Ver explicación">💡 Ver explicación</button>
+                </div>
+
+                <div id="predictionDiag" class="prediction-diag" style="display:none;" aria-live="polite">
+                    <div class="prediction-diag-title">Diagnóstico del análisis</div>
+                    <div class="prediction-diag-grid">
+                        <div><span class="diag-label">Último resultado usado:</span> <span id="diagLastResult">—</span></div>
+                        <div><span class="diag-label">Sorteos analizados:</span> <span id="diagDrawCount">—</span></div>
+                        <div><span class="diag-label">Hora del recálculo:</span> <span id="diagRecalcAt">—</span></div>
+                        <div><span class="diag-label">Fuente:</span> <span id="diagDataSource">BASE DE DATOS</span></div>
+                    </div>
                 </div>
 
                 <div id="recExplainPanel" class="rec-explain-panel" style="display:none" aria-live="polite"></div>

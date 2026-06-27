@@ -1,47 +1,23 @@
-"""Orquestador del motor de recomendaciones."""
+"""Orquestador del motor de recomendaciones — siempre recalcula desde BD."""
 from __future__ import annotations
 
-import json
-import time
 from collections import Counter
 from datetime import datetime
 from itertools import combinations
 
-from models import create_prediction, get_lottery
+from models import get_lottery
 
+from services.recommendations.analyzer_log import log_analyzer
 from services.recommendations.data_loader import load_draw_history
 from services.recommendations.registry import resolve_adapter, resolve_config
 from services.recommendations.weight_tuner import get_weights_for_family
 
-_REC_CACHE: dict[tuple, tuple[float, dict]] = {}
-_CACHE_TTL_SEC = 900  # 15 minutos
-
-
-def _cache_key(lottery_id: int, draw_name: str, max_results) -> tuple:
-    return (lottery_id, draw_name, max_results)
-
-
-def _get_cached(lottery_id: int, draw_name: str, max_results) -> dict | None:
-    key = _cache_key(lottery_id, draw_name, max_results)
-    entry = _REC_CACHE.get(key)
-    if not entry:
-        return None
-    ts, payload = entry
-    if time.time() - ts > _CACHE_TTL_SEC:
-        _REC_CACHE.pop(key, None)
-        return None
-    return payload
-
-
-def _set_cache(lottery_id: int, draw_name: str, max_results, payload: dict) -> None:
-    if not payload.get("ok"):
-        return
-    key = _cache_key(lottery_id, draw_name, max_results)
-    _REC_CACHE[key] = (time.time(), payload)
+DATA_SOURCE_LABEL = "BASE DE DATOS"
 
 
 def clear_recommendation_cache() -> None:
-    _REC_CACHE.clear()
+    """Compatibilidad — ya no hay caché en memoria."""
+    return None
 
 
 def _ensure_country_match(lottery: dict) -> None:
@@ -50,49 +26,108 @@ def _ensure_country_match(lottery: dict) -> None:
         raise ValueError(f"País no soportado para recomendaciones: {country}")
 
 
-def generate_recommendation(lottery_id: int, draw_name: str) -> dict:
-    lottery = get_lottery(lottery_id)
-    cached = _get_cached(lottery_id, draw_name, None)
-    if cached:
-        out = dict(cached)
-        out["from_cache"] = True
-        config = resolve_config(lottery) if lottery else {}
-        _persist_recommendation(lottery_id, draw_name, out, lottery or {}, config)
-        return _legacy_compat(out, lottery or {}, config)
+def _format_last_draws(per_draw: list[list[str]], limit: int = 10) -> str:
+    chunks = []
+    for draw in per_draw[:limit]:
+        chunks.append("-".join(draw))
+    return " | ".join(chunks)
 
-    result, lottery, config = _run_adapter(lottery_id, draw_name)
+
+def _position_top_scores(result: dict) -> tuple[str, str, str]:
+    scores = ["", "", ""]
+    picks = result.get("position_picks") or []
+    for i in range(min(3, len(picks))):
+        top = picks[i].get("top_5") or []
+        if top:
+            scores[i] = str(top[0].get("number", ""))
+    if not any(scores):
+        for i, part in enumerate((result.get("digit_scores") or [])[:3]):
+            scores[i] = str(part.get("number", ""))
+    return scores[0], scores[1], scores[2]
+
+
+def _build_diagnostic(ctx: dict, result: dict, generated_at: str) -> dict:
+    rows = ctx.get("rows") or []
+    latest_row = rows[0] if rows else {}
+    per_draw = ctx.get("per_draw_main") or result.get("_per_draw") or []
+    last_dt = ctx.get("latest_result_date") or latest_row.get("draw_date") or ""
+    last_time = latest_row.get("draw_time") or ""
+    if last_dt and last_time:
+        last_label = f"{last_dt} {last_time}"
+    else:
+        last_label = last_dt or "—"
+    return {
+        "last_result_used": last_label,
+        "last_result_date": last_dt,
+        "last_result_time": last_time,
+        "draws_analyzed": len(per_draw),
+        "recalculated_at": generated_at,
+        "source": DATA_SOURCE_LABEL,
+        "data_source": DATA_SOURCE_LABEL,
+        "from_cache": False,
+        "last_10_draws": per_draw[:10],
+    }
+
+
+def _attach_analyzer_metadata(
+    result: dict,
+    *,
+    lottery: dict,
+    draw_name: str,
+    ctx: dict,
+    generated_at: str,
+) -> dict:
+    per_draw = ctx.get("per_draw_main") or result.get("_per_draw") or []
+    rec_nums = result.get("generated_numbers") or result.get("recommended_numbers") or []
+    s1, s2, s3 = _position_top_scores(result)
+    diag = _build_diagnostic(ctx, result, generated_at)
+    result["created_at"] = generated_at
+    result["engine"] = "recommendations_v2"
+    result["from_cache"] = False
+    result["data_source"] = DATA_SOURCE_LABEL
+    result["analyzer_diagnostic"] = diag
+    result["latest_result_date"] = diag.get("last_result_date")
+    result["history_count"] = diag.get("draws_analyzed", 0)
+
+    log_analyzer(
+        loteria=lottery.get("name", ""),
+        sorteo=draw_name,
+        ultimo_resultado_fecha=diag.get("last_result_used", ""),
+        cantidad_resultados_usados=diag.get("draws_analyzed", 0),
+        ultimos_10_resultados=_format_last_draws(per_draw, 10),
+        scores_posicion_1=s1,
+        scores_posicion_2=s2,
+        scores_posicion_3=s3,
+        recomendacion_final=",".join(str(n) for n in rec_nums),
+        generado_en=generated_at,
+    )
+    return result
+
+
+def generate_recommendation(
+    lottery_id: int,
+    draw_name: str,
+    *,
+    force_refresh: bool = True,
+) -> dict:
+    """Recalcula siempre desde la base de datos (force_refresh ignorado: siempre fresco)."""
+    del force_refresh  # API compat — nunca se usa caché
+
+    result, lottery, config, ctx = _run_adapter(lottery_id, draw_name)
+    if not lottery:
+        return result if isinstance(result, dict) else {"ok": False, "message": "Lotería no encontrada."}
     if not result.get("ok"):
         return result
 
-    result["created_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    result["engine"] = "recommendations_v2"
-    result["from_cache"] = False
-    _set_cache(lottery_id, draw_name, None, result)
-    _persist_recommendation(lottery_id, draw_name, result, lottery, config)
-
-    return _legacy_compat(result, lottery, config)
-
-
-def _persist_recommendation(lottery_id: int, draw_name: str, result: dict, lottery: dict, config: dict) -> None:
-    try:
-        create_prediction(
-            lottery_id,
-            draw_name,
-            result.get("generated_numbers") or [],
-            result.get("analysis_text") or "",
-            result.get("confidence_level") or "bajo",
-            float(result.get("score") or 0),
-        )
-        from services.precision.storage import save_precision_recommendation
-
-        save_precision_recommendation(
-            lottery_id,
-            draw_name,
-            result.get("game_family") or "",
-            result,
-        )
-    except Exception:
-        pass
+    generated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    result = _attach_analyzer_metadata(
+        result,
+        lottery=lottery,
+        draw_name=draw_name,
+        ctx=ctx or {},
+        generated_at=generated_at,
+    )
+    return _legacy_compat(result, lottery, config or {})
 
 
 def _compute_top_pairs(per_draw: list[list[str]], limit: int = 10) -> list[dict]:
@@ -110,7 +145,7 @@ def _compute_top_pairs(per_draw: list[list[str]], limit: int = 10) -> list[dict]
 
 def build_analysis_stats(lottery_id: int, draw_name: str, max_results=None) -> dict | None:
     """Compatibilidad con analizar_loteria_por_tanda."""
-    result, lottery, config = _run_adapter(lottery_id, draw_name, max_results=max_results)
+    result, lottery, config, ctx = _run_adapter(lottery_id, draw_name, max_results=max_results)
     if not result:
         return None
     if not result.get("ok"):
@@ -120,7 +155,7 @@ def build_analysis_stats(lottery_id: int, draw_name: str, max_results=None) -> d
             "total_results": result.get("history_count", 0),
         }
 
-    per_draw = result.get("_per_draw") or []
+    per_draw = result.get("_per_draw") or (ctx or {}).get("per_draw_main") or []
     if not per_draw:
         ctx = load_draw_history(lottery_id, draw_name, limit=max_results)
         per_draw = ctx.get("per_draw_main") or []
@@ -168,12 +203,12 @@ def build_analysis_stats(lottery_id: int, draw_name: str, max_results=None) -> d
 def _run_adapter(lottery_id: int, draw_name: str, max_results=None):
     lottery = get_lottery(lottery_id)
     if not lottery:
-        return {"ok": False, "message": "Lotería no encontrada."}, None, None
+        return {"ok": False, "message": "Lotería no encontrada."}, None, None, None
 
     _ensure_country_match(lottery)
     ctx = load_draw_history(lottery_id, draw_name, limit=max_results)
     if not ctx.get("ok"):
-        return ctx, lottery, None
+        return ctx, lottery, None, ctx
 
     config = resolve_config(lottery)
     adapter, family = resolve_adapter(lottery)
@@ -182,7 +217,7 @@ def _run_adapter(lottery_id: int, draw_name: str, max_results=None):
     if result.get("ok"):
         result["game_family"] = family
         result["_per_draw"] = ctx.get("per_draw_main")
-    return result, lottery, config
+    return result, lottery, config, ctx
 
 
 def analyze_lottery(lottery_id: int, draw_name: str) -> dict:
