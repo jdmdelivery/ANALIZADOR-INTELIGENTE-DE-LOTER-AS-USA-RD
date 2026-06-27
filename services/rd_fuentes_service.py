@@ -84,7 +84,12 @@ def run_source(
     label = meta[1] if meta else key
     t0 = time.monotonic()
     try:
-        result = fn(days=days, lottery_name=lottery_name, fecha=fecha, **kwargs)
+        import inspect
+
+        call_kw = {"days": days, "lottery_name": lottery_name, "fecha": fecha, **kwargs}
+        sig = inspect.signature(fn)
+        filtered = {k: v for k, v in call_kw.items() if k in sig.parameters}
+        result = fn(**filtered)
         result["elapsed"] = round(time.monotonic() - t0, 2)
         result.setdefault("fuente", key)
         result.setdefault("fuente_label", label)
