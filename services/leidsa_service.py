@@ -954,6 +954,105 @@ def _latest_saved_leidsa_date() -> str | None:
         return None
 
 
+def update_leidsa_game_fast(slug: str, *, days: int = 30) -> dict[str, Any]:
+    """Actualización rápida de un juego LEIDSA (drawResults, ~1 petición HTTP)."""
+    try:
+        from models import log_leidsa_sync
+
+        from services.leidsa_history import sync_leidsa_game_history
+
+        hist = sync_leidsa_game_history(
+            slug,
+            days=int(days or 30),
+            limit=100,
+            use_cache=False,
+            save=True,
+        )
+        inserted = int(hist.get("inserted") or 0)
+        updated = int(hist.get("updated") or 0)
+        found = int(hist.get("results_found") or 0)
+        latest = hist.get("latest_date") or _latest_saved_leidsa_date()
+
+        if found > 0 or inserted + updated > 0:
+            game_label = hist.get("game") or slug
+            msg = (
+                f"LEIDSA {game_label}: {found} sorteos en historial, "
+                f"+{inserted} nuevos, {updated} actualizados."
+            )
+            if latest:
+                msg += f" Última fecha: {latest}."
+            log_leidsa_sync(ok=True, message=msg, imported=inserted, updated=updated)
+            return _safe_response(
+                ok=True,
+                status="updated" if inserted + updated else "no_new",
+                message=msg,
+                inserted=inserted,
+                updated=updated,
+                results_found=found,
+                latest_date=latest,
+                parser=hist.get("parser") or "drawResults",
+                fuente="leidsa_official",
+                fuente_usada="LEIDSA.com",
+                fuente_label="LEIDSA.com",
+                game=game_label,
+                slug=slug,
+            )
+
+        from services.leidsa_fallback.orchestrator import scrape_leidsa_official_only
+
+        scrape = scrape_leidsa_official_only()
+        if not scrape.get("ok"):
+            err = scrape.get("error") or hist.get("error") or "Sin datos LEIDSA"
+            return _safe_response(
+                ok=False,
+                live_failed=True,
+                message=f"No se pudo actualizar {slug}: {err}",
+                error=err,
+                detalle=err,
+                slug=slug,
+                parser=scrape.get("parser"),
+                status_code=scrape.get("status_code"),
+            )
+
+        save = save_leidsa_rows(scrape.get("results") or [])
+        latest = scrape.get("latest_date") or _latest_saved_leidsa_date()
+        msg = (
+            f"LEIDSA {slug} (home): +{save.get('inserted', 0)} nuevos, "
+            f"{save.get('updated', 0)} actualizados."
+        )
+        if latest:
+            msg += f" Última fecha: {latest}."
+        log_leidsa_sync(
+            ok=True,
+            message=msg,
+            imported=save.get("inserted", 0),
+            updated=save.get("updated", 0),
+        )
+        return _safe_response(
+            ok=True,
+            status="updated",
+            message=msg,
+            inserted=save.get("inserted", 0),
+            updated=save.get("updated", 0),
+            results_found=len(scrape.get("results") or []),
+            latest_date=latest,
+            parser=scrape.get("parser"),
+            fuente="leidsa_official",
+            fuente_usada="LEIDSA.com",
+            slug=slug,
+        )
+    except Exception as exc:
+        logger.exception("update_leidsa_game_fast %s", slug)
+        return _safe_response(
+            ok=False,
+            status="error",
+            message=str(exc),
+            error=str(exc),
+            detalle=str(exc),
+            slug=slug,
+        )
+
+
 def update_leidsa_now(
     *,
     history_game_slug: str | None = None,

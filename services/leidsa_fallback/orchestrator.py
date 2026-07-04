@@ -78,6 +78,65 @@ SOURCE_CHAIN: list[SourceSpec] = [
 ]
 
 
+def scrape_leidsa_official_only() -> dict[str, Any]:
+    """Solo leidsa.com — una petición, para API con límite de tiempo en Render."""
+    key, label, url, parse_fn = SOURCE_CHAIN[0]
+    t0 = time.monotonic()
+    try:
+        fetch = _fetch_source(key, url)
+    except Exception as exc:
+        return {
+            "ok": False,
+            "error": str(exc),
+            "message": str(exc),
+            "parser": key,
+            "fuente": key,
+            "attempts": [{"fuente": key, "url": url, "error": str(exc)}],
+        }
+
+    elapsed = round(time.monotonic() - t0, 2)
+    if not fetch.get("ok"):
+        err = fetch.get("error") or f"HTTP {fetch.get('status_code')}"
+        return {
+            "ok": False,
+            "error": err,
+            "message": err,
+            "parser": key,
+            "status_code": fetch.get("status_code"),
+            "attempts": [{"fuente": key, "url": url, "error": err}],
+        }
+
+    html = fetch.get("html") or ""
+    rows = pick_latest_per_game(parse_fn(html, url))
+    if not rows:
+        err = "parser sin resultados válidos"
+        return {
+            "ok": False,
+            "error": err,
+            "message": err,
+            "parser": key,
+            "status_code": fetch.get("status_code"),
+        }
+
+    latest = latest_date_in_rows(rows)
+    return {
+        "ok": True,
+        "source": label,
+        "results": rows,
+        "rows": rows,
+        "parser": key,
+        "fuente": key,
+        "fuente_usada": key,
+        "fuente_label": label,
+        "status_code": fetch.get("status_code"),
+        "method": fetch.get("method"),
+        "latest_date": latest,
+        "url": url,
+        "elapsed": elapsed,
+        "fallback_used": False,
+    }
+
+
 def scrape_leidsa_with_fallbacks() -> dict[str, Any]:
     """Intenta fuentes en orden; para en la primera con resultados válidos."""
     errors: list[str] = []

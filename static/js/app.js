@@ -1237,7 +1237,8 @@
             if (explainPanel) explainPanel.style.display = 'none';
 
             const drawLabel = (data.draw_display || btn.label || btn.draw_name);
-            const recCount = data.recommend_count || (data.generated_numbers || []).length;
+            const nums = data.generated_numbers || data.numbers || [];
+            const recCount = nums.length || data.recommend_count || 0;
             const lotName = data.lottery || currentLotteryName;
             const titleEl = $('predictionTitle');
             if (titleEl) {
@@ -1252,6 +1253,11 @@
             if (warnEl) {
                 const dup = (data.duplicates_found || []).length;
                 let warnText = data.warning || data.low_confidence_warning || '';
+                if (data.recommend_count && recCount < data.recommend_count) {
+                    warnText = (
+                        `${warnText} Solo ${recCount} de ${data.recommend_count} números en la lista.`
+                    ).trim();
+                }
                 if (data.rd_inteligente && data.confidence_level === 'bajo') {
                     warnText = warnText || 'Confianza baja: usar como referencia, no jugada fuerte.';
                 }

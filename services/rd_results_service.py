@@ -392,13 +392,48 @@ def actualizar_leidsa_multi(*, days: int = 30, lottery_name: str | None = None) 
     sources_tried: list[dict] = []
     errors: list[str] = []
     history_slug = _leidsa_history_slug(lottery_name)
+    days = int(days or 30)
 
-    logger.info("%s === LEIDSA multi-fuente ===", LOG)
+    logger.info("%s === LEIDSA multi-fuente === slug=%s", LOG, history_slug or "todos")
+
+    if history_slug:
+        from services.leidsa_service import update_leidsa_game_fast
+
+        fast = update_leidsa_game_fast(history_slug, days=days)
+        fast["fuente"] = "leidsa"
+        fast["fuente_label"] = "LEIDSA.com"
+        _record(
+            sources_tried,
+            "leidsa_drawResults",
+            fast,
+            lottery_name=lottery_name or history_slug,
+        )
+        lot = None
+        if lottery_name:
+            lot = find_lottery_in_list(get_all_lotteries(), lottery_name, country="RD")
+        if not lot and history_slug:
+            from models import get_lottery_by_slug
+
+            lot = get_lottery_by_slug(history_slug)
+        if lot:
+            fast["lottery_id"] = lot["id"]
+            fast["latest_date"] = get_max_draw_date(lot["id"]) or fast.get("latest_date")
+            fast["ultima_fecha"] = fast.get("latest_date")
+        if fast.get("ok"):
+            fast["pais"] = "DO"
+            fast["fuente_usada"] = "LEIDSA.com"
+            fast["sources_tried"] = sources_tried
+            fast["imported"] = int(fast.get("inserted") or 0)
+            fast["mensaje"] = fast.get("message") or f"LEIDSA {history_slug} actualizado."
+            return fast
+        if fast.get("message"):
+            errors.append(fast["message"])
+
     try:
         from services.leidsa_service import update_leidsa_now
 
         leidsa = update_leidsa_now(
-            history_game_slug=history_slug,
+            history_game_slug=history_slug if not history_slug else None,
             history_days=days,
         )
         leidsa["fuente"] = "leidsa"

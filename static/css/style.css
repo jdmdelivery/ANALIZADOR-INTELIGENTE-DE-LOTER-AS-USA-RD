@@ -304,6 +304,11 @@ body.premium-body {
     overflow: hidden;
 }
 
+/* Super Kino y lotto multi-número: mostrar las 20 bolas sin recortar */
+.glass-panel.analysis-panel {
+    overflow: visible;
+}
+
 .glass-panel::before {
     content: '';
     position: absolute;
@@ -641,9 +646,13 @@ body.premium-body {
     padding: 1.5rem 0;
 }
 .lottery-balls-recommend {
+    display: flex;
+    flex-wrap: wrap;
     gap: 0.5rem 0.65rem;
     max-width: 100%;
     justify-content: flex-start;
+    min-height: 0;
+    overflow: visible;
 }
 .lottery-balls-recommend .ball-hd.large {
     flex: 0 0 auto;
