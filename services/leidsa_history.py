@@ -401,6 +401,54 @@ def fetch_leidsa_game_history(
     )
 
 
+def sync_leidsa_game_history(
+    slug: str,
+    *,
+    days: int = 30,
+    limit: int = 100,
+    use_cache: bool = False,
+    save: bool = True,
+) -> dict[str, Any]:
+    """Historial de un solo juego LEIDSA (rápido para API / Super Kino)."""
+    game = next((g for g in LEIDSA_HISTORY_GAMES if g.get("slug") == slug), None)
+    if not game:
+        return _safe_response(
+            ok=False,
+            error=f"Juego LEIDSA desconocido: {slug}",
+            slug=slug,
+            inserted=0,
+            updated=0,
+        )
+    res = fetch_leidsa_game_history(
+        game,
+        limit=limit,
+        days=days,
+        use_cache=use_cache,
+    )
+    rows = res.get("rows") or []
+    inserted = updated = skipped = 0
+    if save and rows:
+        batch = save_leidsa_rows(rows)
+        inserted = int(batch.get("inserted") or 0)
+        updated = int(batch.get("updated") or 0)
+        skipped = int(batch.get("skipped") or 0)
+    latest = max((r.get("fecha_rd") for r in rows if r.get("fecha_rd")), default=None)
+    ok = bool(rows) or bool(inserted + updated)
+    return _safe_response(
+        ok=ok,
+        slug=slug,
+        game=game["name"],
+        results_found=len(rows),
+        inserted=inserted,
+        updated=updated,
+        skipped=skipped,
+        latest_date=latest,
+        parser=res.get("parser"),
+        url=res.get("url"),
+        error=res.get("error"),
+    )
+
+
 def fetch_all_leidsa_history(
     days: int = 90,
     limit_per_game: int = 100,

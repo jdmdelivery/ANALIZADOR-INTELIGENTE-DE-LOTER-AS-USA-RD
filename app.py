@@ -2,7 +2,7 @@ import os
 import sys
 import secrets
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 
 from flask import Flask, render_template, request, jsonify, redirect, url_for, flash, abort, session
 from flask_login import login_user, logout_user, login_required, current_user
@@ -618,6 +618,42 @@ def _normalize_actualizar_body(data: dict | None) -> dict:
     return out
 
 
+def _json_safe(value):
+    """Convierte payloads a tipos serializables por jsonify."""
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(v) for v in value]
+    if isinstance(value, set):
+        return sorted(_json_safe(v) for v in value)
+    return str(value)
+
+
+def _api_json_response(payload, status: int = 200):
+    """jsonify con sanitización; nunca devuelve HTML por fallo de serialización."""
+    import traceback
+
+    safe = _json_safe(payload if isinstance(payload, dict) else {"data": payload})
+    safe.setdefault("success", bool(safe.get("ok")))
+    try:
+        return jsonify(safe), status
+    except Exception as exc:
+        logger.exception("[API] jsonify falló: %s", exc)
+        return jsonify({
+            "ok": False,
+            "success": False,
+            "error": str(exc),
+            "detalle": traceback.format_exc(),
+            "fuente": "api",
+            "status": 500,
+            "message": str(exc),
+        }), 500
+
+
 def _api_actualizar_resultados_payload(data=None):
     """Despacho estricto US vs DO — sin mezclar Illinois con RD."""
     from services.actualizar_resultados import (
@@ -667,6 +703,7 @@ def _api_json_error(
 ) -> tuple[dict, int]:
     payload = {
         "ok": False,
+        "success": False,
         "error": error,
         "detalle": detalle or error,
         "fuente": fuente,
@@ -839,36 +876,51 @@ def _actualizar_resultados_api(data=None):
 @app.route("/api/resultados/actualizar-ahora", methods=["POST"])
 @login_required
 def api_actualizar_resultados_ahora():
-    data = request.get_json(silent=True) or {}
-    pais = (
-        data.get("pais")
-        or data.get("country")
-        or request.form.get("pais")
-        or request.form.get("country")
-        or ""
-    ).strip()
-    from services.actualizar_resultados import es_pais_do, es_pais_us
+    try:
+        data = request.get_json(silent=True) or {}
+        pais = (
+            data.get("pais")
+            or data.get("country")
+            or request.form.get("pais")
+            or request.form.get("country")
+            or ""
+        ).strip()
+        from services.actualizar_resultados import es_pais_do, es_pais_us
 
-    if not current_user.is_admin():
-        if es_pais_us(pais):
-            return jsonify({
-                "ok": False,
-                "error": "Solo administradores pueden actualizar resultados USA.",
-                "detalle": "Acceso denegado — rol insuficiente",
-                "fuente": "api",
-                "status": 403,
-                "message": "Solo administradores pueden actualizar resultados USA.",
-            }), 403
-        if not es_pais_do(pais):
-            return jsonify({
-                "ok": False,
-                "error": "País no soportado.",
-                "fuente": "api",
-                "status": 400,
-                "message": "País no soportado.",
-            }), 400
-    payload, status = _actualizar_resultados_api(data)
-    return jsonify(payload), status
+        if not current_user.is_admin():
+            if es_pais_us(pais):
+                return _api_json_response({
+                    "ok": False,
+                    "error": "Solo administradores pueden actualizar resultados USA.",
+                    "detalle": "Acceso denegado — rol insuficiente",
+                    "fuente": "api",
+                    "status": 403,
+                    "message": "Solo administradores pueden actualizar resultados USA.",
+                }, 403)
+            if not es_pais_do(pais):
+                return _api_json_response({
+                    "ok": False,
+                    "error": "País no soportado.",
+                    "fuente": "api",
+                    "status": 400,
+                    "message": "País no soportado.",
+                }, 400)
+        payload, status = _actualizar_resultados_api(data)
+        return _api_json_response(payload, status)
+    except Exception as exc:
+        import traceback
+
+        logger.exception("[API] api_actualizar_resultados_ahora")
+        tb = traceback.format_exc()
+        return _api_json_response({
+            "ok": False,
+            "error": str(exc),
+            "detalle": tb,
+            "traceback": tb,
+            "fuente": "api",
+            "status": 500,
+            "message": str(exc),
+        }, 500)
 
 
 @app.route("/api/resultados/debug", methods=["GET"])
@@ -923,10 +975,46 @@ def admin_diagnostico_scrapers():
     )
 
 
-def _run_leidsa_update():
+@app.route("/api/resultados/leidsa/actualizar", methods=["POST"])
+@admin_required
+def api_actualizar_leidsa():
+    try:
+        from services.leidsa_config import LEIDSA_SLUGS
+
+        data = request.get_json(silent=True) or {}
+        slug = (data.get("game_slug") or data.get("slug") or "").strip().lower()
+        if slug and slug not in LEIDSA_SLUGS:
+            slug = None
+        result = _run_leidsa_update(history_game_slug=slug or None)
+        if result.get("ok"):
+            code = 200
+        else:
+            code = 400
+            result.setdefault("error", result.get("message") or "Error LEIDSA")
+            result.setdefault("detalle", result.get("error"))
+            result.setdefault("fuente", "leidsa.com")
+            result.setdefault("status", 400)
+        return _api_json_response(result, code)
+    except Exception as exc:
+        import traceback
+
+        logger.exception("[API] api_actualizar_leidsa")
+        tb = traceback.format_exc()
+        return _api_json_response({
+            "ok": False,
+            "error": str(exc),
+            "detalle": tb,
+            "traceback": tb,
+            "fuente": "leidsa.com",
+            "status": 500,
+            "message": str(exc),
+        }, 500)
+
+
+def _run_leidsa_update(*, history_game_slug: str | None = None):
     from services.leidsa_service import update_leidsa_now
 
-    return update_leidsa_now()
+    return update_leidsa_now(history_game_slug=history_game_slug)
 
 
 @app.route("/admin/resultados/leidsa/actualizar", methods=["POST"])
@@ -1015,21 +1103,6 @@ def admin_rd_reparar_historico():
     return redirect(url_for("admin") + "#tabApi")
 
 
-@app.route("/api/resultados/leidsa/actualizar", methods=["POST"])
-@admin_required
-def api_actualizar_leidsa():
-    result = _run_leidsa_update()
-    if result.get("ok"):
-        code = 200
-    else:
-        code = 400
-        result.setdefault("error", result.get("message") or "Error LEIDSA")
-        result.setdefault("detalle", result.get("error"))
-        result.setdefault("fuente", "leidsa.com")
-        result.setdefault("status", 400)
-    return jsonify(result), code
-
-
 @app.route("/api/resultados/leidsa")
 @login_required
 def api_resultados_leidsa():
@@ -1059,25 +1132,40 @@ def admin_actualizar_leidsa_historial():
 @app.route("/api/resultados/leidsa/actualizar-historial", methods=["POST"])
 @admin_required
 def api_actualizar_leidsa_historial():
-    from services.leidsa_history import update_leidsa_history
+    try:
+        from services.leidsa_history import update_leidsa_history
 
-    data = request.get_json(silent=True) or {}
-    days = data.get("days") or request.form.get("days", type=int) or 90
-    result = update_leidsa_history(days=int(days))
-    saved = int(result.get("inserted") or 0) + int(result.get("updated") or 0)
-    if result.get("ok"):
-        code = 200
-    elif saved > 0:
-        result["ok"] = True
-        result["partial"] = True
-        code = 200
-    else:
-        code = 400
-        result.setdefault("error", result.get("message") or "Error al actualizar historial LEIDSA")
-        result.setdefault("detalle", result.get("error"))
-        result.setdefault("fuente", "leidsa.com")
-        result.setdefault("status", 400)
-    return jsonify(result), code
+        data = request.get_json(silent=True) or {}
+        days = data.get("days") or request.form.get("days", type=int) or 90
+        result = update_leidsa_history(days=int(days))
+        saved = int(result.get("inserted") or 0) + int(result.get("updated") or 0)
+        if result.get("ok"):
+            code = 200
+        elif saved > 0:
+            result["ok"] = True
+            result["partial"] = True
+            code = 200
+        else:
+            code = 400
+            result.setdefault("error", result.get("message") or "Error al actualizar historial LEIDSA")
+            result.setdefault("detalle", result.get("error"))
+            result.setdefault("fuente", "leidsa.com")
+            result.setdefault("status", 400)
+        return _api_json_response(result, code)
+    except Exception as exc:
+        import traceback
+
+        logger.exception("[API] api_actualizar_leidsa_historial")
+        tb = traceback.format_exc()
+        return _api_json_response({
+            "ok": False,
+            "error": str(exc),
+            "detalle": tb,
+            "traceback": tb,
+            "fuente": "leidsa.com",
+            "status": 500,
+            "message": str(exc),
+        }, 500)
 
 
 @app.errorhandler(404)

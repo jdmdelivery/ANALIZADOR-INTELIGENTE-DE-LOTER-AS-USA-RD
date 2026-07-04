@@ -25,7 +25,10 @@ def _run_rd_job() -> None:
         logger.info("[RD_CRON] Iniciando actualización RD (%s min)", INTERVAL_MIN)
         actualizar_rd_loteria("Lotería Nacional", days=7)
         try:
+            from services.leidsa_history import fetch_all_leidsa_history
             from services.leidsa_service import update_leidsa_now
+
+            fetch_all_leidsa_history(days=14, limit_per_game=60, use_cache=False, save=True)
             update_leidsa_now()
         except Exception:
             logger.exception("[RD_CRON] LEIDSA update failed")

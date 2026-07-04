@@ -954,8 +954,16 @@ def _latest_saved_leidsa_date() -> str | None:
         return None
 
 
-def update_leidsa_now() -> dict[str, Any]:
-    """Actualización manual — nunca lanza excepción."""
+def update_leidsa_now(
+    *,
+    history_game_slug: str | None = None,
+    history_days: int = 30,
+) -> dict[str, Any]:
+    """Actualización manual — nunca lanza excepción.
+
+    Si ``history_game_slug`` está definido (p. ej. leidsa_super_kino_tv), descarga
+    solo el historial de ese juego tras el scrape en vivo (evita timeout en Render).
+    """
     try:
         from models import log_leidsa_sync
 
@@ -1053,22 +1061,28 @@ def update_leidsa_now() -> dict[str, Any]:
         n_found = len(scrape.get("results") or [])
         _log(f"Parser usado: {scrape.get('parser')} — resultados encontrados: {n_found}")
 
-        hist_saved = 0
-        try:
-            from services.leidsa_history import fetch_all_leidsa_history
+        if history_game_slug:
+            try:
+                from services.leidsa_history import sync_leidsa_game_history
 
-            hist = fetch_all_leidsa_history(
-                days=30,
-                limit_per_game=100,
-                use_cache=False,
-                save=True,
-            )
-            hist_saved = int(hist.get("inserted") or 0) + int(hist.get("updated") or 0)
-            if hist_saved:
-                msg += f" Historial: +{hist.get('inserted', 0)} nuevos, {hist.get('updated', 0)} actualizados."
-                latest_date = _latest_saved_leidsa_date() or latest_date
-        except Exception as exc:
-            logger.warning("LEIDSA historial post-actualización: %s", exc)
+                hist = sync_leidsa_game_history(
+                    history_game_slug,
+                    days=int(history_days or 30),
+                    limit=100,
+                    use_cache=False,
+                    save=True,
+                )
+                hist_saved = int(hist.get("inserted") or 0) + int(hist.get("updated") or 0)
+                if hist_saved:
+                    msg += (
+                        f" Historial {history_game_slug}: +{hist.get('inserted', 0)} nuevos, "
+                        f"{hist.get('updated', 0)} actualizados."
+                    )
+                    latest_date = hist.get("latest_date") or _latest_saved_leidsa_date() or latest_date
+                elif hist.get("latest_date"):
+                    latest_date = hist.get("latest_date") or latest_date
+            except Exception as exc:
+                logger.exception("LEIDSA historial juego %s: %s", history_game_slug, exc)
 
         return _safe_response(
             ok=True,

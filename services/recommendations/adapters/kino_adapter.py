@@ -8,6 +8,30 @@ from services.recommendations.constants import MIN_HISTORY
 from services.recommendations.scoring import score_number
 
 
+def _sanitize_kino_numbers(numbers: list, config: dict) -> list[str]:
+    """Únicos, en rango, ordenados por score (entrada ya ordenada)."""
+    count = int(config.get("count", 20))
+    pad = int(config.get("pad", 2))
+    lo, hi = int(config["min"]), int(config["max"])
+    seen: set[str] = set()
+    clean: list[str] = []
+    for n in numbers or []:
+        try:
+            v = int(str(n).lstrip("0") or "0")
+        except (TypeError, ValueError):
+            continue
+        if v < lo or v > hi:
+            continue
+        key = str(v).zfill(pad)
+        if key in seen:
+            continue
+        seen.add(key)
+        clean.append(key)
+        if len(clean) >= count:
+            break
+    return clean
+
+
 class KinoAdapter(LottoAdapter):
     adapter_key = "kino"
     game_type_label = "Kino / Super Kino"
@@ -34,11 +58,28 @@ class KinoAdapter(LottoAdapter):
         pool_scored = [x for x in scored_nums if x["number"] not in last]
         if len(pool_scored) < count:
             pool_scored = scored_nums
-        suggested = [x["number"] for x in pool_scored[:count]]
+        suggested = _sanitize_kino_numbers(
+            [x["number"] for x in pool_scored[: count + 10]],
+            config,
+        )
+        if len(suggested) < count:
+            extra = _sanitize_kino_numbers(
+                [x["number"] for x in scored_nums],
+                {**config, "count": count},
+            )
+            for n in extra:
+                if n not in suggested:
+                    suggested.append(n)
+                if len(suggested) >= count:
+                    break
         base["generated_numbers"] = suggested
         base["numbers"] = suggested
         base["recommended_numbers"] = suggested
-        base["recommend_count"] = count
+        base["all_unique"] = len(set(suggested)) == len(suggested)
+        base["in_range"] = all(
+            lo <= int(n) <= hi for n in suggested
+        ) if suggested else False
+        base["recommend_count"] = len(suggested)
         base["suggested_list"] = scored_nums[:count]
         base["top_numbers"] = {
             "top_10": scored_nums[:10],

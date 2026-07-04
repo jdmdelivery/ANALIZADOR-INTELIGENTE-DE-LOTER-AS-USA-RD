@@ -394,7 +394,7 @@
         if (data?.error_detail) parts.push(data.error_detail);
         if (data?.error) parts.push(data.error);
         if (data?.traceback) {
-            console.error('[RD UPDATE] traceback', data.traceback);
+            console.error('[API traceback]', data.traceback);
             parts.push(`Exception: ${(data.traceback.split('\n').slice(-2).join(' ')).trim()}`);
         }
         if (data?.errors?.length) {

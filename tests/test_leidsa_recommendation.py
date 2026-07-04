@@ -94,6 +94,10 @@ class LeidsaRecommendationTests(unittest.TestCase):
         self.assertEqual(len(nums), 20)
         self.assertEqual(r.get("recommend_count"), 20)
         self.assertEqual(_find_duplicate_numbers(nums), [])
+        for n in nums:
+            v = int(str(n).lstrip("0") or "0")
+            self.assertGreaterEqual(v, 1)
+            self.assertLessEqual(v, 80)
 
     def test_generar_excludes_last_draw_numbers(self):
         from analysis import analizar_loteria_por_tanda

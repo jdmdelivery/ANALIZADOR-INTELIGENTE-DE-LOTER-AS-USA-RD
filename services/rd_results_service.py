@@ -371,16 +371,36 @@ def actualizar_rd_loteria(lottery_name: str, days: int = 30) -> dict:
     }
 
 
+def _leidsa_history_slug(lottery_name: str | None) -> str | None:
+    if not lottery_name:
+        return None
+    from services.leidsa_config import LEIDSA_SLUGS, is_leidsa_game_lottery
+
+    lot = find_lottery_in_list(get_all_lotteries(), lottery_name, country="RD")
+    if not lot or not is_leidsa_game_lottery(lot):
+        return None
+    ltype = (lot.get("type") or "").strip().lower()
+    if ltype in LEIDSA_SLUGS:
+        return ltype
+    from services.leidsa_service import normalize_lottery_slug
+
+    return normalize_lottery_slug(name=lot.get("name") or lottery_name)
+
+
 def actualizar_leidsa_multi(*, days: int = 30, lottery_name: str | None = None) -> dict:
     """LEIDSA oficial + fallbacks agregadores + caché."""
     sources_tried: list[dict] = []
     errors: list[str] = []
+    history_slug = _leidsa_history_slug(lottery_name)
 
     logger.info("%s === LEIDSA multi-fuente ===", LOG)
     try:
         from services.leidsa_service import update_leidsa_now
 
-        leidsa = update_leidsa_now()
+        leidsa = update_leidsa_now(
+            history_game_slug=history_slug,
+            history_days=days,
+        )
         leidsa["fuente"] = "leidsa"
         leidsa["fuente_label"] = "LEIDSA.com"
         _record(sources_tried, "leidsa", leidsa)
