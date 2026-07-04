@@ -269,6 +269,22 @@ def generar_recomendacion_rd(
     if err or not draw_name:
         return {"ok": False, "message": err or "Sorteo no válido"}
 
+    from services.recommendations.registry import game_family
+
+    family = game_family(lottery)
+    if family != "quiniela_rd":
+        result = generate_recommendation(
+            lottery_id, draw_name, force_refresh=True, days=rango
+        )
+        if result.get("ok"):
+            result["algorithm_version"] = result.get("algorithm_version") or "engine_v2_kino"
+            result["analysis_basis"] = (
+                result.get("analysis_basis")
+                or f"Lista de {result.get('recommend_count', len(result.get('generated_numbers') or []))} "
+                "números según frecuencia histórica (no es quiniela de 3)."
+            )
+        return result
+
     from lottery_schedules import get_schedule_slot, slot_draw_name
 
     slot = get_schedule_slot(lottery["name"], draw_name)

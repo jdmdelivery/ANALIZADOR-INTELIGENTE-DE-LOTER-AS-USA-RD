@@ -49,6 +49,25 @@ class LeidsaRecommendationTests(unittest.TestCase):
         self.assertEqual(cfg["max"], 80)
         self.assertFalse(cfg["allow_repeat"])
 
+    def test_is_leidsa_not_quiniela_rd(self):
+        from services.leidsa_config import is_leidsa_game_lottery
+        from services.recommendations.registry import game_family
+
+        lot = get_lottery_by_slug("leidsa_super_kino_tv")
+        self.assertTrue(is_leidsa_game_lottery(lot))
+        self.assertEqual(game_family(lot), "kino")
+
+    def test_rd_inteligente_skips_leidsa_kino(self):
+        from services.rd_recomendacion_service import generar_recomendacion_rd
+
+        r = generar_recomendacion_rd(
+            "LEIDSA Super Kino TV", "noche", rango_dias=90, force=True
+        )
+        self.assertTrue(r.get("ok"), r.get("message"))
+        nums = r.get("generated_numbers") or []
+        self.assertEqual(len(nums), 20, f"esperados 20, obtuvo {len(nums)}: {nums}")
+        self.assertNotEqual(r.get("rd_inteligente"), True)
+
     def test_pick_no_duplicates(self):
         cfg = resolve_leidsa_recommendation_config("LEIDSA Super Kino TV", "leidsa_super_kino_tv")
         stats = {

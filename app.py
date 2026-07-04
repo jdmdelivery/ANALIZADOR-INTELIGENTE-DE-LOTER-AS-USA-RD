@@ -1236,13 +1236,16 @@ def api_prediction():
             days = request.args.get("days", type=int)
             if days is None:
                 days = request.args.get("rango", type=int)
-            if lottery.get("country") == "RD":
+            from services.leidsa_config import is_leidsa_game_lottery
+
+            if lottery.get("country") == "RD" and not is_leidsa_game_lottery(lottery):
                 from services.rd_recomendacion_service import generar_recomendacion_rd
                 result = generar_recomendacion_rd(
                     lottery["name"],
                     draw_name,
                     rango_dias=days or 90,
                     force=force,
+                    lottery_id=lottery_id,
                 )
             else:
                 result = generar_jugada_inteligente(

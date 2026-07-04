@@ -1052,6 +1052,24 @@ def update_leidsa_now() -> dict[str, Any]:
         )
         n_found = len(scrape.get("results") or [])
         _log(f"Parser usado: {scrape.get('parser')} — resultados encontrados: {n_found}")
+
+        hist_saved = 0
+        try:
+            from services.leidsa_history import fetch_all_leidsa_history
+
+            hist = fetch_all_leidsa_history(
+                days=30,
+                limit_per_game=100,
+                use_cache=False,
+                save=True,
+            )
+            hist_saved = int(hist.get("inserted") or 0) + int(hist.get("updated") or 0)
+            if hist_saved:
+                msg += f" Historial: +{hist.get('inserted', 0)} nuevos, {hist.get('updated', 0)} actualizados."
+                latest_date = _latest_saved_leidsa_date() or latest_date
+        except Exception as exc:
+            logger.warning("LEIDSA historial post-actualización: %s", exc)
+
         return _safe_response(
             ok=True,
             status="updated" if save.get("inserted", 0) + save.get("updated", 0) else "no_new",

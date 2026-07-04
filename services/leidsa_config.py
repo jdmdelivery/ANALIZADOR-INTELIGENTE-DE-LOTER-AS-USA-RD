@@ -81,8 +81,10 @@ LEIDSA_GAMES_LIST: list[dict] = [
         "site_slug": "leidsa-kinotv",
         "path": "KinoTV",
         "draw_id_prefix": "3_",
-        "lottery_type": "lotto",
+        "lottery_type": "leidsa_super_kino_tv",
         "draws": ["8:00 PM"],
+        "days_of_week": [0, 1, 2, 3, 4, 5, 6],
+        "schedule_note": "Diario, lunes a domingo",
     },
     {
         "name": "Super Palé",
@@ -201,8 +203,10 @@ def build_leidsa_games_dict() -> dict[str, dict]:
             "site_slug": g.get("site_slug", slug.replace("_", "-")),
             "path": g.get("path", g["name"]),
             "draw_id_prefix": g.get("draw_id_prefix", ""),
-            "lottery_type": g.get("lottery_type", "quiniela"),
+            "lottery_type": g.get("lottery_type", slug),
             "draws": draws,
+            "days_of_week": g.get("days_of_week"),
+            "schedule_note": g.get("schedule_note"),
         }
     return out
 
@@ -211,6 +215,19 @@ def build_leidsa_games_dict() -> dict[str, dict]:
 LEIDSA_GAMES: dict[str, dict] = build_leidsa_games_dict()
 
 LEIDSA_SLUGS: tuple[str, ...] = tuple(LEIDSA_GAMES.keys())
+
+
+def is_leidsa_game_lottery(lottery: dict | None) -> bool:
+    """True si la fila lotteries es un juego LEIDSA (no quiniela Conectate)."""
+    if not lottery:
+        return False
+    if (lottery.get("state") or "").strip().upper() == "LEIDSA":
+        return True
+    ltype = (lottery.get("type") or "").strip().lower()
+    if ltype in LEIDSA_SLUGS or ltype.startswith("leidsa_"):
+        return True
+    name = (lottery.get("name") or "").strip().lower()
+    return name.startswith("leidsa ")
 
 
 # Recomendación por juego (nombre exacto en tabla lotteries.name)
@@ -342,11 +359,13 @@ def get_game_schedule_for_ui(lottery_name: str) -> list[dict] | None:
     """Horarios para lottery_schedules / botones UI."""
     for slug, cfg in LEIDSA_GAMES.items():
         if cfg["lottery_name"] == lottery_name:
+            note = cfg.get("schedule_note") or ""
             return [
                 {
-                    "label": d["time"],
+                    "label": d["time"] + (f" · {note}" if note and len(cfg["draws"]) == 1 else ""),
                     "time": d["time"],
                     "draw_name": d["draw_name"],
+                    "days_of_week": cfg.get("days_of_week"),
                 }
                 for d in cfg["draws"]
             ]

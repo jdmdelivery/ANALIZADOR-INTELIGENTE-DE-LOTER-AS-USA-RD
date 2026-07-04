@@ -24,6 +24,11 @@ def _run_rd_job() -> None:
 
         logger.info("[RD_CRON] Iniciando actualización RD (%s min)", INTERVAL_MIN)
         actualizar_rd_loteria("Lotería Nacional", days=7)
+        try:
+            from services.leidsa_service import update_leidsa_now
+            update_leidsa_now()
+        except Exception:
+            logger.exception("[RD_CRON] LEIDSA update failed")
         logger.info("[RD_CRON] Completado en %.1fs", time.monotonic() - t0)
     except Exception:
         logger.exception("[RD_CRON] Error en job RD")
