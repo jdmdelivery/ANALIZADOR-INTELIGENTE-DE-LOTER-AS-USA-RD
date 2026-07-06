@@ -1285,7 +1285,7 @@ def _build_debug_panel(
     # No mostrar errores obsoletos de parseo JSON del frontend si hay datos en BD
     if using_cache and saved_count > 0:
         display_error = ""
-    elif live_ok and fl.get("ok"):
+    elif status == 200 or (fl.get("ok") and results_found > 0):
         display_error = ""
     elif raw_error and "not valid JSON" in raw_error and "Unexpected token" in raw_error:
         display_error = ""

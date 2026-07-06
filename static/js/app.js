@@ -1372,7 +1372,8 @@
                 <div class="leidsa-debug-line">${escapeHtml(statusLine)}</div>
                 <div class="leidsa-debug-line">🔍 Parser: ${escapeHtml(String(debug.parser || '—'))}</div>
                 <div class="leidsa-debug-line">⚙️ Método: ${escapeHtml(String(debug.method || '—'))}</div>
-                <div class="leidsa-debug-line">📊 Resultados encontrados: ${Number(debug.results_found || 0)}</div>
+                <div class="leidsa-debug-line">📊 En vivo (último scrape): ${Number(debug.results_found || 0)}</div>
+                ${debug.saved_count ? `<div class="leidsa-debug-line">📚 En BD (historial): ${Number(debug.saved_count)}</div>` : ''}
                 <div class="leidsa-debug-line">🕒 Último intento: ${escapeHtml(String(debug.last_attempt || '—'))}</div>
                 ${errBlock}
                 ${cacheNote}
@@ -1401,7 +1402,7 @@
         if (!leidsaBoard) return;
         leidsaBoard.innerHTML = '<p class="empty-msg">Cargando LEIDSA...</p>';
         try {
-            const res = await fetch('/api/resultados/leidsa');
+            const res = await fetch('/api/resultados/leidsa?days=90');
             if (res.status === 401) {
                 leidsaBoard.innerHTML = '<p class="empty-msg">Inicia sesión para ver LEIDSA.</p>';
                 return;
@@ -1502,13 +1503,13 @@
         btnRefreshLeidsaHistory.disabled = true;
         const prevLabel = btnRefreshLeidsaHistory.textContent;
         btnRefreshLeidsaHistory.textContent = '⏳ Descargando historial...';
-        setLeidsaStatus('📚 Recorriendo historial LEIDSA (6 juegos, puede tardar 1-2 min)...', 'loading');
+        setLeidsaStatus('📚 Descargando historial LEIDSA (90 días, 6 juegos)...', 'loading');
         try {
             const res = await fetch('/api/resultados/leidsa/actualizar-historial', {
                 method: 'POST',
                 credentials: 'same-origin',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ days: historyDays }),
+                body: JSON.stringify({ days: 90 }),
             });
             const text = await res.text();
             console.log(text);

@@ -552,7 +552,7 @@ def get_leidsa_results_for_date(fecha_rd):
         return out
 
 
-def get_leidsa_history_from_db(limit_days=30):
+def get_leidsa_history_from_db(limit_days=90):
     """Historial LEIDSA guardado en lottery_results."""
     from services.leidsa_config import LEIDSA_SLUGS
 

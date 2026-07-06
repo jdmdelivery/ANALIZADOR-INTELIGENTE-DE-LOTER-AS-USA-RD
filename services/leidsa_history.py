@@ -611,7 +611,12 @@ def update_leidsa_history(days: int = 90) -> dict[str, Any]:
     try:
         from models import log_leidsa_sync
 
-        out = fetch_all_leidsa_history(days=days, save=True)
+        out = fetch_all_leidsa_history(
+            days=int(days or 90),
+            limit_per_game=max(100, min(int(days or 90) + 15, 120)),
+            save=True,
+            use_cache=False,
+        )
         saved = int(out.get("inserted") or 0) + int(out.get("updated") or 0)
         found = int(out.get("results_found") or 0)
 

@@ -1023,7 +1023,19 @@ def api_actualizar_leidsa():
                         found,
                         saved,
                     )
-                    print(f"{_LU} Cantidad encontrada: {found}")
+                    print(f"{_LU} Cantidad encontrada (vivo): {found}")
+                    from services.leidsa_history import update_leidsa_history
+
+                    hist = update_leidsa_history(days=90)
+                    hist_found = int(hist.get("results_found") or 0)
+                    hist_saved = int(hist.get("inserted") or 0) + int(hist.get("updated") or 0)
+                    logger.info(
+                        "%s Background historial 90d: encontrados=%s guardados=%s",
+                        _LU,
+                        hist_found,
+                        hist_saved,
+                    )
+                    print(f"{_LU} Cantidad encontrada historial 90d: {hist_found}")
             except Exception as exc:
                 import traceback
 
