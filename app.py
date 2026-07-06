@@ -1101,16 +1101,79 @@ def admin_actualizar_leidsa():
     return redirect(url_for("admin") + "#tabApi")
 
 
+_rd_historial_completo_lock = threading.Lock()
+
+
 @app.route("/api/resultados/rd/actualizar-historial-completo", methods=["POST"])
 @admin_required
 def api_actualizar_rd_historial_completo():
-    from services.history_fetch import fetch_all_rd_history
+    _RH = "[RD_HISTORIAL_COMPLETO]"
+    try:
+        from flask import current_app
 
-    data = request.get_json(silent=True) or {}
-    days = int(data.get("days") or request.form.get("days") or 90)
-    result = fetch_all_rd_history(days=days)
-    code = 200 if result.get("ok") else 400
-    return jsonify(result), code
+        data = request.get_json(silent=True) or {}
+        days = int(data.get("days") or request.form.get("days") or 90)
+
+        if not _rd_historial_completo_lock.acquire(blocking=False):
+            return jsonify({
+                "success": True,
+                "ok": True,
+                "async": True,
+                "already_running": True,
+                "message": "Historial RD ya se está descargando. Espere 2-3 minutos.",
+                "days": days,
+            }), 200
+
+        app_ref = current_app._get_current_object()
+
+        def _run_rd_hist_bg(days_val: int) -> None:
+            try:
+                with app_ref.app_context():
+                    from services.history_fetch import fetch_all_rd_history
+
+                    logger.info("%s Background: iniciando days=%s", _RH, days_val)
+                    result = fetch_all_rd_history(days=days_val)
+                    logger.info(
+                        "%s Background: ok=%s imported=%s updated=%s",
+                        _RH,
+                        result.get("ok"),
+                        result.get("imported"),
+                        result.get("updated"),
+                    )
+            except Exception as exc:
+                logger.exception("%s Background error: %s", _RH, exc)
+            finally:
+                _rd_historial_completo_lock.release()
+
+        threading.Thread(
+            target=_run_rd_hist_bg,
+            args=(days,),
+            name="rd-historial-completo",
+            daemon=True,
+        ).start()
+
+        return jsonify({
+            "success": True,
+            "ok": True,
+            "async": True,
+            "message": (
+                f"Historial RD ({days} días) descargándose en segundo plano. "
+                "Recargue el panel en 2-3 minutos."
+            ),
+            "days": days,
+        }), 202
+    except Exception as exc:
+        logger.exception("%s Error: %s", _RH, exc)
+        try:
+            _rd_historial_completo_lock.release()
+        except RuntimeError:
+            pass
+        return jsonify({
+            "success": False,
+            "ok": False,
+            "error": str(exc),
+            "message": "Error al iniciar descarga de historial RD.",
+        }), 200
 
 
 @app.route("/admin/resultados/rd/actualizar", methods=["POST"])
@@ -1187,6 +1250,15 @@ def api_resultados_leidsa():
         data = get_leidsa_dashboard(fecha, history_days=days)
         payload = _sanitize_leidsa_historial_json(data)
         payload["success"] = bool(payload.get("ok", True))
+        dbg = payload.get("debug") or {}
+        if (payload.get("historial") or payload.get("board")) and (
+            payload.get("saved_count") or dbg.get("saved_count")
+        ):
+            dbg = dict(dbg)
+            dbg["error"] = ""
+            payload["debug"] = dbg
+        if _is_stale_leidsa_panel_error(payload.get("error")):
+            payload["error"] = ""
         return jsonify(payload), 200
     except Exception as e:
         import traceback
@@ -1217,6 +1289,16 @@ def admin_actualizar_leidsa_historial():
     else:
         flash(result.get("message", "Error al actualizar historial LEIDSA."), "danger")
     return redirect(url_for("admin") + "#tabApi")
+
+
+def _is_stale_leidsa_panel_error(err) -> bool:
+    if not err:
+        return True
+    el = str(err).lower()
+    return any(
+        p in el
+        for p in ("unexpected token", "not valid json", "respuesta no json", "json inválido", "<html")
+    )
 
 
 def _sanitize_leidsa_historial_json(value):

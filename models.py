@@ -512,6 +512,29 @@ def log_leidsa_fetch(
         )
 
 
+def _sanitize_leidsa_fetch_log_row(d: dict | None) -> dict | None:
+    """Oculta errores obsoletos de parseo JSON/HTML cuando el scrape fue exitoso."""
+    if not d:
+        return d
+    err = (d.get("error") or "").strip()
+    if not err:
+        return d
+    el = err.lower()
+    stale = (
+        "unexpected token" in el
+        or "not valid json" in el
+        or "respuesta no json" in el
+        or "json inválido" in el
+        or "<html" in el
+    )
+    status = d.get("status_code")
+    status_ok = status in (200, 201, "200", "201")
+    if d.get("ok") or (d.get("results_found") or 0) > 0 or status_ok or stale:
+        d = dict(d)
+        d["error"] = ""
+    return d
+
+
 def get_last_leidsa_fetch():
     with get_db() as conn:
         row = conn.execute(
@@ -525,7 +548,7 @@ def get_last_leidsa_fetch():
             d["api_urls"] = json.loads(d.get("api_urls") or "[]")
         except json.JSONDecodeError:
             d["api_urls"] = []
-        return d
+        return _sanitize_leidsa_fetch_log_row(d)
 
 
 def get_leidsa_results_for_date(fecha_rd):

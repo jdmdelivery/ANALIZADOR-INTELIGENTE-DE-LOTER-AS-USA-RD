@@ -407,14 +407,32 @@
 
     async function parseJsonResponse(res) {
         const text = await res.text();
+        const trimmed = text.trim();
+        if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) {
+            const snippet = trimmed.replace(/\s+/g, ' ').slice(0, 240);
+            throw new Error(
+                `Respuesta no JSON (HTTP ${res.status}): ${snippet}`
+            );
+        }
         try {
-            return JSON.parse(text);
+            return JSON.parse(trimmed);
         } catch (parseErr) {
-            const snippet = text.replace(/\s+/g, ' ').slice(0, 240);
+            const snippet = trimmed.replace(/\s+/g, ' ').slice(0, 240);
             throw new Error(
                 `JSON inválido (HTTP ${res.status}): ${parseErr.message}. Respuesta: ${snippet}`
             );
         }
+    }
+
+    function isStaleLeidsaJsonError(err) {
+        const el = String(err || '').toLowerCase();
+        return (
+            el.includes('unexpected token')
+            || el.includes('not valid json')
+            || el.includes('respuesta no json')
+            || el.includes('json inválido')
+            || el.includes('<html')
+        );
     }
 
     async function refreshResultsNow() {
@@ -1361,10 +1379,11 @@
         leidsaRefreshStatus.className = 'refresh-status-msg' + (kind ? ` is-${kind}` : '');
     }
 
-    function renderLeidsaDebugPanel(debug, liveOk, usingCache) {
+    function renderLeidsaDebugPanel(debug, liveOk, usingCache, hasHistorial) {
         if (!debug) return '';
         const statusLine = debug.status_label || (debug.status_code ? `STATUS ${debug.status_code}` : 'STATUS ERROR');
-        const errBlock = debug.error
+        const hideErr = hasHistorial || (debug.saved_count > 0) || isStaleLeidsaJsonError(debug.error);
+        const errBlock = (debug.error && !hideErr)
             ? `<div class="leidsa-debug-err">❌ Error: ${escapeHtml(String(debug.error))}</div>`
             : '';
         const cacheNote = usingCache ? '<div class="leidsa-debug-cache">📦 Mostrando últimos resultados guardados (caché)</div>' : '';
@@ -1403,34 +1422,18 @@
         if (!leidsaBoard) return;
         leidsaBoard.innerHTML = '<p class="empty-msg">Cargando LEIDSA...</p>';
         try {
-            const res = await fetch('/api/resultados/leidsa?days=90');
+            const res = await fetch('/api/resultados/leidsa?days=90', { credentials: 'same-origin' });
             if (res.status === 401) {
                 leidsaBoard.innerHTML = '<p class="empty-msg">Inicia sesión para ver LEIDSA.</p>';
                 return;
             }
-            const text = await res.text();
-            console.log(text);
-            let data;
-            const trimmed = text.trim();
-            if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
-                try {
-                    data = JSON.parse(trimmed);
-                } catch (parseErr) {
-                    throw new Error(
-                        `JSON inválido (HTTP ${res.status}): ${parseErr.message}. Respuesta: ${trimmed.slice(0, 240)}`
-                    );
-                }
-            } else {
-                throw new Error(
-                    `Respuesta no JSON (HTTP ${res.status}): ${trimmed.slice(0, 240)}`
-                );
-            }
+            const data = await parseJsonResponse(res);
             const board = data.board || [];
             const historial = data.historial || [];
             const debug = data.debug || {};
             let html = '';
 
-            html += renderLeidsaDebugPanel(debug, data.live_ok, data.using_cache);
+            html += renderLeidsaDebugPanel(debug, data.live_ok, data.using_cache, historial.length > 0 || board.length > 0);
 
             const sinDatos = data.show_unavailable === true
                 || (data.has_saved === false && !board.length && !historial.length);
@@ -1453,7 +1456,7 @@
                         </div>
                     `;
                 }).join('') + '</div>';
-            } else if (!data.warning) {
+            } else if (!historial.length && !data.warning) {
                 html += '<p class="empty-msg">Sin resultados LEIDSA guardados. Use «Actualizar LEIDSA ahora» (admin).</p>';
             }
 
@@ -1512,23 +1515,7 @@
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ days: 90 }),
             });
-            const text = await res.text();
-            console.log(text);
-            let data;
-            const trimmed = text.trim();
-            if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
-                try {
-                    data = JSON.parse(trimmed);
-                } catch (parseErr) {
-                    throw new Error(
-                        `JSON inválido (HTTP ${res.status}): ${parseErr.message}. Respuesta: ${trimmed.slice(0, 240)}`
-                    );
-                }
-            } else {
-                throw new Error(
-                    `Respuesta no JSON (HTTP ${res.status}): ${trimmed.slice(0, 240)}`
-                );
-            }
+            const data = await parseJsonResponse(res);
             if (!data.ok && !data.async) {
                 const detail = formatLeidsaHistoryError(data, res);
                 setLeidsaStatus(`❌ ${detail}`, 'error');
@@ -1576,25 +1563,10 @@
             const res = await fetch('/api/resultados/leidsa/actualizar', {
                 method: 'POST',
                 credentials: 'same-origin',
+                headers: { 'Content-Type': 'application/json' },
             });
-            const text = await res.text();
-            console.log(text);
-            let data;
-            const trimmed = text.trim();
-            if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
-                try {
-                    data = JSON.parse(trimmed);
-                } catch (parseErr) {
-                    throw new Error(
-                        `JSON inválido (HTTP ${res.status}): ${parseErr.message}. Respuesta: ${trimmed.slice(0, 240)}`
-                    );
-                }
-            } else {
-                throw new Error(
-                    `Respuesta no JSON (HTTP ${res.status}): ${trimmed.slice(0, 240)}`
-                );
-            }
-            if (data.async) {
+            const data = await parseJsonResponse(res);
+            if (data.async || res.status === 202) {
                 setLeidsaStatus(
                     `⏳ ${data.message || 'LEIDSA actualizándose. Recargue en ~1 min.'}`,
                     'loading'
@@ -1648,11 +1620,19 @@
         try {
             const res = await fetch('/api/resultados/rd/actualizar-historial-completo', {
                 method: 'POST',
+                credentials: 'same-origin',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ days: 90 }),
             });
-            const data = await res.json();
-            if (!data.ok) {
+            const data = await parseJsonResponse(res);
+            if (data.async || res.status === 202) {
+                setLeidsaStatus(
+                    `⏳ ${data.message || 'Historial RD en descarga. Recargue en 2-3 min.'}`,
+                    'loading'
+                );
+                setTimeout(() => loadLeidsaBoard(), 90000);
+                setTimeout(() => loadLeidsaBoard(), 180000);
+            } else if (!data.ok) {
                 const err = (data.errors && data.errors.length)
                     ? data.errors.slice(0, 3).join(' · ')
                     : (data.message || 'Error al actualizar historial');
@@ -1682,8 +1662,9 @@
         try {
             const res = await fetch('/api/resultados/actualizar-ahora', {
                 method: 'POST',
+                credentials: 'same-origin',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ country: 'RD', refresh_all_rd: true, days: 30 }),
+                body: JSON.stringify({ country: 'RD', refresh_all_rd: true, days: 90 }),
             });
             const data = await parseJsonResponse(res);
             if (!data.ok && !data.leidsa_ok && !(data.imported + data.updated)) {

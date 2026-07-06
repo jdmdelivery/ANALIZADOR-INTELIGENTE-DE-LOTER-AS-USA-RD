@@ -1261,6 +1261,23 @@ def get_leidsa_real_results_board(fecha: str | None = None) -> list[dict]:
     return board
 
 
+def _is_stale_fetch_error(err: str | None) -> bool:
+    if not err or not str(err).strip():
+        return True
+    el = str(err).lower()
+    return any(
+        p in el
+        for p in (
+            "unexpected token",
+            "not valid json",
+            "respuesta no json",
+            "json inválido",
+            "<html",
+            "doctype html",
+        )
+    )
+
+
 def _build_debug_panel(
     fetch_log: dict | None,
     live_ok: bool,
@@ -1270,9 +1287,12 @@ def _build_debug_panel(
 ) -> dict:
     fl = fetch_log or {}
     status = fl.get("status_code")
+    status_ok = status in (200, 201, "200", "201")
     if using_cache and saved_count > 0:
         status_label = f"📦 BD ({saved_count} guardados)"
-    elif live_ok and status == 200:
+    elif live_ok and status_ok:
+        status_label = f"🟢 STATUS {status}"
+    elif status_ok and (fl.get("ok") or (fl.get("results_found") or 0) > 0):
         status_label = f"🟢 STATUS {status}"
     elif status:
         status_label = f"🔴 STATUS {status}"
@@ -1282,12 +1302,12 @@ def _build_debug_panel(
     if using_cache and saved_count:
         results_found = max(results_found, saved_count)
     raw_error = (fl.get("error") or fl.get("blocking_type") or "").strip()
-    # No mostrar errores obsoletos de parseo JSON del frontend si hay datos en BD
+    has_data = saved_count > 0 or results_found > 0
     if using_cache and saved_count > 0:
         display_error = ""
-    elif status == 200 or (fl.get("ok") and results_found > 0):
+    elif status_ok or (fl.get("ok") and has_data) or has_data:
         display_error = ""
-    elif raw_error and "not valid JSON" in raw_error and "Unexpected token" in raw_error:
+    elif _is_stale_fetch_error(raw_error):
         display_error = ""
     else:
         display_error = raw_error
