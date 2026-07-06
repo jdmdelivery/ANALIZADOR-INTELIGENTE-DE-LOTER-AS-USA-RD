@@ -1511,10 +1511,18 @@
                     `Respuesta no JSON (HTTP ${res.status}): ${trimmed.slice(0, 240)}`
                 );
             }
-            if (!data.ok) {
+            if (!data.ok && !data.async) {
                 const detail = formatLeidsaHistoryError(data, res);
                 setLeidsaStatus(`❌ ${detail}`, 'error');
                 console.error('[LEIDSA HISTORIAL]', data);
+            } else if (data.async) {
+                setLeidsaStatus(
+                    `⏳ ${data.message || 'Historial en descarga. Recargue en 1-2 min.'}`,
+                    'loading'
+                );
+                await loadLeidsaBoard();
+                setTimeout(() => loadLeidsaBoard(), 60000);
+                setTimeout(() => loadLeidsaBoard(), 120000);
             } else if (data.partial || data.warning) {
                 setLeidsaStatus(
                     `⚠️ ${data.message || 'Parcial'} · ${data.results_found || 0} sorteos · `

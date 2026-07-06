@@ -2,6 +2,7 @@ import os
 import sys
 import secrets
 import logging
+import threading
 from datetime import datetime, timedelta, date
 
 from flask import Flask, render_template, request, jsonify, redirect, url_for, flash, abort, session
@@ -1157,11 +1158,16 @@ def _sanitize_leidsa_historial_json(value):
     return str(value)
 
 
+_leidsa_historial_lock = threading.Lock()
+
+
 @app.route("/api/resultados/leidsa/actualizar-historial", methods=["POST"])
 @admin_required
 def api_actualizar_leidsa_historial():
     _LH = "[LEIDSA_HISTORIAL]"
     try:
+        from flask import current_app
+
         logger.info("%s Entró al endpoint", _LH)
         print(f"{_LH} Entró al endpoint")
 
@@ -1170,35 +1176,74 @@ def api_actualizar_leidsa_historial():
         logger.info("%s Leyendo historial... days=%s", _LH, days)
         print(f"{_LH} Leyendo historial...")
 
-        from services.leidsa_history import update_leidsa_history
+        if not _leidsa_historial_lock.acquire(blocking=False):
+            logger.info("%s Job ya en curso — respuesta JSON inmediata", _LH)
+            print(f"{_LH} Job ya en curso")
+            return jsonify({
+                "success": True,
+                "ok": True,
+                "async": True,
+                "already_running": True,
+                "message": (
+                    "Historial LEIDSA ya se está descargando. "
+                    "Espere 1-2 minutos y recargue el panel."
+                ),
+                "days": days,
+            }), 200
 
-        result = update_leidsa_history(days=days)
-        if not isinstance(result, dict):
-            result = {"ok": False, "error": "Respuesta inválida del servicio", "raw": str(result)}
+        app_ref = current_app._get_current_object()
 
-        found = int(result.get("results_found") or 0)
-        saved = int(result.get("inserted") or 0) + int(result.get("updated") or 0)
-        logger.info("%s Cantidad encontrada: %s (guardados=%s)", _LH, found, saved)
-        print(f"{_LH} Cantidad encontrada: {found}")
+        def _run_historial_bg(days_val: int) -> None:
+            try:
+                with app_ref.app_context():
+                    from services.leidsa_history import update_leidsa_history
 
-        if result.get("ok"):
-            code = 200
-        elif saved > 0:
-            result["ok"] = True
-            result["partial"] = True
-            code = 200
-        else:
-            code = 400
-            result.setdefault("error", result.get("message") or "Error al actualizar historial LEIDSA")
-            result.setdefault("detalle", result.get("error"))
-            result.setdefault("fuente", "leidsa.com")
-            result.setdefault("status", 400)
+                    logger.info("%s Background: iniciando descarga days=%s", _LH, days_val)
+                    print(f"{_LH} Background: iniciando descarga")
+                    result = update_leidsa_history(days=days_val)
+                    found = int(result.get("results_found") or 0)
+                    saved = int(result.get("inserted") or 0) + int(result.get("updated") or 0)
+                    logger.info(
+                        "%s Background: terminado ok=%s encontrados=%s guardados=%s",
+                        _LH,
+                        result.get("ok"),
+                        found,
+                        saved,
+                    )
+                    print(f"{_LH} Cantidad encontrada: {found}")
+            except Exception as exc:
+                import traceback
 
-        payload = _sanitize_leidsa_historial_json(result)
-        payload["success"] = bool(payload.get("ok"))
-        logger.info("%s Respuesta lista status=%s ok=%s", _LH, code, payload.get("ok"))
-        print(f"{_LH} Respuesta lista status={code}")
-        return jsonify(payload), code
+                tb = traceback.format_exc()
+                logger.error("%s Error completo background: %s\n%s", _LH, exc, tb)
+                print(f"{_LH} Error completo: {exc}")
+                traceback.print_exc()
+            finally:
+                _leidsa_historial_lock.release()
+
+        threading.Thread(
+            target=_run_historial_bg,
+            args=(days,),
+            name="leidsa-historial",
+            daemon=True,
+        ).start()
+
+        payload = {
+            "success": True,
+            "ok": True,
+            "async": True,
+            "message": (
+                f"Historial LEIDSA en descarga ({days} días, 6 juegos). "
+                "Recargue el panel en 1-2 minutos."
+            ),
+            "days": days,
+            "results_found": 0,
+            "inserted": 0,
+            "updated": 0,
+        }
+        logger.info("%s Respuesta JSON inmediata (async)", _LH)
+        print(f"{_LH} Respuesta lista status=202")
+        return jsonify(payload), 202
     except Exception as e:
         import traceback
 
@@ -1206,6 +1251,10 @@ def api_actualizar_leidsa_historial():
         logger.error("%s Error completo: %s\n%s", _LH, e, tb)
         print(f"{_LH} Error completo: {e}")
         traceback.print_exc()
+        try:
+            _leidsa_historial_lock.release()
+        except RuntimeError:
+            pass
         return jsonify({
             "success": False,
             "ok": False,
