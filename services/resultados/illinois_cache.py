@@ -43,6 +43,16 @@ def is_hub_cache_stale(max_age_hours: int = 36) -> bool:
         return True
 
 
+def invalidate_hub_cache() -> None:
+    """Borra caché HTML del hub (forzar descarga en vivo)."""
+    for path in (HTML_FILE, META_FILE):
+        try:
+            if path.is_file():
+                path.unlink()
+        except OSError:
+            pass
+
+
 def load_hub_cache(*, max_age_hours: int = 36):
     """
     Devuelve dict {ok, html, url, status_code, saved_at, from_cache} o {ok: False}.

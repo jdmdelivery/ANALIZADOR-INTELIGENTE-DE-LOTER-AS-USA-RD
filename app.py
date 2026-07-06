@@ -110,7 +110,7 @@ DRAW_BUTTONS = {
     ],
 }
 
-USA_ANALYSIS_TIMEOUT_SEC = 15
+USA_ANALYSIS_TIMEOUT_SEC = int(os.environ.get("USA_ANALYSIS_TIMEOUT_SEC", "45"))
 RD_UPDATE_TIMEOUT_SEC = int(os.environ.get("RD_UPDATE_TIMEOUT_SEC", "25"))
 
 
@@ -1692,11 +1692,16 @@ def api_prediction():
         if lottery.get("country") == "USA":
             result, err = _run_usa_analysis_timed(build, "prediction")
             if err:
+                msg = (
+                    "⚠️ El análisis tardó demasiado. Intente de nuevo o reduzca el rango a 30 días."
+                    if err == "timeout"
+                    else "⚠️ No se pudo completar el análisis."
+                )
                 return jsonify({
                     "ok": False,
-                    "message": "⚠️ No se pudo completar el análisis.",
+                    "message": msg,
                     "error": err,
-                }), 500
+                }), 200
             status = 200 if result.get("ok") else 400
             return jsonify(result), status
 
@@ -1809,11 +1814,16 @@ def api_analysis():
         if lottery and lottery.get("country") == "USA":
             result, err = _run_usa_analysis_timed(run_analysis, "analysis")
             if err:
+                msg = (
+                    "⚠️ El análisis tardó demasiado. Intente de nuevo."
+                    if err == "timeout"
+                    else "⚠️ No se pudo completar el análisis."
+                )
                 return jsonify({
                     "ok": False,
-                    "message": "⚠️ No se pudo completar el análisis.",
+                    "message": msg,
                     "error": err,
-                }), 500
+                }), 200
         else:
             result = run_analysis()
 

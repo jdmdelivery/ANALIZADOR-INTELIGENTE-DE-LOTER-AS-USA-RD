@@ -6,6 +6,7 @@ RECOMMENDATION_DISCLAIMER = (
 )
 
 MIN_HISTORY = 10
+USA_MAX_RESULTS = 120
 INSUFFICIENT_HISTORY_MSG = "No hay resultados suficientes para esta tanda"
 
 # Ventanas de análisis (sorteos recientes)

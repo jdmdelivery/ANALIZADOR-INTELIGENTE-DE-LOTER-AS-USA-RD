@@ -9,7 +9,7 @@ from models import (
     parse_numbers,
 )
 from services.recommendations.analyzer_log import log_analisis
-from services.recommendations.constants import MIN_HISTORY
+from services.recommendations.constants import MIN_HISTORY, USA_MAX_RESULTS
 from services.recommendations.data_hash import hash_draw_rows
 
 def effective_min_history(days_filter: int | None, available: int) -> int:

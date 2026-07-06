@@ -1213,7 +1213,7 @@
         let timeoutId = null;
         const controller = predictionAbortController;
         if (isUsa) {
-            timeoutId = setTimeout(() => controller.abort(), 15000);
+            timeoutId = setTimeout(() => controller.abort(), 45000);
         }
 
         const sorteoTime = encodeURIComponent(btn.time_display || btn.time || btn.draw_name || '');

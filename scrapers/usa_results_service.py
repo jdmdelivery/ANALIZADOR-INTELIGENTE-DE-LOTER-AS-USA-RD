@@ -251,15 +251,15 @@ def _persist_meta(result: dict, sources_tried: list) -> None:
         logger.warning("%s No se pudo guardar usa_last_run.json: %s", LOG, exc)
 
 
-def _run_illinois(lottery_name: str | None, refresh_all: bool) -> dict:
+def _run_illinois(lottery_name: str | None, refresh_all: bool, *, force_refresh: bool = True) -> dict:
     t0 = time.monotonic()
     try:
         if refresh_all or not lottery_name:
             from scrapers.illinois_scraper import import_illinois_results_hub
-            res = import_illinois_results_hub()
+            res = import_illinois_results_hub(force_refresh=force_refresh)
         else:
             from scrapers.illinois_scraper import import_illinois_lottery_now
-            res = import_illinois_lottery_now(lottery_name)
+            res = import_illinois_lottery_now(lottery_name, force_refresh=force_refresh)
         res["elapsed"] = round(time.monotonic() - t0, 2)
         res.setdefault("url", res.get("hub_url"))
         logger.info(
@@ -332,7 +332,7 @@ def _actualizar_una_loteria_usa(
         from scrapers.lucky_day_lotto_service import actualizar_lucky_day_lotto
         return actualizar_lucky_day_lotto()
 
-    illinois = _run_illinois(loteria, refresh_all=False)
+    illinois = _run_illinois(loteria, refresh_all=False, force_refresh=True)
     _record_try(sources_tried, "illinoislottery", illinois, "https://www.illinoislottery.com/results-hub")
 
     if (

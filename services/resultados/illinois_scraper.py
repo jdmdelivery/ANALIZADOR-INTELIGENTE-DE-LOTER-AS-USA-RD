@@ -298,8 +298,14 @@ class IllinoisResultsHubScraper:
             return {"ok": False, "message": f"URL no configurada para {game_slug}"}
         return self._fetch_url(url)
 
-    def fetch_results_hub(self, allow_cache: bool = True):
+    def fetch_results_hub(self, allow_cache: bool = True, *, force_refresh: bool = False):
         """Descarga Results Hub; fallback por juego; luego caché local."""
+        if force_refresh:
+            allow_cache = False
+            from services.resultados.illinois_cache import invalidate_hub_cache
+
+            invalidate_hub_cache()
+
         page = self._fetch_url(RESULTS_HUB_URL)
         if page.get("ok"):
             logger.info("%s Illinois parser OK (results-hub)", LOG_PREFIX)
@@ -342,7 +348,40 @@ class IllinoisResultsHubScraper:
                     "fallback_games": ok_slugs,
                 }
         else:
-            logger.info("%s Render: hub falló; saltando fallback juego-a-juego", LOG_PREFIX)
+            logger.info("%s Render: hub falló; fallback limitado por juego", LOG_PREFIX)
+            merged_html_parts = []
+            merged_url = RESULTS_HUB_URL
+            ok_slugs = []
+            render_slugs = (
+                "powerball",
+                "megamillions",
+                "luckydaylotto",
+                "lotto",
+                "pick3",
+                "pick4",
+            )
+            for slug in render_slugs:
+                gpage = self.fetch_game_page(slug)
+                if gpage.get("ok") and gpage.get("html"):
+                    merged_html_parts.append(gpage["html"])
+                    ok_slugs.append(slug)
+                    merged_url = gpage.get("url", merged_url)
+            if merged_html_parts:
+                combined = "\n".join(merged_html_parts)
+                logger.info(
+                    "%s Illinois parser OK (Render fallback: %s)",
+                    LOG_PREFIX,
+                    ", ".join(ok_slugs),
+                )
+                save_hub_cache(combined, url=merged_url, status_code=200)
+                return {
+                    "ok": True,
+                    "html": combined,
+                    "url": merged_url,
+                    "status_code": 200,
+                    "from_cache": False,
+                    "fallback_games": ok_slugs,
+                }
 
         if allow_cache:
             cached = load_hub_cache()
@@ -485,9 +524,13 @@ def _hub_fetch_meta(page: dict) -> dict:
     }
 
 
-def import_illinois_results_hub():
+def import_illinois_results_hub(*, force_refresh: bool = False):
     """Importa/actualiza resultados desde results-hub oficial (todos los juegos)."""
-    logger.info("Illinois Results Hub — iniciando importación url=%s", RESULTS_HUB_URL)
+    logger.info(
+        "Illinois Results Hub — iniciando importación url=%s force_refresh=%s",
+        RESULTS_HUB_URL,
+        force_refresh,
+    )
     try:
         ensure_scraper_deps()
     except ImportError as e:
@@ -500,7 +543,7 @@ def import_illinois_results_hub():
         }
 
     scraper = IllinoisResultsHubScraper()
-    page = scraper.fetch_results_hub(allow_cache=True)
+    page = scraper.fetch_results_hub(allow_cache=not force_refresh, force_refresh=force_refresh)
     meta = _hub_fetch_meta(page)
 
     if not page.get("ok"):
@@ -610,7 +653,7 @@ def import_illinois_results_hub():
     }
 
 
-def import_illinois_lottery_now(lottery_name):
+def import_illinois_lottery_now(lottery_name, *, force_refresh: bool = False):
     """Importa/actualiza desde Results Hub para una lotería Illinois (últimos en hub)."""
     meta = {}
     try:
@@ -626,7 +669,10 @@ def import_illinois_lottery_now(lottery_name):
 
     scraper = IllinoisResultsHubScraper()
     try:
-        page = scraper.fetch_results_hub(allow_cache=True)
+        page = scraper.fetch_results_hub(
+            allow_cache=not force_refresh,
+            force_refresh=force_refresh,
+        )
         meta = _hub_fetch_meta(page)
         if not page.get("ok"):
             return {
