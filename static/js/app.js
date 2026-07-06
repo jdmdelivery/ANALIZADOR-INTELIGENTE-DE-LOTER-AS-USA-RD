@@ -1196,6 +1196,17 @@
         }
     }
 
+    function analysisFailureMessage(data, res) {
+        if (data?.message) return data.message;
+        if (data?.min_required != null) {
+            const found = data.history_count ?? data.draws_analyzed ?? data.total_resultados_usados ?? '?';
+            return `Se requieren al menos ${data.min_required} sorteos para el análisis; encontrados: ${found}.`;
+        }
+        if (data?.error) return String(data.error);
+        if (res && !res.ok) return `Error HTTP ${res.status}`;
+        return '⚠️ No se pudo completar el análisis.';
+    }
+
     async function getPrediction(btn, opts = {}) {
         const force = Boolean(opts.force);
         const reqId = ++predictionRequestSeq;
@@ -1239,9 +1250,12 @@
             );
             if (reqId !== predictionRequestSeq) return;
 
+            const text = await res.text();
+            console.log(text);
+
             let data;
             try {
-                data = await res.json();
+                data = JSON.parse(text);
             } catch (parseErr) {
                 throw new Error('Respuesta inválida del servidor');
             }
@@ -1250,13 +1264,13 @@
 
             if (!res.ok && !data?.ok) {
                 $('analysisError').style.display = 'block';
-                $('analysisErrorMsg').textContent = data?.message || '⚠️ No se pudo completar el análisis.';
+                $('analysisErrorMsg').textContent = analysisFailureMessage(data, res);
                 return;
             }
 
             if (!data.ok) {
                 $('analysisError').style.display = 'block';
-                $('analysisErrorMsg').textContent = data.message || 'No hay resultados suficientes para esta tanda';
+                $('analysisErrorMsg').textContent = analysisFailureMessage(data, res);
                 return;
             }
 

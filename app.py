@@ -112,6 +112,36 @@ DRAW_BUTTONS = {
 
 USA_ANALYSIS_TIMEOUT_SEC = int(os.environ.get("USA_ANALYSIS_TIMEOUT_SEC", "45"))
 RD_UPDATE_TIMEOUT_SEC = int(os.environ.get("RD_UPDATE_TIMEOUT_SEC", "25"))
+_ANALISIS_LOG = "[ANALISIS]"
+
+
+def _log_analisis(label: str, value: str | int | None = None) -> None:
+    line = f"{label}: {value}" if value is not None and value != "" else label
+    text = f"{_ANALISIS_LOG}\n{line}"
+    print(text)
+    logger.info("%s %s", _ANALISIS_LOG, line)
+
+
+def _analisis_resultados_bd(lottery_id: int, draw_name: str, days: int | None) -> tuple[int, int]:
+    from models import count_results_for_analysis, count_results_for_lottery
+    from services.recommendations.data_loader import normalize_analysis_days
+
+    days_filter = normalize_analysis_days(days)
+    total = count_results_for_lottery(lottery_id, draw_name)
+    en_rango = count_results_for_analysis(lottery_id, draw_name, days=days_filter)
+    return total, en_rango
+
+
+def _analisis_cantidad_utilizada(result: dict | None) -> int | str:
+    if not isinstance(result, dict):
+        return "—"
+    diag = result.get("analyzer_diagnostic") or {}
+    for key in ("draws_analyzed", "total_resultados_usados", "history_count"):
+        if result.get(key) is not None:
+            return result.get(key)
+        if diag.get(key) is not None:
+            return diag.get(key)
+    return "—"
 
 
 def _usa_analysis_log(msg: str) -> None:
@@ -1624,6 +1654,7 @@ def api_analisis_leidsa():
 @app.route("/api/prediccion")
 def api_prediction():
     try:
+        _log_analisis("Entró al endpoint")
         lottery_id = request.args.get("lottery_id", type=int)
         loteria_name = (request.args.get("loteria") or request.args.get("lottery") or "").strip()
         draw_raw = (
@@ -1633,6 +1664,9 @@ def api_prediction():
             or ""
         ).strip()
         fecha_mode = (request.args.get("fecha") or "latest").strip()
+        days = request.args.get("days", type=int)
+        if days is None:
+            days = request.args.get("rango", type=int)
 
         if not lottery_id and loteria_name:
             from services.lottery_normalize import find_lottery_in_list
@@ -1643,10 +1677,13 @@ def api_prediction():
                 lottery_id = lot_match["id"]
 
         if not lottery_id or not draw_raw:
-            return jsonify({
+            payload = {
                 "ok": False,
+                "success": False,
                 "message": "lottery_id (o loteria) y draw_name/sorteo son requeridos",
-            }), 400
+            }
+            _log_analisis("Respuesta enviada al frontend", str(payload))
+            return jsonify(payload), 400
 
         from services.recommendations.draw_resolver import resolve_prediction_draw
 
@@ -1656,17 +1693,30 @@ def api_prediction():
             sorteo=draw_raw,
         )
         if resolve_err or not draw_name:
-            return jsonify({"ok": False, "message": resolve_err or "Sorteo no válido"}), 400
+            payload = {"ok": False, "success": False, "message": resolve_err or "Sorteo no válido"}
+            _log_analisis("Respuesta enviada al frontend", str(payload))
+            return jsonify(payload), 400
 
         lottery = lottery or get_lottery(lottery_id)
         if not lottery:
-            return jsonify({"ok": False, "message": "Lotería no encontrada.", "error": "not_found"}), 404
+            payload = {"ok": False, "success": False, "message": "Lotería no encontrada.", "error": "not_found"}
+            _log_analisis("Respuesta enviada al frontend", str(payload))
+            return jsonify(payload), 404
+
+        pais = lottery.get("country", "—")
+        loteria = lottery.get("name", "—")
+        _log_analisis("País", pais)
+        _log_analisis("Lotería", loteria)
+        _log_analisis("Sorteo", draw_name)
+
+        encontrados, en_rango = _analisis_resultados_bd(lottery_id, draw_name, days)
+        _log_analisis("Cantidad de resultados encontrados", en_rango)
 
         def build():
             force = request.args.get("force") == "1" or request.args.get("recalc") == "1"
-            days = request.args.get("days", type=int)
-            if days is None:
-                days = request.args.get("rango", type=int)
+            build_days = request.args.get("days", type=int)
+            if build_days is None:
+                build_days = request.args.get("rango", type=int)
             from services.leidsa_config import is_leidsa_game_lottery
 
             if lottery.get("country") == "RD" and not is_leidsa_game_lottery(lottery):
@@ -1674,13 +1724,13 @@ def api_prediction():
                 result = generar_recomendacion_rd(
                     lottery["name"],
                     draw_name,
-                    rango_dias=days or 90,
+                    rango_dias=build_days or 90,
                     force=force,
                     lottery_id=lottery_id,
                 )
             else:
                 result = generar_jugada_inteligente(
-                    lottery_id, draw_name, force_refresh=force, days=days
+                    lottery_id, draw_name, force_refresh=force, days=build_days
                 )
             result = _enrich_prediction_payload(result, lottery_id, draw_name, lottery)
             if fecha_mode == "latest" and result.get("ok"):
@@ -1692,28 +1742,38 @@ def api_prediction():
         if lottery.get("country") == "USA":
             result, err = _run_usa_analysis_timed(build, "prediction")
             if err:
-                msg = (
-                    "⚠️ El análisis tardó demasiado. Intente de nuevo o reduzca el rango a 30 días."
-                    if err == "timeout"
-                    else "⚠️ No se pudo completar el análisis."
-                )
-                return jsonify({
+                payload = {
                     "ok": False,
-                    "message": msg,
+                    "success": False,
+                    "message": (
+                        "⚠️ El análisis tardó demasiado. Intente de nuevo o reduzca el rango a 30 días."
+                        if err == "timeout"
+                        else "⚠️ No se pudo completar el análisis."
+                    ),
                     "error": err,
-                }), 200
+                }
+                _log_analisis("Cantidad utilizada para el análisis", 0)
+                _log_analisis("Respuesta enviada al frontend", str(payload))
+                return jsonify(payload), 200
+            utilizados = _analisis_cantidad_utilizada(result)
+            _log_analisis("Cantidad utilizada para el análisis", utilizados)
+            _log_analisis("Respuesta enviada al frontend", str(result))
             status = 200 if result.get("ok") else 400
             return jsonify(result), status
 
         result = build()
+        utilizados = _analisis_cantidad_utilizada(result)
+        _log_analisis("Cantidad utilizada para el análisis", utilizados)
+        _log_analisis("Respuesta enviada al frontend", str(result))
         status = 200 if result.get("ok") else 400
         return jsonify(result), status
-    except Exception as exc:
-        logger.exception("api_prediction")
+    except Exception as e:
+        import traceback
+
+        traceback.print_exc()
         return jsonify({
-            "ok": False,
-            "message": "⚠️ No se pudo completar el análisis.",
-            "error": str(exc),
+            "success": False,
+            "error": str(e),
         }), 500
 
 
@@ -1801,12 +1861,24 @@ def api_recommendations_backtest():
 @app.route("/api/analysis")
 def api_analysis():
     try:
+        _log_analisis("Entró al endpoint")
         lottery_id = request.args.get("lottery_id", type=int)
         draw_name = request.args.get("draw_name", "").strip()
+        days = request.args.get("days", type=int) or request.args.get("rango", type=int)
         if not lottery_id or not draw_name:
-            return jsonify({"ok": False, "message": "lottery_id y draw_name son requeridos"}), 400
+            payload = {"ok": False, "success": False, "message": "lottery_id y draw_name son requeridos"}
+            _log_analisis("Respuesta enviada al frontend", str(payload))
+            return jsonify(payload), 400
 
         lottery = get_lottery(lottery_id)
+        pais = (lottery or {}).get("country", "—")
+        loteria = (lottery or {}).get("name", "—")
+        _log_analisis("País", pais)
+        _log_analisis("Lotería", loteria)
+        _log_analisis("Sorteo", draw_name)
+
+        encontrados, en_rango = _analisis_resultados_bd(lottery_id, draw_name, days)
+        _log_analisis("Cantidad de resultados encontrados", en_rango)
 
         def run_analysis():
             return analizar_loteria_por_tanda(lottery_id, draw_name)
@@ -1814,29 +1886,38 @@ def api_analysis():
         if lottery and lottery.get("country") == "USA":
             result, err = _run_usa_analysis_timed(run_analysis, "analysis")
             if err:
-                msg = (
-                    "⚠️ El análisis tardó demasiado. Intente de nuevo."
-                    if err == "timeout"
-                    else "⚠️ No se pudo completar el análisis."
-                )
-                return jsonify({
+                payload = {
                     "ok": False,
-                    "message": msg,
+                    "success": False,
+                    "message": (
+                        "⚠️ El análisis tardó demasiado. Intente de nuevo."
+                        if err == "timeout"
+                        else "⚠️ No se pudo completar el análisis."
+                    ),
                     "error": err,
-                }), 200
+                }
+                _log_analisis("Cantidad utilizada para el análisis", 0)
+                _log_analisis("Respuesta enviada al frontend", str(payload))
+                return jsonify(payload), 200
         else:
             result = run_analysis()
 
         if result and result.get("ok"):
             for key in ("_all_nums", "_freq", "_config", "_per_draw"):
                 result.pop(key, None)
-        return jsonify(result or {"ok": False, "message": "Error en análisis"})
-    except Exception as exc:
-        logger.exception("api_analysis")
+
+        utilizados = _analisis_cantidad_utilizada(result)
+        _log_analisis("Cantidad utilizada para el análisis", utilizados)
+        payload = result or {"ok": False, "message": "Error en análisis"}
+        _log_analisis("Respuesta enviada al frontend", str(payload))
+        return jsonify(payload)
+    except Exception as e:
+        import traceback
+
+        traceback.print_exc()
         return jsonify({
-            "ok": False,
-            "message": "⚠️ No se pudo completar el análisis.",
-            "error": str(exc),
+            "success": False,
+            "error": str(e),
         }), 500
 
 
