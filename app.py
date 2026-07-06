@@ -877,6 +877,79 @@ def _actualizar_resultados_api(data=None):
         )
 
 
+_rd_bulk_update_lock = threading.Lock()
+
+
+def _start_rd_update_async(data: dict):
+    """Responde JSON al instante; la descarga RD pesada corre en background."""
+    from flask import current_app
+    from services.actualizar_resultados import es_pais_do, actualizar_resultados_rd
+
+    pais = (data.get("pais") or data.get("country") or "").strip()
+    if not es_pais_do(pais):
+        return None
+
+    loteria = (data.get("loteria") or data.get("lottery") or "").strip()
+    refresh_all = bool(data.get("refresh_all_rd") or not loteria)
+    days = int(data.get("days") or 30)
+
+    if not _rd_bulk_update_lock.acquire(blocking=False):
+        return _api_json_response({
+            "ok": True,
+            "async": True,
+            "already_running": True,
+            "pais": "DO",
+            "message": "RD ya se está actualizando. Espere 2-3 minutos y recargue.",
+            "mensaje": "RD ya se está actualizando. Espere 2-3 minutos y recargue.",
+        }, 200)
+
+    app_ref = current_app._get_current_object()
+    loteria_arg = loteria or None
+
+    def _run_rd_bg() -> None:
+        try:
+            with app_ref.app_context():
+                logger.info(
+                    "[RD ASYNC] Inicio lotería=%s days=%s refresh_all=%s",
+                    loteria or "TODAS",
+                    days,
+                    refresh_all,
+                )
+                result = actualizar_resultados_rd(
+                    loteria_arg,
+                    days=days,
+                    refresh_all=refresh_all,
+                )
+                logger.info(
+                    "[RD ASYNC] Fin ok=%s imported=%s updated=%s",
+                    result.get("ok"),
+                    result.get("imported"),
+                    result.get("updated"),
+                )
+        except Exception:
+            logger.exception("[RD ASYNC] Error en actualización RD")
+        finally:
+            _rd_bulk_update_lock.release()
+
+    threading.Thread(
+        target=_run_rd_bg,
+        name="rd-update-async",
+        daemon=True,
+    ).start()
+
+    scope = f"todas las loterías ({days} días)" if refresh_all else f"{loteria} ({days} días)"
+    msg = f"Actualización RD ({scope}) en segundo plano. Recargue en 2-3 minutos."
+    return _api_json_response({
+        "ok": True,
+        "async": True,
+        "pais": "DO",
+        "days": days,
+        "loteria": loteria,
+        "message": msg,
+        "mensaje": msg,
+    }, 202)
+
+
 @app.route("/api/resultados/actualizar", methods=["POST"])
 @app.route("/api/resultados/actualizar-ahora", methods=["POST"])
 @login_required
@@ -910,6 +983,10 @@ def api_actualizar_resultados_ahora():
                     "status": 400,
                     "message": "País no soportado.",
                 }, 400)
+        if es_pais_do(pais):
+            async_resp = _start_rd_update_async(data)
+            if async_resp is not None:
+                return async_resp
         payload, status = _actualizar_resultados_api(data)
         return _api_json_response(payload, status)
     except Exception as exc:
@@ -1081,7 +1158,7 @@ def api_actualizar_leidsa():
             "ok": False,
             "error": str(exc),
             "traceback": tb,
-        }), 500
+        }), 200
 
 
 def _run_leidsa_update(*, history_game_slug: str | None = None):
@@ -1431,7 +1508,7 @@ def api_actualizar_leidsa_historial():
             "ok": False,
             "error": str(e),
             "traceback": tb,
-        }), 500
+        }), 200
 
 
 @app.errorhandler(404)

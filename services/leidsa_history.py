@@ -186,12 +186,21 @@ def discover_latest_draw_ids() -> dict[str, str]:
         if '\\"gameProvider\\":\\"Leidsa\\"' not in block[:800]:
             continue
         fam_m = re.search(r'\\"gameFamilyName\\":\\"([^\\"]+)', block)
-        did_m = re.search(
+        if not fam_m:
+            continue
+        family = fam_m.group(1).strip()
+        draw_id = ""
+        for pat in (
+            r'\\"currentDrawDetails\\":\{[^}]*?\\"drawId\\":\\"([^\\"]+)',
             r'\\"previousDrawDetails\\":\{[^}]*?\\"drawId\\":\\"([^\\"]+)',
-            block,
-        )
-        if fam_m and did_m:
-            out[fam_m.group(1).strip()] = did_m.group(1).strip()
+            r'\\"drawId\\":\\"(\d+_\d+)"',
+        ):
+            did_m = re.search(pat, block[:2500])
+            if did_m:
+                draw_id = did_m.group(1).strip()
+                break
+        if family and draw_id:
+            out[family] = draw_id
     return out
 
 
@@ -367,6 +376,39 @@ def fetch_leidsa_game_history(
             "Parser drawResults: 0 sorteos "
             f"(familia «{family}» no encontrada o HTML sin historial)"
         )
+
+    if not rows:
+        try:
+            from services.leidsa_fallback.orchestrator import scrape_leidsa_with_fallbacks
+
+            fb = scrape_leidsa_with_fallbacks()
+            fb_rows = [
+                r for r in (fb.get("results") or fb.get("rows") or [])
+                if r.get("lottery") == slug
+            ]
+            cutoff = (_now_rd() - timedelta(days=days)).strftime("%Y-%m-%d")
+            for r in fb_rows:
+                if (r.get("fecha_rd") or "") >= cutoff:
+                    rows.append({
+                        "lottery": slug,
+                        "draw": r.get("draw") or "sorteo",
+                        "fecha_rd": r.get("fecha_rd"),
+                        "numeros": r.get("numeros") or [],
+                        "bonus": r.get("bonus") or [],
+                        "draw_time": r.get("draw_time", ""),
+                        "fuente": r.get("fuente") or "leidsa_fallback",
+                        "estado": "publicado",
+                    })
+            if rows:
+                parse_error = None
+                rows.sort(
+                    key=lambda r: (r.get("fecha_rd", ""), r.get("draw_time", "")),
+                    reverse=True,
+                )
+                if limit and len(rows) > limit:
+                    rows = rows[:limit]
+        except Exception as exc:
+            logger.warning("%s fallback vivo %s: %s", LOG_HISTORIAL, game["name"], exc)
 
     if not rows and options:
         _log(f"  {game['name']}: sin drawResults, {len(options)} opciones dropdown detectadas")

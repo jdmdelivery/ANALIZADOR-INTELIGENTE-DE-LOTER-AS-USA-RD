@@ -467,6 +467,19 @@
             const data = await parseJsonResponse(res);
             const isRd = selectCountry.value === 'RD' || data.pais === 'DO';
 
+            if (data.async || res.status === 202) {
+                const msg = data.message || data.mensaje
+                    || 'Actualización en segundo plano. Recargue en 2-3 minutos.';
+                setRefreshStatus(`⏳ ${msg}`, 'loading');
+                setTimeout(() => loadRecentResults(true), 60000);
+                setTimeout(() => loadRecentResults(true), 120000);
+                if (isRd && leidsaBoard) {
+                    setTimeout(() => loadLeidsaBoard(), 60000);
+                    setTimeout(() => loadLeidsaBoard(), 120000);
+                }
+                return;
+            }
+
             if (data.hub_url || data.status_code != null) {
                 console.info('[Illinois Hub]', {
                     url: data.hub_url,
@@ -1546,7 +1559,16 @@
                 await loadRecentResults(true);
             }
         } catch (e) {
-            setLeidsaStatus(`Error historial: ${e.message || e}`, 'error');
+            const msg = String(e.message || e);
+            if (msg.includes('<html') || msg.includes('Internal Server Error')) {
+                setLeidsaStatus(
+                    '⏳ Descarga en curso en el servidor. Recargue el panel en 2 min.',
+                    'loading'
+                );
+                setTimeout(() => loadLeidsaBoard(), 90000);
+            } else {
+                setLeidsaStatus(`Error historial: ${msg}`, 'error');
+            }
         } finally {
             btnRefreshLeidsaHistory.disabled = false;
             btnRefreshLeidsaHistory.textContent = prevLabel;
@@ -1604,7 +1626,16 @@
                 await loadRecentResults(true);
             }
         } catch (e) {
-            setLeidsaStatus(`Leidsa no respondió: ${e.message || e}`, 'error');
+            const msg = String(e.message || e);
+            if (msg.includes('<html') || msg.includes('Internal Server Error')) {
+                setLeidsaStatus(
+                    '⏳ El servidor tardó demasiado. La actualización puede seguir en segundo plano — recargue en 2 min.',
+                    'loading'
+                );
+                setTimeout(() => loadLeidsaBoard(), 90000);
+            } else {
+                setLeidsaStatus(`Leidsa no respondió: ${msg}`, 'error');
+            }
         } finally {
             btnRefreshLeidsa.disabled = false;
             btnRefreshLeidsa.textContent = prevLabel;
