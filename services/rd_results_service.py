@@ -435,7 +435,7 @@ def actualizar_leidsa_multi(*, days: int = 30, lottery_name: str | None = None) 
         from services.leidsa_service import update_leidsa_now
 
         leidsa = update_leidsa_now(
-            history_game_slug=history_slug if not history_slug else None,
+            history_game_slug=history_slug,
             history_days=days,
         )
         leidsa["fuente"] = "leidsa"

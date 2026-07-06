@@ -140,8 +140,19 @@ def get_http_session():
     return _session
 
 
+def _invalidate_page_cache(url: str) -> None:
+    path = _cache_path(url)
+    try:
+        if os.path.isfile(path):
+            os.remove(path)
+    except OSError:
+        pass
+
+
 def fetch_page(url: str, use_cache: bool = True) -> dict[str, Any]:
-    if use_cache:
+    if not use_cache:
+        _invalidate_page_cache(url)
+    elif use_cache:
         cached = _read_page_cache(url)
         if cached:
             return _safe_response(ok=True, html=cached, method="cache", url=url, cached=True)
@@ -175,43 +186,69 @@ def fetch_page(url: str, use_cache: bool = True) -> dict[str, Any]:
     )
 
 
-def discover_latest_draw_ids() -> dict[str, str]:
+def _is_stale_draw_id(draw_id: str, prefix: str = "") -> bool:
+    """IDs tipo 3_1 son semillas viejas; los reales suelen ser >100 (p. ej. 3_6260)."""
+    if not draw_id:
+        return True
+    if prefix and not str(draw_id).startswith(prefix):
+        return True
+    try:
+        num = int(str(draw_id).split("_", 1)[1])
+        return num < 50
+    except (ValueError, IndexError):
+        return True
+
+
+def discover_latest_draw_ids(*, retries: int = 3) -> dict[str, str]:
     """drawId más reciente por gameFamilyName desde la home."""
-    fetch = fetch_page(SOURCE_URL, use_cache=False)
-    if not fetch.get("ok"):
-        return {}
-    html = fetch.get("html", "")
+    from services.leidsa_http import warm_leidsa_session
+
+    warm_leidsa_session()
     out: dict[str, str] = {}
-    for block in html.split('{\\"gameId\\":')[1:]:
-        if '\\"gameProvider\\":\\"Leidsa\\"' not in block[:800]:
+    for attempt in range(max(1, retries)):
+        fetch = fetch_page(SOURCE_URL, use_cache=False)
+        if not fetch.get("ok"):
+            time.sleep(1.5 * (attempt + 1))
             continue
-        fam_m = re.search(r'\\"gameFamilyName\\":\\"([^\\"]+)', block)
-        if not fam_m:
-            continue
-        family = fam_m.group(1).strip()
-        draw_id = ""
-        for pat in (
-            r'\\"currentDrawDetails\\":\{[^}]*?\\"drawId\\":\\"([^\\"]+)',
-            r'\\"previousDrawDetails\\":\{[^}]*?\\"drawId\\":\\"([^\\"]+)',
-            r'\\"drawId\\":\\"(\d+_\d+)"',
-        ):
-            did_m = re.search(pat, block[:2500])
-            if did_m:
-                draw_id = did_m.group(1).strip()
-                break
-        if family and draw_id:
-            out[family] = draw_id
+        html = fetch.get("html", "")
+        for block in html.split('{\\"gameId\\":')[1:]:
+            if '\\"gameProvider\\":\\"Leidsa\\"' not in block[:800]:
+                continue
+            fam_m = re.search(r'\\"gameFamilyName\\":\\"([^\\"]+)', block)
+            if not fam_m:
+                continue
+            family = fam_m.group(1).strip()
+            draw_id = ""
+            for pat in (
+                r'\\"currentDrawDetails\\":\{[^}]*?\\"drawId\\":\\"([^\\"]+)',
+                r'\\"previousDrawDetails\\":\{[^}]*?\\"drawId\\":\\"([^\\"]+)',
+                r'\\"latestDrawDetails\\":\{[^}]*?\\"drawId\\":\\"([^\\"]+)',
+                r'\\"drawId\\":\\"(\d+_\d+)"',
+            ):
+                did_m = re.search(pat, block[:2500])
+                if did_m:
+                    draw_id = did_m.group(1).strip()
+                    break
+            if family and draw_id and not _is_stale_draw_id(draw_id):
+                out[family] = draw_id
+        if out:
+            break
+        time.sleep(1.5 * (attempt + 1))
     return out
 
 
 def build_results_url(game: dict, draw_ids: dict[str, str] | None = None) -> str:
     path = game["path"]
     family = game["family_name"]
+    prefix = game.get("draw_id_prefix", "")
     ids = draw_ids or discover_latest_draw_ids()
     draw_id = ids.get(family) or game.get("seed_draw_id", "")
-    if not draw_id:
-        prefix = game.get("draw_id_prefix", "")
-        draw_id = f"{prefix}1" if prefix else "1_1"
+    if not draw_id or _is_stale_draw_id(draw_id, prefix):
+        if prefix:
+            fresh = discover_latest_draw_ids(retries=2)
+            draw_id = fresh.get(family) or draw_id
+        if not draw_id or _is_stale_draw_id(draw_id, prefix):
+            draw_id = f"{prefix}1" if prefix else "1_1"
     from urllib.parse import quote
     segment = quote(path, safe="")
     return f"https://www.leidsa.com/results/Leidsa/{segment}/{draw_id}"
@@ -338,6 +375,45 @@ def parse_draw_results_history(
     return rows
 
 
+def _days_since_draw(fecha_rd: str | None) -> int | None:
+    if not fecha_rd:
+        return None
+    try:
+        draw_d = datetime.strptime(fecha_rd[:10], "%Y-%m-%d").date()
+        today = _now_rd().date()
+        return (today - draw_d).days
+    except ValueError:
+        return None
+
+
+def _supplement_live_rows(slug: str, *, days: int = 90) -> dict[str, Any]:
+    """Último sorteo en vivo (home / páginas) cuando el historial drawResults queda viejo."""
+    from services.leidsa_service import scrape_leidsa_via_results_pages, save_leidsa_rows
+
+    rows: list[dict] = []
+    pages = scrape_leidsa_via_results_pages()
+    if pages.get("ok"):
+        rows = [r for r in (pages.get("results") or pages.get("rows") or []) if r.get("lottery") == slug]
+    if not rows:
+        try:
+            from services.leidsa_fallback.orchestrator import scrape_leidsa_with_fallbacks
+
+            fb = scrape_leidsa_with_fallbacks()
+            rows = [
+                r for r in (fb.get("results") or fb.get("rows") or [])
+                if r.get("lottery") == slug
+            ]
+        except Exception as exc:
+            logger.warning("%s supplement fallback %s: %s", LOG_HISTORIAL, slug, exc)
+    cutoff = (_now_rd() - timedelta(days=days)).strftime("%Y-%m-%d")
+    rows = [r for r in rows if (r.get("fecha_rd") or "") >= cutoff]
+    if not rows:
+        return {"inserted": 0, "updated": 0, "rows": []}
+    batch = save_leidsa_rows(rows)
+    batch["rows"] = rows
+    return batch
+
+
 def fetch_leidsa_game_history(
     game: dict,
     *,
@@ -348,6 +424,7 @@ def fetch_leidsa_game_history(
 ) -> dict[str, Any]:
     slug = game["slug"]
     family = game["family_name"]
+    draw_ids = draw_ids or discover_latest_draw_ids()
     url = build_results_url(game, draw_ids)
 
     _log(f"HISTORIAL {game['name']}: {url}")
@@ -463,9 +540,10 @@ def sync_leidsa_game_history(
         )
     res = fetch_leidsa_game_history(
         game,
-        limit=limit,
+        limit=max(limit, min(days + 20, 150)),
         days=days,
         use_cache=use_cache,
+        draw_ids=discover_latest_draw_ids(),
     )
     rows = res.get("rows") or []
     inserted = updated = skipped = 0
@@ -475,6 +553,16 @@ def sync_leidsa_game_history(
         updated = int(batch.get("updated") or 0)
         skipped = int(batch.get("skipped") or 0)
     latest = max((r.get("fecha_rd") for r in rows if r.get("fecha_rd")), default=None)
+    age = _days_since_draw(latest)
+    if save and (age is None or age > 2):
+        _log(f"  {game['name']}: historial viejo (última={latest}) — complemento en vivo")
+        sup = _supplement_live_rows(slug, days=days)
+        inserted += int(sup.get("inserted") or 0)
+        updated += int(sup.get("updated") or 0)
+        if sup.get("rows"):
+            sup_dates = [r.get("fecha_rd") for r in sup["rows"] if r.get("fecha_rd")]
+            if sup_dates:
+                latest = max(sup_dates + ([latest] if latest else []))
     ok = bool(rows) or bool(inserted + updated)
     return _safe_response(
         ok=ok,

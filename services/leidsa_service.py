@@ -964,7 +964,7 @@ def update_leidsa_game_fast(slug: str, *, days: int = 30) -> dict[str, Any]:
         hist = sync_leidsa_game_history(
             slug,
             days=int(days or 30),
-            limit=100,
+            limit=max(120, min(int(days or 30) + 20, 150)),
             use_cache=False,
             save=True,
         )
@@ -972,8 +972,27 @@ def update_leidsa_game_fast(slug: str, *, days: int = 30) -> dict[str, Any]:
         updated = int(hist.get("updated") or 0)
         found = int(hist.get("results_found") or 0)
         latest = hist.get("latest_date") or _latest_saved_leidsa_date()
+        age = None
+        if latest:
+            try:
+                from services.leidsa_history import _days_since_draw
+
+                age = _days_since_draw(latest)
+            except Exception:
+                age = None
 
         if found > 0 or inserted + updated > 0:
+            if age is not None and age > 2:
+                _log(f"LEIDSA {slug}: última fecha {latest} ({age}d) — reintentando en vivo")
+                from services.leidsa_history import _supplement_live_rows
+
+                sup = _supplement_live_rows(slug, days=int(days or 30))
+                inserted += int(sup.get("inserted") or 0)
+                updated += int(sup.get("updated") or 0)
+                if sup.get("rows"):
+                    sup_dates = [r.get("fecha_rd") for r in sup["rows"] if r.get("fecha_rd")]
+                    if sup_dates:
+                        latest = max(sup_dates + ([latest] if latest else []))
             game_label = hist.get("game") or slug
             msg = (
                 f"LEIDSA {game_label}: {found} sorteos en historial, "
