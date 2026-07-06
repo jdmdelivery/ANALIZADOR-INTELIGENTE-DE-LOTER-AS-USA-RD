@@ -937,7 +937,7 @@ def _log_fetch_result(scrape: dict, fetch_extra: dict | None = None) -> None:
         method=scrape.get("method", ""),
         results_found=len(scrape.get("results") or scrape.get("rows") or []),
         html_length=scrape.get("html_length", 0),
-        error=scrape.get("error"),
+        error=None if scrape.get("ok") else scrape.get("error"),
         blocking_type=scrape.get("blocking_type", ""),
         api_urls=scrape.get("possible_api_urls") or [],
     )
@@ -1281,6 +1281,16 @@ def _build_debug_panel(
     results_found = fl.get("results_found", 0)
     if using_cache and saved_count:
         results_found = max(results_found, saved_count)
+    raw_error = (fl.get("error") or fl.get("blocking_type") or "").strip()
+    # No mostrar errores obsoletos de parseo JSON del frontend si hay datos en BD
+    if using_cache and saved_count > 0:
+        display_error = ""
+    elif live_ok and fl.get("ok"):
+        display_error = ""
+    elif raw_error and "not valid JSON" in raw_error and "Unexpected token" in raw_error:
+        display_error = ""
+    else:
+        display_error = raw_error
     return {
         "status_label": status_label,
         "status_code": status,
@@ -1289,7 +1299,7 @@ def _build_debug_panel(
         "results_found": results_found,
         "saved_count": saved_count,
         "last_attempt": fl.get("created_at", "—"),
-        "error": fl.get("error") or fl.get("blocking_type") or "",
+        "error": display_error,
         "blocking_type": fl.get("blocking_type") or "",
         "html_length": fl.get("html_length", 0),
     }

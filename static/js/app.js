@@ -1406,7 +1406,23 @@
                 leidsaBoard.innerHTML = '<p class="empty-msg">Inicia sesión para ver LEIDSA.</p>';
                 return;
             }
-            const data = await res.json();
+            const text = await res.text();
+            console.log(text);
+            let data;
+            const trimmed = text.trim();
+            if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+                try {
+                    data = JSON.parse(trimmed);
+                } catch (parseErr) {
+                    throw new Error(
+                        `JSON inválido (HTTP ${res.status}): ${parseErr.message}. Respuesta: ${trimmed.slice(0, 240)}`
+                    );
+                }
+            } else {
+                throw new Error(
+                    `Respuesta no JSON (HTTP ${res.status}): ${trimmed.slice(0, 240)}`
+                );
+            }
             const board = data.board || [];
             const historial = data.historial || [];
             const debug = data.debug || {};

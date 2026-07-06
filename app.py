@@ -1163,13 +1163,30 @@ def admin_rd_reparar_historico():
 @app.route("/api/resultados/leidsa")
 @login_required
 def api_resultados_leidsa():
-    from services.leidsa_service import get_leidsa_dashboard
+    try:
+        from services.leidsa_service import get_leidsa_dashboard
 
-    fecha = request.args.get("fecha") or request.args.get("fecha_rd")
-    days = request.args.get("days", type=int)
-    data = get_leidsa_dashboard(fecha, history_days=days)
-    # Siempre 200 con payload JSON (evita panel roto si hay datos en BD)
-    return jsonify(data), 200
+        fecha = request.args.get("fecha") or request.args.get("fecha_rd")
+        days = request.args.get("days", type=int)
+        data = get_leidsa_dashboard(fecha, history_days=days)
+        payload = _sanitize_leidsa_historial_json(data)
+        payload["success"] = bool(payload.get("ok", True))
+        return jsonify(payload), 200
+    except Exception as e:
+        import traceback
+
+        tb = traceback.format_exc()
+        logger.exception("[LEIDSA_PANEL] Error leyendo dashboard")
+        traceback.print_exc()
+        return jsonify({
+            "success": False,
+            "ok": True,
+            "board": [],
+            "historial": [],
+            "warning": "Error al leer panel LEIDSA.",
+            "error": str(e),
+            "traceback": tb,
+        }), 200
 
 
 @app.route("/admin/resultados/leidsa/actualizar-historial", methods=["POST"])
