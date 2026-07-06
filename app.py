@@ -1129,16 +1129,58 @@ def admin_actualizar_leidsa_historial():
     return redirect(url_for("admin") + "#tabApi")
 
 
+def _sanitize_leidsa_historial_json(value):
+    """Serializa tipos problemáticos antes de jsonify (solo historial LEIDSA)."""
+    from decimal import Decimal
+
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    if isinstance(value, dict):
+        return {str(k): _sanitize_leidsa_historial_json(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_sanitize_leidsa_historial_json(v) for v in value]
+    if isinstance(value, set):
+        return [_sanitize_leidsa_historial_json(v) for v in sorted(value, key=str)]
+    if hasattr(value, "_mapping"):
+        return _sanitize_leidsa_historial_json(dict(value._mapping))
+    if hasattr(value, "keys") and callable(value.keys):
+        try:
+            return _sanitize_leidsa_historial_json({k: value[k] for k in value.keys()})
+        except Exception:
+            pass
+    return str(value)
+
+
 @app.route("/api/resultados/leidsa/actualizar-historial", methods=["POST"])
 @admin_required
 def api_actualizar_leidsa_historial():
+    _LH = "[LEIDSA_HISTORIAL]"
     try:
-        from services.leidsa_history import update_leidsa_history
+        logger.info("%s Entró al endpoint", _LH)
+        print(f"{_LH} Entró al endpoint")
 
         data = request.get_json(silent=True) or {}
-        days = data.get("days") or request.form.get("days", type=int) or 90
-        result = update_leidsa_history(days=int(days))
+        days = int(data.get("days") or request.form.get("days", type=int) or 90)
+        logger.info("%s Leyendo historial... days=%s", _LH, days)
+        print(f"{_LH} Leyendo historial...")
+
+        from services.leidsa_history import update_leidsa_history
+
+        result = update_leidsa_history(days=days)
+        if not isinstance(result, dict):
+            result = {"ok": False, "error": "Respuesta inválida del servicio", "raw": str(result)}
+
+        found = int(result.get("results_found") or 0)
         saved = int(result.get("inserted") or 0) + int(result.get("updated") or 0)
+        logger.info("%s Cantidad encontrada: %s (guardados=%s)", _LH, found, saved)
+        print(f"{_LH} Cantidad encontrada: {found}")
+
         if result.get("ok"):
             code = 200
         elif saved > 0:
@@ -1151,21 +1193,25 @@ def api_actualizar_leidsa_historial():
             result.setdefault("detalle", result.get("error"))
             result.setdefault("fuente", "leidsa.com")
             result.setdefault("status", 400)
-        return _api_json_response(result, code)
-    except Exception as exc:
+
+        payload = _sanitize_leidsa_historial_json(result)
+        payload["success"] = bool(payload.get("ok"))
+        logger.info("%s Respuesta lista status=%s ok=%s", _LH, code, payload.get("ok"))
+        print(f"{_LH} Respuesta lista status={code}")
+        return jsonify(payload), code
+    except Exception as e:
         import traceback
 
-        logger.exception("[API] api_actualizar_leidsa_historial")
         tb = traceback.format_exc()
-        return _api_json_response({
+        logger.error("%s Error completo: %s\n%s", _LH, e, tb)
+        print(f"{_LH} Error completo: {e}")
+        traceback.print_exc()
+        return jsonify({
+            "success": False,
             "ok": False,
-            "error": str(exc),
-            "detalle": tb,
+            "error": str(e),
             "traceback": tb,
-            "fuente": "leidsa.com",
-            "status": 500,
-            "message": str(exc),
-        }, 500)
+        }), 500
 
 
 @app.errorhandler(404)

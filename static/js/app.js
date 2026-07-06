@@ -1494,7 +1494,23 @@
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ days: historyDays }),
             });
-            const data = await parseJsonResponse(res);
+            const text = await res.text();
+            console.log(text);
+            let data;
+            const trimmed = text.trim();
+            if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+                try {
+                    data = JSON.parse(trimmed);
+                } catch (parseErr) {
+                    throw new Error(
+                        `JSON inválido (HTTP ${res.status}): ${parseErr.message}. Respuesta: ${trimmed.slice(0, 240)}`
+                    );
+                }
+            } else {
+                throw new Error(
+                    `Respuesta no JSON (HTTP ${res.status}): ${trimmed.slice(0, 240)}`
+                );
+            }
             if (!data.ok) {
                 const detail = formatLeidsaHistoryError(data, res);
                 setLeidsaStatus(`❌ ${detail}`, 'error');
