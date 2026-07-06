@@ -215,7 +215,9 @@ def _run_conectate_primary(lottery_name: str, days: int) -> dict:
     from services.new_lotteries import is_new_rd_lottery
 
     lot = find_lottery_in_list(get_all_lotteries(), lottery_name, country="RD")
-    if lot and is_new_rd_lottery(lot):
+    cfg = get_rd_lottery_config(lottery_name) or {}
+    multi_page = len(cfg.get("conectate_pages") or []) >= 2
+    if (lot and is_new_rd_lottery(lot)) or multi_page:
         from scrapers.conectate_rd import import_conectate_lottery_bulk_style
 
         res = import_conectate_lottery_bulk_style(lottery_name, days_back=days)

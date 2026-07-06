@@ -428,7 +428,9 @@ def import_conectate_lottery_bulk_style(lottery_name: str, days_back: int = 30) 
     lot = find_lottery_in_list(get_all_lotteries(), lottery_name, country="RD")
     if not lot:
         return {"ok": False, "message": f"Lotería '{lottery_name}' no encontrada."}
-    if not is_new_rd_lottery(lot):
+    cfg = get_rd_lottery_config(lot["name"]) or {}
+    multi_page = len(cfg.get("conectate_pages") or []) >= 2
+    if not is_new_rd_lottery(lot) and not multi_page:
         return import_conectate_lottery_history(lottery_name, days=days_back)
 
     scraper = ConectateRDScraper()
@@ -487,13 +489,12 @@ def import_conectate_lottery_bulk_style(lottery_name: str, days_back: int = 30) 
                 _save(row, row.get("draw_time", ""))
         time.sleep(0.02)
 
-    # Complemento hub solo si hace falta (evita timeout de sessions API)
-    if imported + updated == 0:
-        hub_rows, hub = _hub_rows_for_lottery(days_back, db_name, scraper.get_hub_rows(days_back))
-        if not hub.get("ok") and hub.get("error"):
-            errors.append(str(hub.get("error")))
-        for row in hub_rows:
-            _save(row, row.get("draw_time", ""))
+    # Complemento hub (todas las tandas visibles en API)
+    hub_rows, hub = _hub_rows_for_lottery(days_back, db_name, scraper.get_hub_rows(days_back, force_refresh=True))
+    if not hub.get("ok") and hub.get("error"):
+        errors.append(str(hub.get("error")))
+    for row in hub_rows:
+        _save(row, row.get("draw_time", ""))
 
     with get_db() as conn:
         total = conn.execute(

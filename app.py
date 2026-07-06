@@ -534,6 +534,7 @@ def api_results():
                 enrich_result_row(r, lottery)
                 slot = get_schedule_slot(lottery["name"], r.get("draw_name")) if lottery else None
                 r["time_display"] = slot["time"] if slot else _format_time_12h(r.get("draw_time", ""))
+        groups = [g for g in groups if g.get("results")]
 
     if lottery and lottery.get("country") == "USA":
         results.sort(
@@ -564,6 +565,9 @@ def api_results():
         payload["latest_date"] = latest_date
     if groups is not None:
         payload["groups"] = groups
+        payload["groups_count"] = len(groups)
+        payload["results_in_view"] = sum(len(g.get("results") or []) for g in groups)
+    payload["days_requested"] = limit_days
     return jsonify(payload)
 
 

@@ -898,9 +898,6 @@ def get_results_grouped_by_date(lottery_id, limit_days=30, draw_name=None):
             q += " AND draw_date >= ?"
             params.append(cutoff)
         q += " ORDER BY draw_date DESC"
-        if limit_days and int(limit_days) > 0:
-            q += " LIMIT ?"
-            params.append(int(limit_days) * 4)
         date_rows = conn.execute(q, params).fetchall()
         groups = []
         for dr in date_rows:

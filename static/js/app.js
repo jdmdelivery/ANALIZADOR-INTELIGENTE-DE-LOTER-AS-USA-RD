@@ -429,13 +429,14 @@
         if (loadingOverlay) loadingOverlay.style.display = 'flex';
 
         const isUsa = selectCountry.value === 'USA';
+        const rdDays = Math.max(historyDays || 90, analysisDays || 90);
         const body = {
             pais: selectCountry.value,
             country: selectCountry.value,
             state: selectState.value || '',
             loteria: currentLotteryName,
             lottery: currentLotteryName,
-            days: 30,
+            days: isUsa ? 30 : rdDays,
             refresh_all_usa: isUsa && !currentLotteryName,
         };
 
@@ -598,7 +599,7 @@
         currentLotteryName = opt?.dataset?.name || opt?.textContent || '';
         currentCountry = selectCountry.value;
         resultsViewMode = 'latest';
-        historyDays = 30;
+        historyDays = analysisDays || 90;
         hideMain();
 
         if (!currentLotteryId) return;
