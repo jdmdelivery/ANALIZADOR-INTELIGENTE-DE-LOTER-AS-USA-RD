@@ -976,40 +976,96 @@ def admin_diagnostico_scrapers():
     )
 
 
+_leidsa_update_lock = threading.Lock()
+
+
 @app.route("/api/resultados/leidsa/actualizar", methods=["POST"])
 @admin_required
 def api_actualizar_leidsa():
+    _LU = "[LEIDSA_ACTUALIZAR]"
     try:
+        from flask import current_app
         from services.leidsa_config import LEIDSA_SLUGS
+
+        logger.info("%s Entró al endpoint", _LU)
+        print(f"{_LU} Entró al endpoint")
 
         data = request.get_json(silent=True) or {}
         slug = (data.get("game_slug") or data.get("slug") or "").strip().lower()
         if slug and slug not in LEIDSA_SLUGS:
             slug = None
-        result = _run_leidsa_update(history_game_slug=slug or None)
-        if result.get("ok"):
-            code = 200
-        else:
-            code = 400
-            result.setdefault("error", result.get("message") or "Error LEIDSA")
-            result.setdefault("detalle", result.get("error"))
-            result.setdefault("fuente", "leidsa.com")
-            result.setdefault("status", 400)
-        return _api_json_response(result, code)
+
+        if not _leidsa_update_lock.acquire(blocking=False):
+            logger.info("%s Job ya en curso", _LU)
+            return jsonify({
+                "success": True,
+                "ok": True,
+                "async": True,
+                "already_running": True,
+                "message": "LEIDSA ya se está actualizando. Espere ~1 min y recargue el panel.",
+            }), 200
+
+        app_ref = current_app._get_current_object()
+        history_slug = slug or None
+
+        def _run_leidsa_bg(slug_val: str | None) -> None:
+            try:
+                with app_ref.app_context():
+                    logger.info("%s Background: iniciando actualización", _LU)
+                    print(f"{_LU} Background: iniciando")
+                    result = _run_leidsa_update(history_game_slug=slug_val)
+                    found = int(result.get("results_found") or 0)
+                    saved = int(result.get("inserted") or 0) + int(result.get("updated") or 0)
+                    logger.info(
+                        "%s Background: ok=%s encontrados=%s guardados=%s",
+                        _LU,
+                        result.get("ok"),
+                        found,
+                        saved,
+                    )
+                    print(f"{_LU} Cantidad encontrada: {found}")
+            except Exception as exc:
+                import traceback
+
+                logger.error("%s Error completo: %s\n%s", _LU, exc, traceback.format_exc())
+                print(f"{_LU} Error completo: {exc}")
+                traceback.print_exc()
+            finally:
+                _leidsa_update_lock.release()
+
+        threading.Thread(
+            target=_run_leidsa_bg,
+            args=(history_slug,),
+            name="leidsa-actualizar",
+            daemon=True,
+        ).start()
+
+        return jsonify({
+            "success": True,
+            "ok": True,
+            "async": True,
+            "message": (
+                "LEIDSA actualizándose en segundo plano (fuentes oficiales + respaldo). "
+                "Recargue el panel en ~1 minuto."
+            ),
+        }), 202
     except Exception as exc:
         import traceback
 
-        logger.exception("[API] api_actualizar_leidsa")
         tb = traceback.format_exc()
-        return _api_json_response({
+        logger.error("%s Error completo: %s\n%s", _LU, exc, tb)
+        print(f"{_LU} Error completo: {exc}")
+        traceback.print_exc()
+        try:
+            _leidsa_update_lock.release()
+        except RuntimeError:
+            pass
+        return jsonify({
+            "success": False,
             "ok": False,
             "error": str(exc),
-            "detalle": tb,
             "traceback": tb,
-            "fuente": "leidsa.com",
-            "status": 500,
-            "message": str(exc),
-        }, 500)
+        }), 500
 
 
 def _run_leidsa_update(*, history_game_slug: str | None = None):

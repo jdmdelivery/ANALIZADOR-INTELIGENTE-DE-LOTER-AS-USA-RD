@@ -1559,7 +1559,33 @@
                 method: 'POST',
                 credentials: 'same-origin',
             });
-            const data = await parseJsonResponse(res);
+            const text = await res.text();
+            console.log(text);
+            let data;
+            const trimmed = text.trim();
+            if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+                try {
+                    data = JSON.parse(trimmed);
+                } catch (parseErr) {
+                    throw new Error(
+                        `JSON inválido (HTTP ${res.status}): ${parseErr.message}. Respuesta: ${trimmed.slice(0, 240)}`
+                    );
+                }
+            } else {
+                throw new Error(
+                    `Respuesta no JSON (HTTP ${res.status}): ${trimmed.slice(0, 240)}`
+                );
+            }
+            if (data.async) {
+                setLeidsaStatus(
+                    `⏳ ${data.message || 'LEIDSA actualizándose. Recargue en ~1 min.'}`,
+                    'loading'
+                );
+                await loadLeidsaBoard();
+                setTimeout(() => loadLeidsaBoard(), 45000);
+                setTimeout(() => loadLeidsaBoard(), 90000);
+                return;
+            }
             if (!data.ok || data.live_failed) {
                 let detail = data.message || data.error || 'LEIDSA no respondió en vivo';
                 if (data.used_db_fallback) {
