@@ -41,6 +41,19 @@ def _saved(res: dict) -> bool:
     return int(res.get("imported") or 0) + int(res.get("updated") or 0) > 0
 
 
+def _latest_is_stale(latest_date: str | None, *, max_age_days: int = 7) -> bool:
+    """True si no hay fecha o está más atrasada que max_age_days (zona RD)."""
+    if not latest_date:
+        return True
+    try:
+        from services.leidsa_history import _days_since_draw
+
+        age = _days_since_draw(str(latest_date)[:10])
+        return age is None or age > max_age_days
+    except Exception:
+        return True
+
+
 def _rows_found(res: dict) -> int:
     return int(
         res.get("rows_found")
@@ -395,6 +408,13 @@ def actualizar_leidsa_multi(*, days: int = 30, lottery_name: str | None = None) 
     errors: list[str] = []
     history_slug = _leidsa_history_slug(lottery_name)
     days = int(days or 30)
+    lot = None
+    if lottery_name:
+        lot = find_lottery_in_list(get_all_lotteries(), lottery_name, country="RD")
+    if not lot and history_slug:
+        from models import get_lottery_by_slug
+
+        lot = get_lottery_by_slug(history_slug)
 
     logger.info("%s === LEIDSA multi-fuente === slug=%s", LOG, history_slug or "todos")
 
@@ -410,25 +430,25 @@ def actualizar_leidsa_multi(*, days: int = 30, lottery_name: str | None = None) 
             fast,
             lottery_name=lottery_name or history_slug,
         )
-        lot = None
-        if lottery_name:
-            lot = find_lottery_in_list(get_all_lotteries(), lottery_name, country="RD")
-        if not lot and history_slug:
-            from models import get_lottery_by_slug
-
-            lot = get_lottery_by_slug(history_slug)
         if lot:
             fast["lottery_id"] = lot["id"]
             fast["latest_date"] = get_max_draw_date(lot["id"]) or fast.get("latest_date")
             fast["ultima_fecha"] = fast.get("latest_date")
-        if fast.get("ok"):
+        if fast.get("ok") and not _latest_is_stale(fast.get("latest_date")):
             fast["pais"] = "DO"
             fast["fuente_usada"] = "LEIDSA.com"
             fast["sources_tried"] = sources_tried
             fast["imported"] = int(fast.get("inserted") or 0)
             fast["mensaje"] = fast.get("message") or f"LEIDSA {history_slug} actualizado."
             return fast
-        if fast.get("message"):
+        if fast.get("ok") and _latest_is_stale(fast.get("latest_date")):
+            msg = (
+                f"LEIDSA {history_slug}: fecha atrasada "
+                f"({fast.get('latest_date') or 'sin fecha'}) — probando fuentes alternativas"
+            )
+            logger.warning("%s %s", LOG, msg)
+            errors.append(msg)
+        elif fast.get("message"):
             errors.append(fast["message"])
 
     try:
@@ -441,13 +461,25 @@ def actualizar_leidsa_multi(*, days: int = 30, lottery_name: str | None = None) 
         leidsa["fuente"] = "leidsa"
         leidsa["fuente_label"] = "LEIDSA.com"
         _record(sources_tried, "leidsa", leidsa)
-        if leidsa.get("ok") and (_saved(leidsa) or int(leidsa.get("results_found") or 0) > 0):
+        if lot is None and lottery_name:
+            lot = find_lottery_in_list(get_all_lotteries(), lottery_name, country="RD")
+        if lot:
+            leidsa["latest_date"] = get_max_draw_date(lot["id"]) or leidsa.get("latest_date")
+        if (
+            leidsa.get("ok")
+            and (_saved(leidsa) or int(leidsa.get("results_found") or 0) > 0)
+            and not _latest_is_stale(leidsa.get("latest_date"))
+        ):
             leidsa["pais"] = "DO"
             leidsa["fuente_usada"] = "LEIDSA.com"
             leidsa["sources_tried"] = sources_tried
             leidsa["mensaje"] = leidsa.get("message") or "LEIDSA actualizada."
             return leidsa
-        if leidsa.get("message"):
+        if leidsa.get("ok") and _latest_is_stale(leidsa.get("latest_date")):
+            errors.append(
+                f"LEIDSA update_now fecha atrasada ({leidsa.get('latest_date') or 'sin fecha'})"
+            )
+        elif leidsa.get("message"):
             errors.append(leidsa["message"])
     except Exception as exc:
         logger.exception("%s LEIDSA primary error", LOG)
@@ -458,15 +490,23 @@ def actualizar_leidsa_multi(*, days: int = 30, lottery_name: str | None = None) 
         try:
             fb = _run_fallback(fuente_key, fn_name, target, days)
             _record(sources_tried, fuente_key, fb)
-            if fb.get("ok") and _saved(fb):
-                return _success(
+            lot_fb = find_lottery_in_list(get_all_lotteries(), target, country="RD")
+            latest_fb = get_max_draw_date(lot_fb["id"]) if lot_fb else fb.get("latest_date")
+            if fb.get("ok") and _saved(fb) and not _latest_is_stale(latest_fb):
+                out = _success(
                     fb,
                     fuente_key=fuente_key,
                     lottery_name=target,
                     sources_tried=sources_tried,
                     warning=True,
                 )
-            if fb.get("message"):
+                out["latest_date"] = latest_fb
+                return out
+            if fb.get("ok") and _saved(fb) and _latest_is_stale(latest_fb):
+                errors.append(
+                    f"{fuente_key}: guardó filas pero fecha sigue atrasada ({latest_fb})"
+                )
+            elif fb.get("message"):
                 errors.append(fb["message"])
         except Exception as exc:
             errors.append(str(exc))
