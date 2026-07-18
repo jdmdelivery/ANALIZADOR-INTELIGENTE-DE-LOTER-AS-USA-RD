@@ -48,6 +48,26 @@ class LeidsaHistoryTests(unittest.TestCase):
         self.assertEqual(len(rows), 2)
         self.assertEqual(rows[0]["numeros"], [1, 2, 3, 4, 5, 6])
 
+    def test_parse_draw_results_family_alias(self):
+        html = (
+            'drawResults":[{"gameDrawId":"1_100","gameFamilyName":"Loto Más",'
+            '"drawTime":"2026-05-24T01:00:00Z","results":{"drawnValues":[{"drawnValues":[1,2,3,4,5,6]}]}}]'
+        ).replace('"', '\\"')
+        rows = parse_draw_results_history(
+            f"<html>{html}</html>", "Loto", days=365, limit=10, slug="leidsa_loto_mas"
+        )
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["numeros"], [1, 2, 3, 4, 5, 6])
+
+    def test_canonical_family_and_lookup(self):
+        from services.leidsa_history import _canonical_family_name, _lookup_draw_id
+
+        self.assertEqual(_canonical_family_name("Loto Más"), "Loto")
+        self.assertEqual(_canonical_family_name("LotoMas"), "Loto")
+        game = next(g for g in LEIDSA_HISTORY_GAMES if g["slug"] == "leidsa_loto_mas")
+        did = _lookup_draw_id(game, {"Loto Más": "1_2062", "Loto": "1_100"})
+        self.assertEqual(did, "1_2062")
+
     def test_discover_draw_ids_live(self):
         ids = discover_latest_draw_ids()
         if ids:
@@ -69,9 +89,13 @@ class LeidsaHistoryTests(unittest.TestCase):
         bad = {"ok": False, "rows": [], "url": "https://www.leidsa.com/x", "status_code": 403, "error": "HTTP 403"}
 
         with patch("services.leidsa_history.fetch_leidsa_game_history", side_effect=[good, bad, bad, bad, bad, bad]):
-            with patch("services.leidsa_history.save_leidsa_rows") as save:
-                save.return_value = {"inserted": 2, "updated": 0, "skipped": 0, "errors": []}
-                out = fetch_all_leidsa_history(days=30, save=True, use_cache=False)
+            with patch(
+                "services.leidsa_history._supplement_live_rows",
+                return_value={"inserted": 0, "updated": 0, "rows": []},
+            ):
+                with patch("services.leidsa_history.save_leidsa_rows") as save:
+                    save.return_value = {"inserted": 2, "updated": 0, "skipped": 0, "errors": []}
+                    out = fetch_all_leidsa_history(days=30, save=True, use_cache=False)
         self.assertTrue(out.get("ok"))
         self.assertTrue(out.get("partial"))
         self.assertEqual(out.get("inserted"), 2)

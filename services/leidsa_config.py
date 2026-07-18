@@ -104,6 +104,7 @@ LEIDSA_GAMES_LIST: list[dict] = [
         "family_name": "Loto",
         "site_slug": "leidsa-loto",
         "path": "Loto",
+        "path_aliases": ["LotoMas", "Loto-Mas"],
         "draw_id_prefix": "1_",
         "lottery_type": "lotto",
         "draws": ["9:00 PM"],
@@ -117,6 +118,7 @@ LEIDSA_HISTORY_GAMES: list[dict] = [
         "name": g["name"],
         "slug": g["slug"],
         "path": g["path"],
+        "path_aliases": list(g.get("path_aliases") or []),
         "family_name": g["family_name"],
         "draw_id_prefix": g.get("draw_id_prefix", ""),
         "url": "",  # se construye en runtime con drawId actual
@@ -137,17 +139,35 @@ NAME_ALIASES = {
     "leidsa": "leidsa_quiniela_pale",
     "leidsa quiniela pale": "leidsa_quiniela_pale",
     "quiniela pale": "leidsa_quiniela_pale",
+    "quinielapale": "leidsa_quiniela_pale",
     "pega 3 mas": "leidsa_pega3",
     "pega3mas": "leidsa_pega3",
-    "pega 3 más": "leidsa_pega3",
+    "pega3": "leidsa_pega3",
     "leidsa_pega3_mas": "leidsa_pega3",
     "loto pool": "leidsa_loto_pool",
+    "lotopool": "leidsa_loto_pool",
     "super kino tv": "leidsa_super_kino_tv",
+    "superkinotv": "leidsa_super_kino_tv",
     "kinotv": "leidsa_super_kino_tv",
     "super pale": "leidsa_super_pale",
+    "superpale": "leidsa_super_pale",
     "loto mas": "leidsa_loto_mas",
+    "lotomas": "leidsa_loto_mas",
+    "leidsa loto mas": "leidsa_loto_mas",
+    "leidsa lotomas": "leidsa_loto_mas",
     "super mas": "leidsa_loto_mas",
+    "supermas": "leidsa_loto_mas",
     "loto": "leidsa_loto_mas",
+}
+
+# Nombres de familia del sitio → family_name de config (drawId / historial)
+FAMILY_NAME_ALIASES = {
+    "loto mas": "Loto",
+    "lotomas": "Loto",
+    "loto-mas": "Loto",
+    "super mas": "Loto",
+    "supermas": "Loto",
+    "super-mas": "Loto",
 }
 
 
@@ -202,11 +222,13 @@ def build_leidsa_games_dict() -> dict[str, dict]:
             "family_name": g.get("family_name", g["name"]),
             "site_slug": g.get("site_slug", slug.replace("_", "-")),
             "path": g.get("path", g["name"]),
+            "path_aliases": list(g.get("path_aliases") or []),
             "draw_id_prefix": g.get("draw_id_prefix", ""),
             "lottery_type": g.get("lottery_type", slug),
             "draws": draws,
             "days_of_week": g.get("days_of_week"),
             "schedule_note": g.get("schedule_note"),
+            "extra_family": g.get("extra_family"),
         }
     return out
 

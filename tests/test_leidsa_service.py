@@ -51,6 +51,24 @@ class LeidsaServiceTests(unittest.TestCase):
             os.remove(_test_db)
         init_db()
 
+    def test_normalize_lottery_slug_accents(self):
+        cases = {
+            "Loto": "leidsa_loto_mas",
+            "Loto Más": "leidsa_loto_mas",
+            "Loto Mas": "leidsa_loto_mas",
+            "LotoMas": "leidsa_loto_mas",
+            "LEIDSA Loto Más": "leidsa_loto_mas",
+            "Super Más": "leidsa_loto_mas",
+            "Pega 3 Más": "leidsa_pega3",
+            "Quiniela Pale": "leidsa_quiniela_pale",
+        }
+        for name, expected in cases.items():
+            self.assertEqual(
+                leidsa_service.normalize_lottery_slug(name),
+                expected,
+                msg=f"slug for {name!r}",
+            )
+
     def test_safe_response_never_none(self):
         r = leidsa_service._safe_response()
         self.assertIsInstance(r, dict)

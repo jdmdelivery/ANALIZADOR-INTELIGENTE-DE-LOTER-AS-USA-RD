@@ -80,20 +80,43 @@ def _now_rd() -> datetime:
     return datetime.now(tz) if tz else datetime.now()
 
 
+def _fold_accents(text: str) -> str:
+    """á→a etc. antes de strip de no-alfanuméricos (evita 'Más' → 'm s')."""
+    return (
+        (text or "")
+        .lower()
+        .replace("á", "a")
+        .replace("é", "e")
+        .replace("í", "i")
+        .replace("ó", "o")
+        .replace("ú", "u")
+        .replace("ü", "u")
+        .replace("ñ", "n")
+    )
+
+
 def normalize_lottery_slug(name: str = "", site_slug: str = "") -> str | None:
     if site_slug:
         for slug, cfg in LEIDSA_GAMES.items():
             if cfg.get("site_slug") == site_slug:
                 return slug
-    raw = re.sub(r"[^a-z0-9]+", " ", (name or "").strip().lower()).strip()
+    folded = _fold_accents(name or "").strip()
+    raw = re.sub(r"[^a-z0-9]+", " ", folded).strip()
+    if not raw:
+        return None
     if raw in LEIDSA_GAMES:
         return raw
     if raw in NAME_ALIASES:
         return NAME_ALIASES[raw]
+    nospace = raw.replace(" ", "")
+    if nospace in NAME_ALIASES:
+        return NAME_ALIASES[nospace]
     for slug, cfg in LEIDSA_GAMES.items():
-        if cfg["family_name"].lower() == raw:
+        fam = _fold_accents(cfg.get("family_name") or "")
+        disp = _fold_accents(cfg.get("display_name") or "")
+        if fam == raw or disp == raw:
             return slug
-        if cfg["display_name"].lower() == raw:
+        if fam.replace(" ", "") == nospace or disp.replace(" ", "") == nospace:
             return slug
     compact = raw.replace(" ", "_")
     if compact in LEIDSA_GAMES:
