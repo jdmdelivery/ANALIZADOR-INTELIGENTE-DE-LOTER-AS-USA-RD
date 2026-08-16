@@ -48,6 +48,57 @@ def _norm_freq(count: int, maximum: int) -> float:
     return (count / maximum) * 100 if maximum else 0.0
 
 
+def build_scoring_cache(
+    per_draw: list[list[str]],
+    *,
+    weights: dict[str, float] | None = None,
+    draw_name: str = "",
+) -> dict:
+    """
+    Precalcula estructuras reutilizables del score para evitar recomputar
+    frecuencias/atrasos/slot para cada número en la misma petición.
+    """
+    window_freqs: dict[str, Counter] = {}
+    window_max: dict[str, int] = {}
+    for win in ANALYSIS_WINDOWS:
+        key = f"freq_{win}"
+        freq = frequency_in_window(per_draw, min(win, len(per_draw)))
+        window_freqs[key] = freq
+        window_max[key] = max(freq.values()) if freq else 1
+
+    f10 = frequency_in_window(per_draw, min(10, len(per_draw)))
+    max10 = max(f10.values()) if f10 else 1
+
+    since_map: dict[str, int] = {}
+    for idx, draw in enumerate(per_draw):
+        for n in draw:
+            since_map.setdefault(n, idx)
+
+    recent_counts = Counter()
+    for draw in per_draw[:10]:
+        for n in draw:
+            recent_counts[n] += 1
+
+    older_counts = Counter()
+    for draw in per_draw[10:20]:
+        for n in draw:
+            older_counts[n] += 1
+
+    slot_score, slot_meta = score_draw_slot_factor(draw_name)
+    return {
+        "weights": normalize_weights(weights or DEFAULT_WEIGHTS),
+        "window_freqs": window_freqs,
+        "window_max": window_max,
+        "freq_10": f10,
+        "freq_10_max": max10,
+        "since_map": since_map,
+        "recent_counts": recent_counts,
+        "older_counts": older_counts,
+        "slot_score": slot_score,
+        "slot_meta": slot_meta,
+    }
+
+
 def score_number(
     number: str,
     per_draw: list[list[str]],
@@ -57,36 +108,58 @@ def score_number(
     position_freq: dict[int, Counter] | None = None,
     dates: list[str] | None = None,
     draw_name: str = "",
+    scoring_cache: dict | None = None,
 ) -> tuple[int, dict]:
-    w = normalize_weights(weights or DEFAULT_WEIGHTS)
+    w = (
+        scoring_cache.get("weights")
+        if scoring_cache and scoring_cache.get("weights")
+        else normalize_weights(weights or DEFAULT_WEIGHTS)
+    )
     explanation: dict = {"weights": w, "components": {}, "weekday_meta": {}, "draw_slot_meta": {}}
 
     if not per_draw:
         return 0, explanation
 
-    window_freqs: dict[str, Counter] = {}
-    for win in ANALYSIS_WINDOWS:
-        window_freqs[f"freq_{win}"] = frequency_in_window(per_draw, min(win, len(per_draw)))
-    f10 = frequency_in_window(per_draw, min(10, len(per_draw)))
+    if scoring_cache:
+        window_freqs = scoring_cache["window_freqs"]
+        window_max = scoring_cache["window_max"]
+        f10 = scoring_cache["freq_10"]
+        max10 = scoring_cache["freq_10_max"]
+    else:
+        window_freqs: dict[str, Counter] = {}
+        window_max: dict[str, int] = {}
+        for win in ANALYSIS_WINDOWS:
+            key = f"freq_{win}"
+            freq = frequency_in_window(per_draw, min(win, len(per_draw)))
+            window_freqs[key] = freq
+            window_max[key] = max(freq.values()) if freq else 1
+        f10 = frequency_in_window(per_draw, min(10, len(per_draw)))
+        max10 = max(f10.values()) if f10 else 1
 
     comps: dict[str, float] = {}
     for win in ANALYSIS_WINDOWS:
         key = f"freq_{win}"
         freq = window_freqs[key]
         c = freq.get(number, 0)
-        mx = max(freq.values()) if freq else 1
+        mx = window_max[key]
         comps[key] = _norm_freq(c, mx)
 
     c10 = f10.get(number, 0)
-    max10 = max(f10.values()) if f10 else 1
     comp_trend = _norm_freq(c10, max10)
 
-    since = next((i for i, d in enumerate(per_draw) if number in d), len(per_draw))
+    if scoring_cache:
+        since = scoring_cache["since_map"].get(number, len(per_draw))
+    else:
+        since = next((i for i, d in enumerate(per_draw) if number in d), len(per_draw))
     comp_delay = min(100, since * 8) if since >= 2 else since * 20
 
-    older = per_draw[10:20] if len(per_draw) > 10 else []
-    co = sum(1 for d in older if number in d)
-    cr = sum(1 for d in per_draw[:10] if number in d)
+    if scoring_cache:
+        co = scoring_cache["older_counts"].get(number, 0)
+        cr = scoring_cache["recent_counts"].get(number, 0)
+    else:
+        older = per_draw[10:20] if len(per_draw) > 10 else []
+        co = sum(1 for d in older if number in d)
+        cr = sum(1 for d in per_draw[:10] if number in d)
     stability = 50 + (10 if abs(cr - co) <= 1 else -15)
     comp_stability = max(0, min(100, stability))
 
@@ -97,8 +170,19 @@ def score_number(
         ctx = _norm_freq(pf.get(number, 0), mx) if mx else 50
     comp_context = ctx
 
-    comp_weekday, weekday_meta = score_weekday_factor(number, per_draw, dates)
-    comp_slot, slot_meta = score_draw_slot_factor(draw_name)
+    if dates:
+        comp_weekday, weekday_meta = score_weekday_factor(number, per_draw, dates)
+    else:
+        comp_weekday, weekday_meta = 50.0, {
+            "weekday_counts": {},
+            "best_weekday": None,
+            "target_weekday": None,
+        }
+
+    if scoring_cache:
+        comp_slot, slot_meta = scoring_cache["slot_score"], dict(scoring_cache["slot_meta"])
+    else:
+        comp_slot, slot_meta = score_draw_slot_factor(draw_name)
     explanation["weekday_meta"] = weekday_meta
     explanation["draw_slot_meta"] = slot_meta
 

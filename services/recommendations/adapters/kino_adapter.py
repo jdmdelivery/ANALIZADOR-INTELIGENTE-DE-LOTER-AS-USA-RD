@@ -1,11 +1,15 @@
 """Kino / Super Kino / Pick 10 — lista sugerida y comparador."""
 from __future__ import annotations
 
-import random
-
 from services.recommendations.adapters.lotto_adapter import LottoAdapter
 from services.recommendations.constants import MIN_HISTORY
-from services.recommendations.scoring import score_number
+from services.recommendations.scoring import (
+    build_scoring_cache,
+    confidence_from_score,
+    is_strong_recommendation,
+    score_combination,
+    score_number,
+)
 
 
 def _sanitize_kino_numbers(numbers: list, config: dict) -> list[str]:
@@ -37,20 +41,26 @@ class KinoAdapter(LottoAdapter):
     game_type_label = "Kino / Super Kino"
 
     def recommend(self, ctx: dict, config: dict) -> dict:
-        base = super().recommend(ctx, config)
-        if not base.get("ok"):
-            return base
-
         per_draw = ctx["per_draw_main"]
+        if len(per_draw) < MIN_HISTORY:
+            return self.insufficient(ctx, len(per_draw))
+
+        base = self.base_meta(ctx, config, "kino")
         count = int(config.get("count", 20))
         pad = int(config.get("pad", 2))
         lo, hi = int(config["min"]), int(config["max"])
         universe = [str(i).zfill(pad) for i in range(lo, hi + 1)]
         weights = ctx.get("weights")
+        score_cache = build_scoring_cache(per_draw, weights=weights, draw_name="")
 
         scored_nums = []
         for n in universe:
-            s, _ = score_number(n, per_draw, weights=weights)
+            s, _ = score_number(
+                n,
+                per_draw,
+                weights=weights,
+                scoring_cache=score_cache,
+            )
             scored_nums.append({"number": n, "score": s})
         scored_nums.sort(key=lambda x: (-x["score"], x["number"]))
 
@@ -72,7 +82,34 @@ class KinoAdapter(LottoAdapter):
                     suggested.append(n)
                 if len(suggested) >= count:
                     break
+
+        combo_score, digit_parts = score_combination(
+            suggested,
+            per_draw,
+            weights=weights,
+        )
+        conf_key, conf_label = confidence_from_score(combo_score)
+        hot_detail = [
+            {
+                "number": part["number"],
+                "score": part["score"],
+                "category": "caliente",
+                "category_label": "Caliente",
+            }
+            for part in scored_nums[:10]
+        ]
+        cold_detail = [
+            {
+                "number": part["number"],
+                "score": part["score"],
+                "category": "frío",
+                "category_label": "Frío",
+            }
+            for part in scored_nums[-10:]
+        ]
+
         base["generated_numbers"] = suggested
+        base["ok"] = True
         base["numbers"] = suggested
         base["recommended_numbers"] = suggested
         base["all_unique"] = len(set(suggested)) == len(suggested)
@@ -80,12 +117,29 @@ class KinoAdapter(LottoAdapter):
             lo <= int(n) <= hi for n in suggested
         ) if suggested else False
         base["recommend_count"] = len(suggested)
+        if config.get("numbers_per_draw"):
+            base["numbers_per_draw"] = int(config["numbers_per_draw"])
+        if "strict_score_ranking" in config:
+            base["strict_score_ranking"] = bool(config.get("strict_score_ranking"))
+        base["score"] = combo_score
+        base["confidence_level"] = conf_key
+        base["confidence_label"] = conf_label
+        base["is_strong_recommendation"] = is_strong_recommendation(combo_score)
+        base["digit_scores"] = digit_parts
         base["suggested_list"] = scored_nums[:count]
         base["top_numbers"] = {
             "top_10": scored_nums[:10],
             "top_20": scored_nums[:20],
             "top_50": scored_nums[:50],
         }
+        base["top_combinations"] = {"top_5": [], "top_10": [], "top_20": []}
+        base["suggested_combinations"] = []
+        base["hot_numbers"] = [p["number"] for p in hot_detail]
+        base["cold_numbers"] = [p["number"] for p in cold_detail]
+        base["hot_numbers_detail"] = hot_detail
+        base["cold_numbers_detail"] = cold_detail
+        base["total_results"] = len(per_draw)
+        base["analysis_window"] = 25
         base["game_type"] = self.game_type_label
         base["payout_table_available"] = False
         base["analysis_text"] = (
