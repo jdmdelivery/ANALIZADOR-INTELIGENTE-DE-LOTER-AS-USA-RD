@@ -255,7 +255,9 @@ def is_leidsa_game_lottery(lottery: dict | None) -> bool:
 # Recomendación por juego (nombre exacto en tabla lotteries.name)
 LEIDSA_RECOMMENDATION_CONFIG: dict[str, dict] = {
     "LEIDSA Super Kino TV": {
-        "recommend_count": 20,
+        "numbers_per_draw": 20,
+        "recommend_count": 10,
+        "strict_score_ranking": True,
         "allow_duplicates": False,
         "min": 1,
         "max": 80,
@@ -341,6 +343,9 @@ def leidsa_recommend_to_analysis_config(cfg: dict) -> dict:
     pad = cfg.get("pad", 2)
     return {
         "count": int(cfg.get("recommend_count", 3)),
+        "recommend_count": int(cfg.get("recommend_count", 3)),
+        "numbers_per_draw": int(cfg.get("numbers_per_draw", 0)),
+        "strict_score_ranking": bool(cfg.get("strict_score_ranking", False)),
         "allow_repeat": bool(cfg.get("allow_duplicates", False)),
         "min": int(cfg.get("min", 0)),
         "max": int(cfg.get("max", 99)),

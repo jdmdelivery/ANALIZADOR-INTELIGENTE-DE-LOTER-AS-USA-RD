@@ -968,6 +968,7 @@ def _pick_numbers(stats, config):
     """Elige números por mejor puntuación; sin duplicados salvo allow_repeat."""
     count = int(config["count"])
     allow_repeat = bool(config.get("allow_repeat", False))
+    strict_score_ranking = bool(config.get("strict_score_ranking", False))
     pad = config.get("pad", 2)
 
     universe = [_normalize_number(i, pad) for i in range(config["min"], config["max"] + 1)]
@@ -981,7 +982,8 @@ def _pick_numbers(stats, config):
     scored: list[tuple[float, str]] = []
     for n in pickable:
         score = _score_number(n, stats)
-        score += random.uniform(0, 5.5)
+        if not strict_score_ranking:
+            score += random.uniform(0, 5.5)
         scored.append((score, n))
     scored.sort(key=lambda x: (-x[0], x[1]))
 
@@ -1205,9 +1207,30 @@ def _bonus_label_for_type(lottery_type):
 def generar_jugada_inteligente(lottery_id, draw_name, force_refresh=True, days=None):
     from services.recommendations.engine import generate_recommendation
 
-    return generate_recommendation(
+    result = generate_recommendation(
         lottery_id, draw_name, force_refresh=force_refresh, days=days
     )
+    if not isinstance(result, dict):
+        return result
+
+    lottery = get_lottery(lottery_id)
+    if not lottery:
+        return result
+
+    cfg = _resolve_analysis_config(lottery)
+    recommend_count = int(cfg.get("count", len(result.get("generated_numbers") or [])))
+    if result.get("ok"):
+        result["recommend_count"] = recommend_count
+        if cfg.get("numbers_per_draw"):
+            result["numbers_per_draw"] = int(cfg["numbers_per_draw"])
+    if (lottery.get("name") or "").strip() == "LEIDSA Super Kino TV":
+        result["recommendation_title"] = (
+            f"{lottery['name']} — {recommend_count} números recomendados"
+        )
+        result["recommendation_subtitle"] = (
+            f"🎯 Selección de {recommend_count} números con mayor puntuación del análisis"
+        )
+    return result
 
 
 def _resolve_draw_name_for_lottery(lottery: dict, draw_label: str) -> str:

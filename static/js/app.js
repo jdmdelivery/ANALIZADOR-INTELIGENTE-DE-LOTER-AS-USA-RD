@@ -1288,7 +1288,8 @@
             const lotName = data.lottery || currentLotteryName;
             const titleEl = $('predictionTitle');
             if (titleEl) {
-                titleEl.textContent = `Recomendación ${lotName} — ${recCount} números`;
+                titleEl.textContent = data.recommendation_title
+                    || `Recomendación ${lotName} — ${recCount} números`;
             }
             const drawSub = $('predictionDraw');
             if (drawSub) {
@@ -1331,11 +1332,13 @@
 
             const basisEl = $('predictionBasis');
             if (basisEl) {
-                basisEl.textContent = data.analysis_basis || 'Basado en análisis histórico y tendencias recientes';
+                basisEl.textContent = data.recommendation_subtitle
+                    || data.analysis_basis
+                    || 'Basado en análisis histórico y tendencias recientes';
             }
 
             const bonus = data.bonus_numbers || (data.generated_bonus ? [data.generated_bonus] : []);
-            $('predictionBalls').innerHTML = renderBallSet(data.generated_numbers, bonus, 'large');
+            $('predictionBalls').innerHTML = renderBallSet(nums, bonus, 'large');
 
             $('predictionReason').textContent = data.analysis_text || '';
 
