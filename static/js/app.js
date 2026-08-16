@@ -1238,19 +1238,35 @@
             };
             const forceQs = force ? '&force=1&recalc=1' : '';
             const bustQs = `&t=${Date.now()}`;
-            const res = await fetch(
+            const predictionUrl =
                 `/api/prediction?lottery_id=${currentLotteryId}`
                 + `&draw_name=${sorteoName}`
                 + `&sorteo=${sorteoTime}`
                 + `&fecha=latest`
                 + `&days=${analysisDays}`
                 + `&rango=${analysisDays}`
-                + `${forceQs}${bustQs}`,
-                fetchOpts
-            );
+                + `${forceQs}${bustQs}`;
+            const fallbackUrl =
+                `/api/recommendations?lottery_id=${currentLotteryId}`
+                + `&draw_name=${sorteoName}`
+                + `&days=${analysisDays}`
+                + `${forceQs}${bustQs}`;
+            let res = await fetch(predictionUrl, fetchOpts);
             if (reqId !== predictionRequestSeq) return;
-
-            const data = await parseJsonResponse(res);
+            let data;
+            try {
+                data = await parseJsonResponse(res);
+            } catch (primaryErr) {
+                // Fallback al endpoint v2 cuando /api/prediction devuelve HTML/500.
+                const fallbackRes = await fetch(fallbackUrl, fetchOpts);
+                if (reqId !== predictionRequestSeq) return;
+                try {
+                    data = await parseJsonResponse(fallbackRes);
+                    res = fallbackRes;
+                } catch (_fallbackErr) {
+                    throw primaryErr;
+                }
+            }
 
             if (reqId !== predictionRequestSeq) return;
 
