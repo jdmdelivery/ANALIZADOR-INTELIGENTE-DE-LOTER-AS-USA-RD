@@ -1250,15 +1250,7 @@
             );
             if (reqId !== predictionRequestSeq) return;
 
-            const text = await res.text();
-            console.log(text);
-
-            let data;
-            try {
-                data = JSON.parse(text);
-            } catch (parseErr) {
-                throw new Error('Respuesta inválida del servidor');
-            }
+            const data = await parseJsonResponse(res);
 
             if (reqId !== predictionRequestSeq) return;
 
