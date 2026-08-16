@@ -144,6 +144,32 @@ def _analisis_cantidad_utilizada(result: dict | None) -> int | str:
     return "—"
 
 
+def _prepare_prediction_response(result: dict | None) -> dict:
+    """
+    Quita campos pesados de debug interno para evitar respuestas enormes/timeout.
+    No altera la lógica de recomendación ni los números sugeridos.
+    """
+    if not isinstance(result, dict):
+        return result or {}
+    payload = dict(result)
+    payload.pop("_per_draw", None)
+    return payload
+
+
+def _prediction_log_summary(result: dict | None) -> str:
+    if not isinstance(result, dict):
+        return str(result)
+    nums = result.get("generated_numbers") or result.get("numbers") or []
+    return (
+        f"ok={result.get('ok')} "
+        f"lottery={result.get('lottery') or result.get('lottery_name')} "
+        f"draw={result.get('draw_name')} "
+        f"recommend_count={result.get('recommend_count') or len(nums)} "
+        f"numbers_len={len(nums)} "
+        f"score={result.get('score')}"
+    )
+
+
 def _usa_analysis_log(msg: str) -> None:
     line = f"[USA ANALISIS] {msg}"
     logger.info(line)
@@ -1755,16 +1781,17 @@ def api_prediction():
                 _log_analisis("Cantidad utilizada para el análisis", 0)
                 _log_analisis("Respuesta enviada al frontend", str(payload))
                 return jsonify(payload), 200
+            result = _prepare_prediction_response(result)
             utilizados = _analisis_cantidad_utilizada(result)
             _log_analisis("Cantidad utilizada para el análisis", utilizados)
-            _log_analisis("Respuesta enviada al frontend", str(result))
+            _log_analisis("Respuesta enviada al frontend", _prediction_log_summary(result))
             status = 200 if result.get("ok") else 400
             return jsonify(result), status
 
-        result = build()
+        result = _prepare_prediction_response(build())
         utilizados = _analisis_cantidad_utilizada(result)
         _log_analisis("Cantidad utilizada para el análisis", utilizados)
-        _log_analisis("Respuesta enviada al frontend", str(result))
+        _log_analisis("Respuesta enviada al frontend", _prediction_log_summary(result))
         status = 200 if result.get("ok") else 400
         return jsonify(result), status
     except Exception as e:
