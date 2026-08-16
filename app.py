@@ -170,6 +170,26 @@ def _prediction_log_summary(result: dict | None) -> str:
     )
 
 
+def _request_user_for_log() -> str:
+    try:
+        if current_user.is_authenticated:
+            return f"{getattr(current_user, 'username', '') or 'unknown'}#{getattr(current_user, 'id', '')}"
+    except Exception:
+        logger.exception("No se pudo leer current_user para trazabilidad")
+    return "anon"
+
+
+def _log_endpoint_exception(endpoint_name: str, exc: Exception, **context) -> None:
+    safe_ctx = {k: v for k, v in context.items() if k and v is not None}
+    logger.exception(
+        "[%s] error_type=%s error_message=%s context=%s",
+        endpoint_name,
+        type(exc).__name__,
+        str(exc),
+        safe_ctx,
+    )
+
+
 def _usa_analysis_log(msg: str) -> None:
     line = f"[USA ANALISIS] {msg}"
     logger.info(line)
@@ -1679,6 +1699,10 @@ def api_analisis_leidsa():
 @app.route("/api/prediction")
 @app.route("/api/prediccion")
 def api_prediction():
+    lottery = None
+    draw_name = ""
+    loteria_name = ""
+    lottery_id = None
     try:
         _log_analisis("Entró al endpoint")
         lottery_id = request.args.get("lottery_id", type=int)
@@ -1795,31 +1819,56 @@ def api_prediction():
         status = 200 if result.get("ok") else 400
         return jsonify(result), status
     except Exception as e:
-        import traceback
-
-        traceback.print_exc()
-        return jsonify({
-            "success": False,
-            "error": str(e),
-        }), 500
+        _log_endpoint_exception(
+            "api_prediction",
+            e,
+            endpoint="/api/prediction",
+            lottery_id=lottery_id,
+            lottery_name=(lottery or {}).get("name") or loteria_name,
+            draw_name=draw_name or request.args.get("draw_name") or request.args.get("sorteo"),
+            user=_request_user_for_log(),
+            function_break="api_prediction",
+        )
+        raise
 
 
 @app.route("/api/recommendations")
 def api_recommendations_v2():
     """Motor de recomendaciones v2 — payload completo."""
+    lottery = None
     lottery_id = request.args.get("lottery_id", type=int)
     draw_name = request.args.get("draw_name", "").strip()
-    if not lottery_id or not draw_name:
-        return jsonify({"ok": False, "message": "lottery_id y draw_name requeridos"}), 400
-    from services.recommendations.engine import generate_recommendation
+    try:
+        if not lottery_id or not draw_name:
+            return jsonify({"ok": False, "message": "lottery_id y draw_name requeridos"}), 400
+        from services.recommendations.engine import generate_recommendation
 
-    lottery = get_lottery(lottery_id)
-    force = request.args.get("force") == "1" or request.args.get("recalc") == "1"
-    result = generate_recommendation(lottery_id, draw_name, force_refresh=force)
-    if lottery:
-        result = _enrich_prediction_payload(result, lottery_id, draw_name, lottery)
-    status = 200 if result.get("ok") else 400
-    return jsonify(result), status
+        lottery = get_lottery(lottery_id)
+        force = request.args.get("force") == "1" or request.args.get("recalc") == "1"
+        days = request.args.get("days", type=int)
+        result = generate_recommendation(
+            lottery_id,
+            draw_name,
+            force_refresh=force,
+            days=days,
+        )
+        if lottery:
+            result = _enrich_prediction_payload(result, lottery_id, draw_name, lottery)
+        result = _prepare_prediction_response(result)
+        status = 200 if result.get("ok") else 400
+        return jsonify(result), status
+    except Exception as e:
+        _log_endpoint_exception(
+            "api_recommendations_v2",
+            e,
+            endpoint="/api/recommendations",
+            lottery_id=lottery_id,
+            lottery_name=(lottery or {}).get("name"),
+            draw_name=draw_name,
+            user=_request_user_for_log(),
+            function_break="api_recommendations_v2",
+        )
+        raise
 
 
 @app.route("/api/recommendations/analyze-paste", methods=["POST"])
