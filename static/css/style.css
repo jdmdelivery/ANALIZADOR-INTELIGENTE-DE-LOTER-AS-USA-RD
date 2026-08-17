@@ -1338,6 +1338,18 @@ body.premium-body {
     color: var(--gold);
     border-bottom: 1px solid var(--gold);
 }
+.history-extra-filters {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+    align-items: center;
+}
+.history-filter-select {
+    min-width: 140px;
+    max-width: 210px;
+    font-size: 0.78rem;
+    padding: 0.3rem 0.55rem;
+}
 
 .draw-select-row {
     display: flex;

@@ -230,3 +230,34 @@ def actualizar_resultados_usa(
     result.setdefault("pais", "US")
     result.setdefault("parser", "usa_multi")
     return result
+
+
+def actualizar_resultados(
+    fecha_desde: str,
+    fecha_hasta: str,
+    loteria: str | None = None,
+    *,
+    pais: str = "RD",
+) -> dict:
+    """Backfill por rango sin borrar historial previo."""
+    if es_pais_do(pais):
+        from services.rd_results_service import (
+            actualizar_rd_loteria_rango,
+            actualizar_rd_todas_rango,
+        )
+
+        if loteria:
+            return actualizar_rd_loteria_rango(
+                loteria,
+                fecha_desde=fecha_desde,
+                fecha_hasta=fecha_hasta,
+            )
+        return actualizar_rd_todas_rango(
+            fecha_desde=fecha_desde,
+            fecha_hasta=fecha_hasta,
+        )
+    return {
+        "ok": False,
+        "pais": pais,
+        "message": "Backfill por rango disponible actualmente para RD/DO.",
+    }

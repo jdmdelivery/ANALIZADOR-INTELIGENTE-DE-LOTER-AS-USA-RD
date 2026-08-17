@@ -121,32 +121,61 @@ def _migrate_normalize_result_draw_times(conn) -> None:
 
 
 def _migrate_results_unique_with_time(conn) -> None:
-    """Unicidad por lotería + fecha + tanda + hora (no sobrescribir 6PM con 2:30)."""
+    """Intenta unicidad por lotería+fecha+tanda+hora sin borrar historial."""
     conn.execute("""
         UPDATE lottery_results
         SET draw_time = TRIM(draw_time)
         WHERE draw_time IS NOT NULL
     """)
-    conn.execute("DROP INDEX IF EXISTS idx_results_lottery_date_draw")
-    conn.execute("""
-        DELETE FROM lottery_results
-        WHERE id NOT IN (
-            SELECT MAX(id) FROM lottery_results
-            GROUP BY lottery_id, draw_date, draw_name,
-                     COALESCE(NULLIF(TRIM(draw_time), ''), '00:00')
-        )
-    """)
-    conn.execute("""
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_results_lottery_date_draw_time
-        ON lottery_results (
-            lottery_id, draw_date, draw_name,
-            COALESCE(NULLIF(TRIM(draw_time), ''), '00:00')
-        )
-    """)
+    try:
+        conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_results_lottery_date_draw_time
+            ON lottery_results (
+                lottery_id, draw_date, draw_name,
+                COALESCE(NULLIF(TRIM(draw_time), ''), '00:00')
+            )
+        """)
+    except sqlite3.IntegrityError:
+        # Si hay duplicados históricos, NO borrar ni consolidar automáticamente.
+        pass
     conn.execute("""
         CREATE INDEX IF NOT EXISTS idx_results_lottery_draw_date
         ON lottery_results (lottery_id, draw_name, draw_date DESC)
     """)
+
+
+def _migrate_align_single_draw_leidsa_times(conn) -> None:
+    """Normaliza draw_time vacío en LEIDSA single-draw (no destructivo)."""
+    try:
+        from services.leidsa_config import LEIDSA_GAMES, LEIDSA_SLUGS
+    except Exception:
+        return
+    if not LEIDSA_SLUGS:
+        return
+
+    rows = conn.execute(
+        f"""SELECT id, type FROM lotteries
+            WHERE type IN ({",".join("?" * len(LEIDSA_SLUGS))})""",
+        tuple(LEIDSA_SLUGS),
+    ).fetchall()
+    for lot in rows:
+        cfg = LEIDSA_GAMES.get((lot["type"] or "").strip())
+        if not cfg:
+            continue
+        draws = cfg.get("draws") or []
+        if len(draws) != 1:
+            continue
+        draw_name = draws[0].get("draw_name") or ""
+        draw_time = draws[0].get("time_24h") or ""
+        if not draw_name or not draw_time:
+            continue
+        conn.execute(
+            """UPDATE lottery_results
+               SET draw_time = ?
+               WHERE lottery_id = ? AND draw_name = ?
+                 AND (draw_time IS NULL OR TRIM(draw_time) = '')""",
+            (draw_time, lot["id"], draw_name),
+        )
 
 
 def migrate_db():
@@ -154,6 +183,7 @@ def migrate_db():
     conn = get_connection()
     try:
         _migrate_normalize_result_draw_times(conn)
+        _migrate_align_single_draw_leidsa_times(conn)
         _migrate_results_unique_with_time(conn)
         for col in ("main_numbers", "bonus_numbers", "bonus_label", "game_name"):
             try:
@@ -878,6 +908,22 @@ def count_results_for_date(lottery_id, draw_date, draw_name=None):
         return int(row["c"]) if row else 0
 
 
+def get_latest_result_date_for_scope(lottery_id, draw_name=None, draw_time=None):
+    """Última fecha guardada para lotería/tanda/horario."""
+    with get_db() as conn:
+        q = "SELECT MAX(draw_date) AS max_date FROM lottery_results WHERE lottery_id = ?"
+        params: list = [lottery_id]
+        if draw_name:
+            q += " AND draw_name = ?"
+            params.append(draw_name)
+        if draw_time:
+            dt = normalize_draw_time(draw_time) or "00:00"
+            q += " AND COALESCE(NULLIF(TRIM(draw_time), ''), '00:00') = ?"
+            params.append(dt)
+        row = conn.execute(q, params).fetchone()
+        return row["max_date"] if row and row["max_date"] else None
+
+
 def get_results_for_latest_date(lottery_id, draw_name=None):
     with get_db() as conn:
         if draw_name:
@@ -954,6 +1000,107 @@ def get_results_history(lottery_id, draw_name=None, days=30, limit=500):
         params.append(limit)
         rows = conn.execute(q, params).fetchall()
         return [row_to_dict(r) for r in rows]
+
+
+def get_results_history_filtered(
+    *,
+    country=None,
+    lottery_id=None,
+    draw_name=None,
+    year=None,
+    month=None,
+    days=None,
+    limit=1500,
+):
+    """Historial con filtros de mes/año/lotería/sorteo para la pantalla de historial."""
+    with get_db() as conn:
+        q = [
+            "SELECT r.*, l.name AS lottery_name, l.country AS country",
+            "FROM lottery_results r",
+            "JOIN lotteries l ON l.id = r.lottery_id",
+            "WHERE 1=1",
+        ]
+        params: list = []
+
+        if country:
+            q.append("AND l.country = ?")
+            params.append(country)
+        if lottery_id:
+            q.append("AND r.lottery_id = ?")
+            params.append(lottery_id)
+        if draw_name:
+            q.append("AND r.draw_name = ?")
+            params.append(draw_name)
+        if year:
+            q.append("AND substr(r.draw_date, 1, 4) = ?")
+            params.append(str(int(year)).zfill(4))
+        if month:
+            q.append("AND substr(r.draw_date, 6, 2) = ?")
+            params.append(str(int(month)).zfill(2))
+        if days and int(days) > 0:
+            cutoff = (datetime.now() - timedelta(days=int(days))).strftime("%Y-%m-%d")
+            q.append("AND r.draw_date >= ?")
+            params.append(cutoff)
+
+        q.append("ORDER BY r.draw_date DESC, COALESCE(NULLIF(TRIM(r.draw_time), ''), '00:00') DESC, r.draw_name DESC, r.id DESC")
+        q.append("LIMIT ?")
+        params.append(max(50, int(limit or 1500)))
+
+        rows = conn.execute(" ".join(q), params).fetchall()
+        return [row_to_dict(r) for r in rows]
+
+
+def get_results_filter_options(*, country=None, lottery_id=None):
+    """Opciones de filtros disponibles en historial (mes/año/lotería/sorteo)."""
+    with get_db() as conn:
+        where = ["1=1"]
+        params: list = []
+        if country:
+            where.append("l.country = ?")
+            params.append(country)
+        if lottery_id:
+            where.append("r.lottery_id = ?")
+            params.append(lottery_id)
+        where_sql = " AND ".join(where)
+
+        lotteries = conn.execute(
+            f"""SELECT DISTINCT l.id, l.name
+                FROM lottery_results r
+                JOIN lotteries l ON l.id = r.lottery_id
+                WHERE {where_sql}
+                ORDER BY l.name""",
+            params,
+        ).fetchall()
+        draws = conn.execute(
+            f"""SELECT DISTINCT r.draw_name
+                FROM lottery_results r
+                JOIN lotteries l ON l.id = r.lottery_id
+                WHERE {where_sql}
+                ORDER BY r.draw_name""",
+            params,
+        ).fetchall()
+        years = conn.execute(
+            f"""SELECT DISTINCT substr(r.draw_date, 1, 4) AS year
+                FROM lottery_results r
+                JOIN lotteries l ON l.id = r.lottery_id
+                WHERE {where_sql}
+                ORDER BY year DESC""",
+            params,
+        ).fetchall()
+        months = conn.execute(
+            f"""SELECT DISTINCT substr(r.draw_date, 1, 7) AS ym
+                FROM lottery_results r
+                JOIN lotteries l ON l.id = r.lottery_id
+                WHERE {where_sql}
+                ORDER BY ym DESC""",
+            params,
+        ).fetchall()
+        return {
+            "lotteries": [row_to_dict(r) for r in lotteries],
+            "draws": [r["draw_name"] for r in draws if r["draw_name"]],
+            "years": [r["year"] for r in years if r["year"]],
+            "months": [r["ym"] for r in months if r["ym"]],
+        }
 
 
 def count_results_by_lottery():
@@ -1088,12 +1235,36 @@ def upsert_result(lottery_id, draw_name, draw_time, draw_date, numbers,
     src = fuente or source_url or ""
     with get_db() as conn:
         existing = conn.execute(
-            """SELECT id FROM lottery_results
+            """SELECT id, numbers, bonus_number, fireball_number, confirmed,
+                      COALESCE(main_numbers, '') AS main_numbers,
+                      COALESCE(bonus_numbers, '') AS bonus_numbers,
+                      COALESCE(estado, '') AS estado,
+                      COALESCE(fuente, '') AS fuente
+               FROM lottery_results
                WHERE lottery_id = ? AND draw_date = ? AND draw_name = ?
                AND COALESCE(NULLIF(TRIM(draw_time), ''), '00:00') = ?""",
             (lottery_id, draw_date, draw_name, draw_time),
         ).fetchone()
         if existing:
+            same_numbers = format_numbers(parse_numbers(existing["numbers"])) == nums
+            same_bonus = (existing["bonus_number"] or "") == (bonus_number or "")
+            same_fireball = (existing["fireball_number"] or "") == (fireball_number or "")
+            same_main = format_numbers(parse_numbers(existing["main_numbers"] or nums)) == format_numbers(parse_numbers(main_json or nums))
+            same_bonus_list = format_numbers(parse_numbers(existing["bonus_numbers"] or [])) == format_numbers(parse_numbers(bonus_json or []))
+            same_estado = (existing["estado"] or "publicado") == (estado or "publicado")
+            same_fuente = (existing["fuente"] or "") == (src or "")
+            same_confirmed = int(existing["confirmed"] or 0) == int(confirmed or 0)
+            if (
+                same_numbers
+                and same_bonus
+                and same_fireball
+                and same_main
+                and same_bonus_list
+                and same_estado
+                and same_fuente
+                and same_confirmed
+            ):
+                return existing["id"], "ignored"
             conn.execute(
                 """UPDATE lottery_results
                    SET draw_time = ?, numbers = ?, bonus_number = ?, fireball_number = ?,

@@ -898,7 +898,7 @@ def save_leidsa_rows(rows: list[dict]) -> dict[str, Any]:
     from models import format_numbers, upsert_result
 
     lottery_ids = _ensure_lottery_ids()
-    inserted = updated = skipped = 0
+    inserted = updated = skipped = ignored = 0
     errors: list[str] = []
 
     for row in rows:
@@ -934,8 +934,10 @@ def save_leidsa_rows(rows: list[dict]) -> dict[str, Any]:
             )
             if action == "inserted":
                 inserted += 1
-            else:
+            elif action == "updated":
                 updated += 1
+            else:
+                ignored += 1
         except Exception as exc:
             skipped += 1
             errors.append(f"{slug}/{row.get('draw')}: {exc}")
@@ -944,6 +946,7 @@ def save_leidsa_rows(rows: list[dict]) -> dict[str, Any]:
         ok=True,
         inserted=inserted,
         updated=updated,
+        ignored=ignored,
         skipped=skipped,
         errors=errors,
         imported=inserted,
@@ -975,6 +978,115 @@ def _latest_saved_leidsa_date() -> str | None:
         return max(dates) if dates else None
     except Exception:
         return None
+
+
+def _iso_date(value: str) -> datetime.date | None:
+    try:
+        return datetime.strptime((value or "")[:10], "%Y-%m-%d").date()
+    except ValueError:
+        return None
+
+
+def _next_day_iso(value: str) -> str | None:
+    d = _iso_date(value)
+    if not d:
+        return None
+    return (d + timedelta(days=1)).isoformat()
+
+
+def update_leidsa_game_incremental(
+    slug: str,
+    *,
+    fecha_desde: str | None = None,
+    fecha_hasta: str | None = None,
+    lookback_days: int = 90,
+) -> dict[str, Any]:
+    """Sincroniza LEIDSA por rango incremental basado en última fecha guardada."""
+    from models import get_latest_result_date_for_scope, get_lottery_by_slug
+    from services.leidsa_history import sync_leidsa_game_history_range
+
+    lot = get_lottery_by_slug(slug)
+    if not lot:
+        return _safe_response(ok=False, error=f"Lotería no encontrada para slug: {slug}")
+
+    draw_name = ""
+    cfg = LEIDSA_GAMES.get(slug) or {}
+    draws = cfg.get("draws") or []
+    if draws:
+        draw_name = draws[0].get("draw_name") or ""
+
+    latest_saved = get_latest_result_date_for_scope(
+        lot["id"],
+        draw_name=draw_name or None,
+    )
+    today_iso = _now_rd().strftime("%Y-%m-%d")
+
+    start_iso = (fecha_desde or "").strip() or _next_day_iso(latest_saved or "")
+    if not start_iso:
+        start_iso = (_now_rd() - timedelta(days=max(1, int(lookback_days or 90)))).strftime("%Y-%m-%d")
+    end_iso = (fecha_hasta or "").strip() or today_iso
+
+    d0 = _iso_date(start_iso)
+    d1 = _iso_date(end_iso)
+    if not d0 or not d1:
+        return _safe_response(
+            ok=False,
+            error=f"Rango inválido: {start_iso}..{end_iso}",
+            latest_saved_date=latest_saved,
+            slug=slug,
+        )
+    if d0 > d1:
+        return _safe_response(
+            ok=True,
+            status="no_new",
+            message=f"Sin nuevos sorteos para {slug}. Última fecha guardada: {latest_saved or '—'}.",
+            slug=slug,
+            latest_saved_date=latest_saved,
+            fecha_desde=start_iso,
+            fecha_hasta=end_iso,
+            inserted=0,
+            updated=0,
+            ignored=0,
+            results_found=0,
+        )
+
+    sync = sync_leidsa_game_history_range(
+        slug,
+        fecha_desde=d0.isoformat(),
+        fecha_hasta=d1.isoformat(),
+        use_cache=False,
+        save=True,
+    )
+    inserted = int(sync.get("inserted") or 0)
+    updated = int(sync.get("updated") or 0)
+    ignored = int(sync.get("ignored") or 0)
+    results_found = int(sync.get("results_found") or 0)
+    latest_after = get_latest_result_date_for_scope(lot["id"], draw_name=draw_name or None) or latest_saved
+    status = "updated" if (inserted + updated) > 0 else "no_new"
+    msg = (
+        f"{lot.get('name')}: rango {d0.isoformat()}..{d1.isoformat()} — "
+        f"encontrados={results_found}, nuevos={inserted}, actualizados={updated}, duplicados_ignorados={ignored}."
+    )
+    return _safe_response(
+        ok=bool(sync.get("ok")),
+        status=status,
+        message=msg,
+        slug=slug,
+        lottery_id=lot["id"],
+        lottery_name=lot.get("name"),
+        draw_name=draw_name,
+        latest_saved_date=latest_saved,
+        latest_date=latest_after,
+        fecha_desde=d0.isoformat(),
+        fecha_hasta=d1.isoformat(),
+        results_found=results_found,
+        inserted=inserted,
+        imported=inserted,
+        updated=updated,
+        ignored=ignored,
+        parser=sync.get("parser"),
+        error=sync.get("error"),
+    )
 
 
 def update_leidsa_game_fast(slug: str, *, days: int = 30) -> dict[str, Any]:

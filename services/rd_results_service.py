@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import logging
 import time
+from datetime import datetime
 
 from models import count_results_for_lottery, get_all_lotteries, get_max_draw_date
 from services.lottery_normalize import find_lottery_in_list, normalize_lottery_name
@@ -52,6 +53,23 @@ def _latest_is_stale(latest_date: str | None, *, max_age_days: int = 7) -> bool:
         return age is None or age > max_age_days
     except Exception:
         return True
+
+
+def _effective_days_from_last_date(lottery_id: int, requested_days: int) -> int:
+    """Ventana dinámica: desde última fecha guardada hasta hoy (+buffer)."""
+    latest = get_max_draw_date(lottery_id)
+    if not latest:
+        return max(7, int(requested_days or 30))
+    try:
+        from services.leidsa_history import _days_since_draw
+
+        age = _days_since_draw(str(latest)[:10])
+    except Exception:
+        age = None
+    if age is None:
+        return max(7, int(requested_days or 30))
+    dynamic_days = age + 3
+    return max(7, min(max(dynamic_days, int(requested_days or 30)), 365))
 
 
 def _rows_found(res: dict) -> int:
@@ -271,6 +289,8 @@ def actualizar_rd_loteria(lottery_name: str, days: int = 30) -> dict:
     if es_leidsa:
         return actualizar_leidsa_multi(days=days, lottery_name=db_name)
 
+    days = _effective_days_from_last_date(lot["id"], days)
+
     logger.info("%s === Inicio %s — multi-fuente ===", LOG, db_name)
     t0 = time.monotonic()
 
@@ -419,9 +439,12 @@ def actualizar_leidsa_multi(*, days: int = 30, lottery_name: str | None = None) 
     logger.info("%s === LEIDSA multi-fuente === slug=%s", LOG, history_slug or "todos")
 
     if history_slug:
-        from services.leidsa_service import update_leidsa_game_fast
+        from services.leidsa_service import update_leidsa_game_incremental
 
-        fast = update_leidsa_game_fast(history_slug, days=days)
+        fast = update_leidsa_game_incremental(
+            history_slug,
+            lookback_days=days,
+        )
         fast["fuente"] = "leidsa"
         fast["fuente_label"] = "LEIDSA.com"
         _record(
@@ -631,3 +654,60 @@ def actualizar_rd_todas(days: int = 30) -> dict:
         "warning": bool(warnings),
         "alternate_sources_used": warnings,
     }
+
+
+def _days_for_range(fecha_desde: str, fecha_hasta: str) -> int:
+    try:
+        d0 = datetime.strptime((fecha_desde or "")[:10], "%Y-%m-%d").date()
+        d1 = datetime.strptime((fecha_hasta or "")[:10], "%Y-%m-%d").date()
+    except ValueError:
+        return 30
+    if d0 > d1:
+        d0, d1 = d1, d0
+    return max(1, (d1 - d0).days + 1)
+
+
+def actualizar_rd_loteria_rango(
+    lottery_name: str,
+    *,
+    fecha_desde: str,
+    fecha_hasta: str,
+) -> dict:
+    """Backfill/incremental por rango para una lotería RD."""
+    lot = find_lottery_in_list(get_all_lotteries(), lottery_name, country="RD")
+    if not lot:
+        return {"ok": False, "pais": "DO", "message": f"Lotería RD no encontrada: {lottery_name}"}
+    lot_type = (lot.get("type") or "").lower()
+    if lot_type.startswith("leidsa_") or "leidsa" in (lottery_name or "").lower():
+        from services.leidsa_service import update_leidsa_game_incremental
+
+        slug = _leidsa_history_slug(lottery_name)
+        if not slug:
+            return {"ok": False, "pais": "DO", "message": f"Slug LEIDSA no encontrado: {lottery_name}"}
+        out = update_leidsa_game_incremental(
+            slug,
+            fecha_desde=fecha_desde,
+            fecha_hasta=fecha_hasta,
+        )
+        out["imported"] = int(out.get("inserted") or 0)
+        out["pais"] = "DO"
+        out["lottery_name"] = lottery_name
+        out["range_mode"] = True
+        return out
+
+    days = _days_for_range(fecha_desde, fecha_hasta)
+    out = actualizar_rd_loteria(lottery_name, days=days)
+    out["range_mode"] = True
+    out["fecha_desde"] = fecha_desde
+    out["fecha_hasta"] = fecha_hasta
+    return out
+
+
+def actualizar_rd_todas_rango(*, fecha_desde: str, fecha_hasta: str) -> dict:
+    """Backfill/incremental por rango para todas las loterías RD."""
+    days = _days_for_range(fecha_desde, fecha_hasta)
+    out = actualizar_rd_todas(days=days)
+    out["range_mode"] = True
+    out["fecha_desde"] = fecha_desde
+    out["fecha_hasta"] = fecha_hasta
+    return out

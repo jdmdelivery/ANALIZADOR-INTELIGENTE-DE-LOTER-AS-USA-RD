@@ -26,6 +26,11 @@
     const btnRefreshRdAll = $('btnRefreshRdAll');
     const btnRefreshRdHistoryFull = $('btnRefreshRdHistoryFull');
     const historyDaysFilters = $('historyDaysFilters');
+    const historyExtraFilters = $('historyExtraFilters');
+    const historyMonthFilter = $('historyMonthFilter');
+    const historyYearFilter = $('historyYearFilter');
+    const historyLotteryFilter = $('historyLotteryFilter');
+    const historyDrawFilter = $('historyDrawFilter');
     const analysisDaysFilters = $('analysisDaysFilters');
 
     if (!selectCountry || !selectLottery) return;
@@ -36,6 +41,10 @@
     let resultsViewMode = 'latest';
     let historyDays = 90;
     let analysisDays = 90;
+    let historyMonth = 'all';
+    let historyYear = 'all';
+    let historyLotteryId = 'current';
+    let historyDraw = 'all';
     let refreshTimer = null;
     let activeDrawBtn = null;
     let currentDrawButtons = [];
@@ -126,6 +135,16 @@
             });
         });
     }
+    [historyMonthFilter, historyYearFilter, historyLotteryFilter, historyDrawFilter].forEach((sel) => {
+        if (!sel) return;
+        sel.addEventListener('change', () => {
+            historyMonth = historyMonthFilter?.value || 'all';
+            historyYear = historyYearFilter?.value || 'all';
+            historyLotteryId = historyLotteryFilter?.value || 'current';
+            historyDraw = historyDrawFilter?.value || 'all';
+            if (resultsViewMode === 'all') loadRecentResults(true);
+        });
+    });
 
     function syncAnalysisDaysButtons(days) {
         analysisDays = days;
@@ -199,6 +218,10 @@
         const country = selectCountry.value;
         currentCountry = country;
         resultsViewMode = 'latest';
+        historyMonth = 'all';
+        historyYear = 'all';
+        historyLotteryId = 'current';
+        historyDraw = 'all';
         resetLotterySelect();
         hideMain();
 
@@ -291,6 +314,12 @@
         selectLottery.innerHTML = '<option value="">— Seleccionar lotería —</option>';
         selectLottery.disabled = true;
         currentLotteryId = null;
+        currentLotteryName = '';
+        currentDrawName = '';
+        if (historyMonthFilter) historyMonthFilter.value = 'all';
+        if (historyYearFilter) historyYearFilter.value = 'all';
+        if (historyLotteryFilter) historyLotteryFilter.value = 'current';
+        if (historyDrawFilter) historyDrawFilter.value = 'all';
         stopAutoRefresh();
     }
 
@@ -698,6 +727,17 @@
             if (isRD) {
                 url += `&mode=${resultsViewMode}`;
                 if (resultsViewMode === 'all') url += `&days=${historyDays}`;
+                url += '&country=RD';
+                if (resultsViewMode === 'all') {
+                    if (historyMonth && historyMonth !== 'all') url += `&month=${encodeURIComponent(historyMonth)}`;
+                    if (historyYear && historyYear !== 'all') url += `&year=${encodeURIComponent(historyYear)}`;
+                    if (historyDraw && historyDraw !== 'all') url += `&history_draw_name=${encodeURIComponent(historyDraw)}`;
+                    if (historyLotteryId === 'all') {
+                        url += '&history_lottery_id=all';
+                    } else if (historyLotteryId && historyLotteryId !== 'current') {
+                        url += `&history_lottery_id=${encodeURIComponent(historyLotteryId)}`;
+                    }
+                }
                 // Historial: todas las tandas del día (sin filtrar por tanda seleccionada)
             } else if (currentDrawName) {
                 url += `&draw_name=${encodeURIComponent(currentDrawName)}`;
@@ -730,8 +770,14 @@
             if (historyDaysFilters) {
                 historyDaysFilters.style.display = (isRD && resultsViewMode === 'all') ? 'flex' : 'none';
             }
+            if (historyExtraFilters) {
+                historyExtraFilters.style.display = (isRD && resultsViewMode === 'all') ? 'flex' : 'none';
+            }
             if (analysisDaysFilters) {
                 analysisDaysFilters.style.display = isRD ? 'flex' : 'none';
+            }
+            if (isRD && data.filter_options) {
+                updateHistoryFilterOptions(data.filter_options);
             }
             if (latestDateBadge) {
                 if (isRD && data.latest_date && resultsViewMode === 'latest') {
@@ -765,6 +811,46 @@
             lastResultsError = e.message || String(e);
             if (!silent) recentResults.innerHTML = `<p class="empty-msg empty-msg-error">Error al cargar resultados: ${escapeHtml(lastResultsError)}</p>`;
         }
+    }
+
+    function updateHistoryFilterOptions(opts) {
+        const setOptions = (el, list, selected, formatter, defaultLabel) => {
+            if (!el) return;
+            let html = `<option value="all">${defaultLabel || 'Todos'}</option>`;
+            (list || []).forEach((item) => {
+                const value = typeof item === 'string' ? item : String(item.id);
+                const label = formatter
+                    ? formatter(item)
+                    : (typeof item === 'string' ? item : item.name);
+                html += `<option value="${escapeHtml(value)}">${escapeHtml(label)}</option>`;
+            });
+            el.innerHTML = html;
+            const target = selected || 'all';
+            if ([...el.options].some((o) => o.value === target)) {
+                el.value = target;
+            } else {
+                el.value = 'all';
+            }
+        };
+        setOptions(historyMonthFilter, opts.months || [], historyMonth, (ym) => `Mes: ${ym}`, 'Mes: Todos');
+        setOptions(historyYearFilter, opts.years || [], historyYear, (y) => `Año: ${y}`, 'Año: Todos');
+        setOptions(historyDrawFilter, opts.draws || [], historyDraw, (d) => `Sorteo: ${d}`, 'Sorteo: Todos');
+        if (historyLotteryFilter) {
+            let html = '<option value="current">Lotería actual</option><option value="all">Lotería: Todos</option>';
+            (opts.lotteries || []).forEach((lot) => {
+                html += `<option value="${escapeHtml(String(lot.id))}">Lotería: ${escapeHtml(lot.name)}</option>`;
+            });
+            historyLotteryFilter.innerHTML = html;
+            if ([...historyLotteryFilter.options].some((o) => o.value === historyLotteryId)) {
+                historyLotteryFilter.value = historyLotteryId;
+            } else {
+                historyLotteryFilter.value = 'current';
+                historyLotteryId = 'current';
+            }
+        }
+        historyMonth = historyMonthFilter?.value || 'all';
+        historyYear = historyYearFilter?.value || 'all';
+        historyDraw = historyDrawFilter?.value || 'all';
     }
 
     function clearDrawScheduleUi() {

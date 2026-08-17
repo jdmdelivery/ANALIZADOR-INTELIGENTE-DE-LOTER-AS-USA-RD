@@ -537,20 +537,46 @@ def api_draw_times():
 
 @app.route("/api/results")
 def api_results():
-    from models import get_results_history
+    from models import (
+        get_results_history,
+        get_results_history_filtered,
+        get_results_filter_options,
+    )
 
     lottery_id = request.args.get("lottery_id", type=int)
     draw_name = request.args.get("draw_name") or None
     if draw_name:
         draw_name = draw_name.strip() or None
+    history_draw_name = (request.args.get("history_draw_name") or "").strip() or None
+    draw_filter = history_draw_name if history_draw_name and history_draw_name.lower() != "all" else draw_name
+    history_lottery_raw = (request.args.get("history_lottery_id") or "").strip().lower()
+    history_lottery_id = None if history_lottery_raw in ("", "all", "todos") else request.args.get("history_lottery_id", type=int)
+    year_raw = (request.args.get("year") or "").strip()
+    month_raw = (request.args.get("month") or "").strip()
+    year = None
+    month = None
+    if year_raw and year_raw.lower() not in ("all", "todos"):
+        year = int(year_raw)
+    if month_raw and month_raw.lower() not in ("all", "todos"):
+        if "-" in month_raw:
+            try:
+                year = year or int(month_raw.split("-", 1)[0])
+                month = int(month_raw.split("-", 1)[1])
+            except (TypeError, ValueError):
+                month = None
+        else:
+            month = int(month_raw)
+    country_req = (request.args.get("country") or "").strip().upper()
     limit = request.args.get("limit", 10, type=int)
     mode = request.args.get("mode", "latest")
-    if not lottery_id:
+    if not lottery_id and country_req != "RD":
         return jsonify({"ok": False, "message": "lottery_id requerido"})
-    lottery = get_lottery(lottery_id)
+    effective_lottery_id = history_lottery_id or lottery_id
+    lottery = get_lottery(effective_lottery_id) if effective_lottery_id else (get_lottery(lottery_id) if lottery_id else None)
     latest_date = None
     groups = None
     load_error = None
+    filter_options = {}
 
     days_param = request.args.get("days", type=int)
     # 365 en UI = “Todo” (sin cutoff de fecha)
@@ -563,27 +589,51 @@ def api_results():
 
     today_iso = datetime.now().strftime("%Y-%m-%d")
 
-    if lottery and lottery.get("country") == "RD" and mode == "all":
-        groups = get_results_grouped_by_date(
-            lottery_id, limit_days=limit_days, draw_name=draw_name
+    is_rd_scope = (
+        (lottery and lottery.get("country") == "RD")
+        or country_req == "RD"
+    )
+
+    if is_rd_scope and mode == "all":
+        rows = get_results_history_filtered(
+            country="RD",
+            lottery_id=effective_lottery_id,
+            draw_name=draw_filter,
+            year=year,
+            month=month,
+            days=limit_days,
+            limit=2500,
         )
-        latest_date = get_max_draw_date(lottery_id)
+        if rows:
+            latest_date = rows[0].get("draw_date")
+        grouped: dict[str, list] = {}
+        for r in rows:
+            grouped.setdefault(r.get("draw_date") or "", []).append(r)
+        groups = [{"draw_date": k, "results": v} for k, v in grouped.items() if k]
         results = []
+        filter_options = get_results_filter_options(
+            country="RD",
+            lottery_id=effective_lottery_id,
+        )
     elif lottery and lottery.get("country") == "RD" and mode == "latest":
         # Últimos resultados: todas las tandas de la fecha más reciente (sin filtrar por tanda)
-        results, latest_date = get_results_for_latest_date(lottery_id, None)
+        results, latest_date = get_results_for_latest_date(effective_lottery_id, None)
         today_results = [r for r in results if r.get("draw_date") == today_iso]
         if today_results:
             results = today_results
             latest_date = today_iso
     elif lottery and lottery.get("country") == "RD":
         results = get_results_history(
-            lottery_id, draw_name=draw_name, days=limit_days or 30, limit=500
+            effective_lottery_id, draw_name=draw_filter, days=limit_days or 30, limit=500
         )
         latest_date = results[0].get("draw_date") if results else None
+        filter_options = get_results_filter_options(
+            country="RD",
+            lottery_id=effective_lottery_id,
+        )
     else:
-        results = get_results(lottery_id, draw_name, limit)
-        latest_date = get_max_draw_date(lottery_id)
+        results = get_results(effective_lottery_id, draw_filter, limit)
+        latest_date = get_max_draw_date(effective_lottery_id)
 
     schedule = get_lottery_schedule(lottery["name"]) if lottery else None
     allowed_draws = None
@@ -623,20 +673,28 @@ def api_results():
         )
 
     total_in_db = 0
-    if lottery_id:
+    if effective_lottery_id:
         from models import get_results as _gr
-        total_in_db = len(_gr(lottery_id, draw_name=draw_name, limit=500))
+        total_in_db = len(_gr(effective_lottery_id, draw_name=draw_filter, limit=500))
 
     payload = {
         "ok": True,
         "results": results,
         "mode": mode,
-        "draw_name": draw_name,
+        "draw_name": draw_filter,
         "total_in_db": total_in_db,
         "has_results": bool(results) or bool(groups),
         "load_error": load_error,
         "lottery_name": lottery.get("name") if lottery else "",
+        "history_filters": {
+            "lottery_id": effective_lottery_id if effective_lottery_id else "all",
+            "draw_name": draw_filter or "all",
+            "year": year if year else "all",
+            "month": month_raw or "all",
+        },
     }
+    if filter_options:
+        payload["filter_options"] = filter_options
     if latest_date:
         payload["latest_date"] = latest_date
     if groups is not None:
@@ -1095,6 +1153,32 @@ def api_resultados_debug():
 
     report = build_usa_debug_report(probe_live=probe)
     return jsonify(report)
+
+
+@app.route("/api/resultados/backfill", methods=["POST"])
+@admin_required
+def api_resultados_backfill():
+    """Backfill por rango sin borrar historial existente."""
+    data = request.get_json(silent=True) or {}
+    fecha_desde = (data.get("fecha_desde") or data.get("from_date") or "").strip()
+    fecha_hasta = (data.get("fecha_hasta") or data.get("to_date") or "").strip()
+    pais = (data.get("pais") or data.get("country") or "RD").strip()
+    loteria = (data.get("loteria") or data.get("lottery") or "").strip() or None
+    if not fecha_desde or not fecha_hasta:
+        return jsonify({
+            "ok": False,
+            "message": "fecha_desde y fecha_hasta son requeridas (YYYY-MM-DD).",
+        }), 400
+    from services.actualizar_resultados import actualizar_resultados as actualizar_por_rango
+
+    out = actualizar_por_rango(
+        fecha_desde=fecha_desde,
+        fecha_hasta=fecha_hasta,
+        loteria=loteria,
+        pais=pais,
+    )
+    status = 200 if out.get("ok") else 400
+    return jsonify(out), status
 
 
 @app.route("/api/resultados/rd/diagnostico", methods=["GET"])

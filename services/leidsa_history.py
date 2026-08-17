@@ -417,15 +417,22 @@ def parse_draw_results_history(
         fecha_rd = utc_to_fecha_rd(draw_time)
         if fecha_rd < cutoff:
             continue
-        h, m = utc_to_local_hm(draw_time)
         draw_name = resolve_draw_name(slug, draw_time) if slug else "sorteo"
+        slot_time = ""
+        cfg = LEIDSA_GAMES.get(slug or "")
+        if cfg:
+            slot = next((d for d in (cfg.get("draws") or []) if d.get("draw_name") == draw_name), None)
+            slot_time = (slot or {}).get("time_24h") or ""
+        if not slot_time:
+            h, m = utc_to_local_hm(draw_time)
+            slot_time = f"{h:02d}:{m:02d}"
         rows.append({
             "lottery": slug,
             "draw": draw_name,
             "fecha_rd": fecha_rd,
             "numeros": main_nums,
             "bonus": [],
-            "draw_time": f"{h:02d}:{m:02d}",
+            "draw_time": slot_time,
             "fuente": SOURCE_NAME,
             "estado": "publicado",
             "draw_id": game_draw_id,
@@ -624,7 +631,7 @@ def sync_leidsa_game_history(
         )
     res = fetch_leidsa_game_history(
         game,
-        limit=max(limit, min(days + 20, 150)),
+        limit=max(limit, min(days + 40, 800)),
         days=days,
         use_cache=use_cache,
         draw_ids=discover_latest_draw_ids(),
@@ -655,6 +662,79 @@ def sync_leidsa_game_history(
         results_found=len(rows),
         inserted=inserted,
         updated=updated,
+        skipped=skipped,
+        latest_date=latest,
+        parser=res.get("parser"),
+        url=res.get("url"),
+        error=res.get("error"),
+    )
+
+
+def sync_leidsa_game_history_range(
+    slug: str,
+    *,
+    fecha_desde: str,
+    fecha_hasta: str,
+    use_cache: bool = False,
+    save: bool = True,
+) -> dict[str, Any]:
+    """Sincroniza un juego LEIDSA solo dentro de [fecha_desde, fecha_hasta]."""
+    game = next((g for g in LEIDSA_HISTORY_GAMES if g.get("slug") == slug), None)
+    if not game:
+        return _safe_response(
+            ok=False,
+            error=f"Juego LEIDSA desconocido: {slug}",
+            slug=slug,
+            inserted=0,
+            updated=0,
+            ignored=0,
+        )
+    try:
+        d0 = datetime.strptime((fecha_desde or "")[:10], "%Y-%m-%d").date()
+        d1 = datetime.strptime((fecha_hasta or "")[:10], "%Y-%m-%d").date()
+    except ValueError:
+        return _safe_response(
+            ok=False,
+            error=f"Rango inválido: {fecha_desde}..{fecha_hasta}",
+            slug=slug,
+            inserted=0,
+            updated=0,
+            ignored=0,
+        )
+    if d0 > d1:
+        d0, d1 = d1, d0
+    days_span = max(1, (d1 - d0).days + 1)
+    res = fetch_leidsa_game_history(
+        game,
+        limit=max(150, min(days_span + 60, 900)),
+        days=days_span + 2,
+        use_cache=use_cache,
+        draw_ids=discover_latest_draw_ids(),
+    )
+    rows = [
+        r for r in (res.get("rows") or [])
+        if (r.get("fecha_rd") or "") >= d0.isoformat()
+        and (r.get("fecha_rd") or "") <= d1.isoformat()
+    ]
+    inserted = updated = skipped = ignored = 0
+    if save and rows:
+        batch = save_leidsa_rows(rows)
+        inserted = int(batch.get("inserted") or 0)
+        updated = int(batch.get("updated") or 0)
+        skipped = int(batch.get("skipped") or 0)
+        ignored = int(batch.get("ignored") or 0)
+    latest = max((r.get("fecha_rd") for r in rows if r.get("fecha_rd")), default=None)
+    return _safe_response(
+        ok=bool(rows) or bool(inserted + updated),
+        slug=slug,
+        game=game["name"],
+        fecha_desde=d0.isoformat(),
+        fecha_hasta=d1.isoformat(),
+        days_span=days_span,
+        results_found=len(rows),
+        inserted=inserted,
+        updated=updated,
+        ignored=ignored,
         skipped=skipped,
         latest_date=latest,
         parser=res.get("parser"),
