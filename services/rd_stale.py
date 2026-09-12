@@ -28,6 +28,13 @@ def _threshold_for_lottery(lottery: dict) -> int:
 
 def build_rd_stale_status() -> dict:
     scopes: list[dict] = []
+    leidsa_diag = {}
+    try:
+        from services.leidsa_service import get_leidsa_source_diagnostic
+
+        leidsa_diag = get_leidsa_source_diagnostic() or {}
+    except Exception:
+        leidsa_diag = {}
     for lot in get_all_lotteries(active_only=True):
         if (lot.get("country") or "").upper() != "RD":
             continue
@@ -51,12 +58,21 @@ def build_rd_stale_status() -> dict:
                     "age_days": age,
                     "threshold_days": threshold,
                     "status": "STALE" if stale else "FRESH",
+                    "fresh": not stale,
+                    "reason": "",
                 }
             )
+            if stale and (lot.get("type") or "") == "leidsa_super_kino_tv":
+                sk = (leidsa_diag.get("super_kino") or {})
+                reason = sk.get("reason") or "source_unavailable"
+                scopes[-1]["reason"] = reason
+                scopes[-1]["fallback_available"] = bool(sk.get("fallback_available"))
+                scopes[-1]["source_blocked"] = bool((leidsa_diag.get("leidsa_official") or {}).get("blocked"))
     stale_count = len([s for s in scopes if s["status"] == "STALE"])
     return {
         "ok": True,
         "scopes": scopes,
         "stale_count": stale_count,
         "total_scopes": len(scopes),
+        "leidsa_diagnostic": leidsa_diag,
     }

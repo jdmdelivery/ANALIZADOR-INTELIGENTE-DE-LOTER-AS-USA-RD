@@ -12,6 +12,7 @@ from services.rd_update_jobs import create_job, finish_job, get_job, start_job
 from scrapers import rd_http
 from scrapers import rd_fallback_scrapers as rdfs
 from services import leidsa_service
+from services import rd_stale
 from services.rd_validation import validate_result
 
 
@@ -577,3 +578,34 @@ def test_leidsa_recent_upsert_visible_in_latest_query(monkeypatch):
         assert sk_rows[0]["draw_date"] == "2026-09-11"
     finally:
         models.DATABASE = old_db
+
+
+def test_stale_super_kino_marks_source_unavailable_reason(monkeypatch):
+    monkeypatch.setattr(
+        rd_stale,
+        "get_all_lotteries",
+        lambda active_only=True: [
+            {"id": 19, "name": "LEIDSA Super Kino TV", "country": "RD", "type": "leidsa_super_kino_tv"}
+        ],
+    )
+    monkeypatch.setattr(
+        rd_stale,
+        "get_draw_times",
+        lambda lottery_id, active_only=True: [{"draw_name": "noche", "draw_time": "20:00"}],
+    )
+    monkeypatch.setattr(rd_stale, "get_latest_result_date_for_scope", lambda *_a, **_kw: "2026-07-17")
+    monkeypatch.setattr(rd_stale, "_threshold_for_lottery", lambda _lot: 3)
+    monkeypatch.setattr(
+        leidsa_service,
+        "get_leidsa_source_diagnostic",
+        lambda: {
+            "leidsa_official": {"blocked": True},
+            "super_kino": {"fallback_available": False, "reason": "source_unavailable"},
+        },
+    )
+    out = rd_stale.build_rd_stale_status()
+    assert out["ok"] is True
+    scope = out["scopes"][0]
+    assert scope["status"] == "STALE"
+    assert scope["reason"] == "source_unavailable"
+    assert scope["source_blocked"] is True

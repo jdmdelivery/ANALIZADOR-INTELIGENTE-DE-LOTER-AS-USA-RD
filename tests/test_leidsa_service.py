@@ -311,38 +311,26 @@ class LeidsaServiceTests(unittest.TestCase):
             }
         }
 
-        fake_game = {
-            "slug": "leidsa_super_kino_tv",
-            "family_name": "KinoTV",
-            "path": "KinoTV",
-            "draw_id_prefix": "3_",
+        row_sk = {
+            "lottery": "leidsa_super_kino_tv",
+            "lottery_name": "LEIDSA Super Kino TV",
+            "draw": "noche",
+            "fecha_rd": "2026-09-11",
+            "numeros": list(range(1, 21)),
+            "draw_time": "20:00",
+            "fuente": "LoteriasDominicanas.us",
         }
-        fake_html = (
-            'drawResults":[{"gameDrawId":"3_200","gameFamilyName":"KinoTV",'
-            '"drawTime":"2026-09-11T20:00:00Z","results":{"drawnValues":[{"drawnValues":[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20]}]}}]'
-        ).replace('"', '\\"')
-        home_html = (
-            '{\\"gameId\\":{\\"gameFamilyName\\":\\"KinoTV\\",\\"gameProvider\\":\\"Leidsa\\"}'
-            ',\\"currentDrawDetails\\":{\\"drawId\\":\\"3_200\\"}}'
-        )
-        with patch("services.leidsa_service.save_leidsa_rows", return_value={"ok": True, "inserted": 2, "updated": 0, "ignored": 0, "skipped": 0}), patch("services.leidsa_config.LEIDSA_HISTORY_GAMES", [fake_game]), patch(
-            "services.leidsa_http.fetch_leidsa_page",
-            side_effect=[
-                {"ok": True, "html": home_html},
-                {"ok": True, "html": f"<html>{fake_html}</html>"},
-            ],
-        ), patch("services.leidsa_history.parse_draw_results_history") as parse_mock:
-            parse_mock.return_value = [
-                {
-                    "lottery": "leidsa_super_kino_tv",
-                    "lottery_name": "LEIDSA Super Kino TV",
-                    "draw": "noche",
-                    "fecha_rd": "2026-09-11",
-                    "numeros": list(range(1, 21)),
-                    "draw_time": "20:00",
-                    "fuente": "LEIDSA.com",
-                }
-            ]
+        fake_chain = [
+            ("leidsa_official", "LEIDSA.com", "https://www.leidsa.com/en/results", lambda _h, _u: []),
+            ("enloteria", "EnLoteria", "https://enloteria.com/resultados-leidsa", lambda _h, _u: []),
+            ("loteriasdominicanas_us", "LoteriasDominicanas.us", "https://www.loteriasdominicanas.us/", lambda _h, _u: [row_sk]),
+        ]
+        with patch("services.leidsa_service.save_leidsa_rows", return_value={"ok": True, "inserted": 2, "updated": 0, "ignored": 0, "skipped": 0}), patch(
+            "services.leidsa_fallback.orchestrator.SOURCE_CHAIN", fake_chain
+        ), patch(
+            "services.leidsa_fallback.orchestrator._fetch_source",
+            return_value={"ok": True, "html": "<html></html>", "status_code": 200},
+        ):
             out = leidsa_service.sync_priority_games_from_cached_scrape(
                 slugs=["leidsa_quiniela_pale", "leidsa_super_kino_tv"],
                 scrape_cache=cache,
@@ -351,6 +339,45 @@ class LeidsaServiceTests(unittest.TestCase):
         self.assertTrue(out["ok"])
         self.assertEqual(out["results_found"], 2)
         self.assertEqual(out["games"]["leidsa_super_kino_tv"]["rows_found"], 1)
+
+    def test_official_403_no_super_kino_fallback_returns_explicit_reason(self):
+        cache = {
+            "official_scrape": {
+                "ok": True,
+                "official_blocked": True,
+                "results": [
+                    {
+                        "lottery": "leidsa_quiniela_pale",
+                        "lottery_name": "LEIDSA Quiniela Palé",
+                        "draw": "noche",
+                        "fecha_rd": "2026-09-11",
+                        "numeros": [21, 46, 88],
+                        "draw_time": "20:55",
+                        "fuente": "EnLoteria",
+                    }
+                ],
+            }
+        }
+        with patch(
+            "services.leidsa_fallback.orchestrator._fetch_source",
+            return_value={"ok": False, "status_code": 403, "error": "HTTP 403"},
+        ):
+            out = leidsa_service.sync_priority_games_from_cached_scrape(
+                slugs=["leidsa_super_kino_tv"],
+                scrape_cache=cache,
+            )
+        self.assertFalse(out["ok"])
+        self.assertIn("official blocked", out["message"].lower())
+
+    def test_diagnostic_marks_official_blocked(self):
+        with patch.object(
+            leidsa_service,
+            "scrape_leidsa_prefer_official",
+            return_value={"ok": False, "error": "HTTP 403", "status_code": 403, "attempts": [{"fuente": "leidsa_official", "status": 403, "error": "HTTP 403"}]},
+        ):
+            leidsa_service.update_leidsa_now()
+        diag = leidsa_service.get_leidsa_source_diagnostic()
+        self.assertTrue(diag["leidsa_official"]["blocked"])
 
 
 if __name__ == "__main__":

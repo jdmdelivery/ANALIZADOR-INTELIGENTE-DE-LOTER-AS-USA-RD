@@ -35,6 +35,22 @@ from services.leidsa_config import (
 
 logger = logging.getLogger(__name__)
 LOG_PREFIX = "[RD]"
+_LEIDSA_SOURCE_DIAG: dict[str, Any] = {
+    "leidsa_official": {
+        "status": "unknown",
+        "last_http_status": None,
+        "last_success_at": None,
+        "last_failure_at": None,
+        "blocked": False,
+        "attempts_per_job": 0,
+    },
+    "super_kino": {
+        "latest_date": None,
+        "fresh": False,
+        "fallback_available": False,
+        "reason": "",
+    },
+}
 
 
 def _log(msg: str) -> None:
@@ -57,6 +73,53 @@ def _safe_response(
     }
     base.update(extra)
     return base
+
+
+def _now_iso() -> str:
+    return _now_rd().isoformat(timespec="seconds")
+
+
+def _update_official_diag(
+    *,
+    status: str,
+    http_status: int | None = None,
+    blocked: bool = False,
+    attempts_per_job: int = 0,
+) -> None:
+    row = _LEIDSA_SOURCE_DIAG.setdefault("leidsa_official", {})
+    row["status"] = status
+    row["last_http_status"] = http_status
+    row["blocked"] = bool(blocked)
+    row["attempts_per_job"] = int(attempts_per_job or 0)
+    if status == "ok":
+        row["last_success_at"] = _now_iso()
+    else:
+        row["last_failure_at"] = _now_iso()
+
+
+def _update_super_kino_diag(
+    *,
+    latest_date: str | None = None,
+    fresh: bool | None = None,
+    fallback_available: bool | None = None,
+    reason: str = "",
+) -> None:
+    row = _LEIDSA_SOURCE_DIAG.setdefault("super_kino", {})
+    if latest_date is not None:
+        row["latest_date"] = latest_date
+    if fresh is not None:
+        row["fresh"] = bool(fresh)
+    if fallback_available is not None:
+        row["fallback_available"] = bool(fallback_available)
+    if reason:
+        row["reason"] = reason
+
+
+def get_leidsa_source_diagnostic() -> dict[str, Any]:
+    return {
+        "leidsa_official": dict(_LEIDSA_SOURCE_DIAG.get("leidsa_official") or {}),
+        "super_kino": dict(_LEIDSA_SOURCE_DIAG.get("super_kino") or {}),
+    }
 
 
 def _rd_tz():
@@ -1255,6 +1318,29 @@ def _get_scrape_with_cache(scrape_cache: dict[str, Any] | None = None) -> dict[s
     return scrape
 
 
+def _official_attempt_info(scrape: dict[str, Any]) -> tuple[int | None, bool, int]:
+    attempts = list(scrape.get("attempts") or [])
+    official = [a for a in attempts if (a.get("fuente") or "") == "leidsa_official"]
+    attempts_count = len(official) if official else (1 if scrape.get("fuente") == "leidsa_official" else 0)
+    status = None
+    blocked = False
+    if official:
+        last = official[-1]
+        try:
+            status = int(last.get("status")) if str(last.get("status", "")).isdigit() else None
+        except Exception:
+            status = None
+        err = str(last.get("error") or "").lower()
+        blocked = (status in (401, 403)) or ("403" in err) or ("forbidden" in err) or ("cloudflare" in err)
+    elif scrape.get("fuente") == "leidsa_official":
+        try:
+            status = int(scrape.get("status_code")) if scrape.get("status_code") is not None else None
+        except Exception:
+            status = None
+        blocked = status in (401, 403) or str(scrape.get("blocking_type") or "").lower() in {"forbidden", "cloudflare"}
+    return status, blocked, attempts_count
+
+
 def update_leidsa_now(
     *,
     history_game_slug: str | None = None,
@@ -1271,6 +1357,26 @@ def update_leidsa_now(
 
         scrape = _get_scrape_with_cache(scrape_cache)
         _log_fetch_result(scrape)
+        official_status, official_blocked, official_attempts = _official_attempt_info(scrape)
+        scrape["official_blocked"] = bool(official_blocked)
+        scrape["official_status_code"] = official_status
+        if scrape_cache is not None:
+            scrape_cache["official_blocked"] = bool(official_blocked)
+            scrape_cache["official_status_code"] = official_status
+        if scrape.get("ok"):
+            _update_official_diag(
+                status="ok" if not official_blocked else "blocked",
+                http_status=official_status or scrape.get("status_code"),
+                blocked=official_blocked,
+                attempts_per_job=official_attempts,
+            )
+        else:
+            _update_official_diag(
+                status="blocked" if official_blocked else "error",
+                http_status=official_status or scrape.get("status_code"),
+                blocked=official_blocked,
+                attempts_per_job=official_attempts,
+            )
 
         if not scrape.get("ok"):
             err = scrape.get("error") or scrape.get("message") or "Leidsa no respondió"
@@ -1308,9 +1414,36 @@ def update_leidsa_now(
                 errors=scrape.get("errors") or [],
                 fuente=SOURCE_NAME,
                 attempts=scrape.get("attempts") or [],
+                official_status_code=official_status or scrape.get("status_code"),
+                official_blocked=official_blocked,
             )
 
         rows = scrape.get("results") or scrape.get("rows") or []
+        has_super_kino = any((r.get("lottery") or "") == "leidsa_super_kino_tv" for r in rows)
+        super_kino_latest = None
+        super_kino_fresh = False
+        try:
+            from models import get_latest_result_date_for_scope, get_lottery_by_slug
+            from services.leidsa_history import _days_since_draw
+
+            sk = get_lottery_by_slug("leidsa_super_kino_tv")
+            if sk:
+                super_kino_latest = get_latest_result_date_for_scope(sk["id"], draw_name="noche") or None
+                age = _days_since_draw(super_kino_latest)
+                super_kino_fresh = age is not None and age <= 3
+        except Exception:
+            super_kino_latest = None
+            super_kino_fresh = False
+        _update_super_kino_diag(
+            latest_date=super_kino_latest,
+            fresh=super_kino_fresh,
+            fallback_available=has_super_kino,
+            reason="" if has_super_kino else (
+                "LEIDSA official blocked (403); no fallback source for Super Kino"
+                if official_blocked
+                else "No Super Kino rows in current source payload"
+            ),
+        )
         if not rows:
             err = "Parser sin resultados — no se guardan filas vacías"
             log_leidsa_sync(ok=False, message=err, error=err)
@@ -1402,6 +1535,10 @@ def update_leidsa_now(
             fuente_label=fuente_label,
             latest_date=latest_date,
             fallback_used=bool(scrape.get("fallback_used")),
+            attempts=scrape.get("attempts") or [],
+            official_status_code=official_status or scrape.get("status_code"),
+            official_blocked=official_blocked,
+            fallback_has_super_kino=has_super_kino,
         )
     except Exception as exc:
         logger.exception("update_leidsa_now")
@@ -1450,87 +1587,57 @@ def sync_priority_games_from_cached_scrape(
     picked = [r for r in rows if (r.get("lottery") or "") in wanted]
     missing = sorted(wanted - {r.get("lottery") for r in picked if r.get("lottery")})
 
-    def _pull_single_priority_slug(slug: str) -> list[dict]:
+    def _pull_single_priority_slug(slug: str) -> tuple[list[dict], str]:
         try:
-            from urllib.parse import quote
+            from services.leidsa_fallback.orchestrator import OFFICIAL_KEY, SOURCE_CHAIN, _fetch_source
 
-            from services.leidsa_config import LEIDSA_HISTORY_GAMES, SOURCE_URL
-            from services.leidsa_history import parse_draw_results_history
-            from services.leidsa_http import fetch_leidsa_page
-
-            game = next((g for g in LEIDSA_HISTORY_GAMES if g.get("slug") == slug), None)
-            if not game:
-                return []
-
-            # Descubrimiento rápido de drawId (1 request home, sin reintentos largos).
-            draw_id = ""
-            prefix = game.get("draw_id_prefix", "")
-            fam = game.get("family_name", "")
-            home = fetch_leidsa_page(
-                SOURCE_URL,
-                juego=f"priority_home:{slug}",
-                min_bytes=3500,
-                require_draw_data=False,
-                timeout=6,
-                retries=1,
-            )
-            if home.get("ok"):
-                home_html = home.get("html") or ""
-                for block in home_html.split('{\\"gameId\\":')[1:]:
-                    fam_m = re.search(r'\\"gameFamilyName\\":\\"([^\\"]+)', block)
-                    if not fam_m:
-                        continue
-                    family = (fam_m.group(1) or "").strip()
-                    if family != fam:
-                        continue
-                    did_m = re.search(
-                        r'\\"(?:current|previous|latest)DrawDetails\\":\{[^}]*?\\"drawId\\":\\"([^\\"]+)',
-                        block[:4000],
-                    )
-                    if did_m:
-                        draw_id = did_m.group(1).strip()
-                        break
-            if not draw_id and prefix:
-                draw_id = f"{prefix}1"
-            if not draw_id:
-                return []
-
-            path = quote(game.get("path") or fam, safe="")
-            url = f"https://www.leidsa.com/results/Leidsa/{path}/{draw_id}"
-            fetched = fetch_leidsa_page(
-                url,
-                juego=f"priority:{slug}",
-                min_bytes=3500,
-                require_draw_data=True,
-                timeout=6,
-                retries=1,
-            )
-            if not fetched.get("ok"):
-                return []
-            rows_slug = parse_draw_results_history(
-                fetched.get("html") or "",
-                game.get("family_name") or "",
-                days=14,
-                limit=3,
-                slug=slug,
-            )
-            rows_slug.sort(key=lambda r: (r.get("fecha_rd", ""), r.get("draw_timestamp", "")), reverse=True)
-            return rows_slug[:1]
+            source_errors: list[str] = []
+            for key, label, url, parse_fn in SOURCE_CHAIN:
+                if key == OFFICIAL_KEY:
+                    continue
+                fetched = _fetch_source(key, url)
+                if not fetched.get("ok"):
+                    source_errors.append(f"{key}:{fetched.get('status_code') or fetched.get('error')}")
+                    continue
+                rows_any = parse_fn(fetched.get("html") or "", url)
+                rows_slug = [r for r in rows_any if (r.get("lottery") or "") == slug]
+                if not rows_slug:
+                    source_errors.append(f"{key}:no_slug_rows")
+                    continue
+                rows_slug.sort(key=lambda r: (r.get("fecha_rd", ""), r.get("draw_timestamp", "")), reverse=True)
+                return rows_slug[:1], ""
+            return [], "; ".join(source_errors[:6]) if source_errors else "no_fallback_rows"
         except Exception:
-            return []
+            return [], "fallback_exception"
 
+    missing_detail: dict[str, str] = {}
     for slug in missing:
-        picked.extend(_pull_single_priority_slug(slug))
+        rows_slug, err_detail = _pull_single_priority_slug(slug)
+        if rows_slug:
+            picked.extend(rows_slug)
+        else:
+            missing_detail[slug] = err_detail or "no_rows"
     if not picked:
+        official_blocked = bool((scrape.get("official_blocked") is True) or ("403" in str(scrape.get("error") or "")))
+        message = "LEIDSA payload sin filas para juegos prioritarios"
+        if official_blocked and "leidsa_super_kino_tv" in wanted:
+            message = "LEIDSA official blocked (403); no fallback source for Super Kino"
+        _update_super_kino_diag(
+            latest_date=None,
+            fresh=False,
+            fallback_available=False,
+            reason=message,
+        )
         return _safe_response(
             ok=False,
-            message="LEIDSA payload sin filas para juegos prioritarios",
+            message=message,
             inserted=0,
             updated=0,
             ignored=0,
             skipped=0,
             results_found=0,
             games={slug: {"rows_found": 0, "latest_date": None} for slug in wanted},
+            missing_detail=missing_detail,
         )
 
     save = save_leidsa_rows(picked)
@@ -1551,6 +1658,7 @@ def sync_priority_games_from_cached_scrape(
         games=per_game,
         fuente=scrape.get("fuente") or "leidsa_official",
         fuente_label=scrape.get("fuente_label") or "LEIDSA.com",
+        missing_detail=missing_detail,
     )
 
 
@@ -1844,6 +1952,7 @@ def debug_leidsa() -> dict[str, Any]:
             "error": err_msg,
             "blocking_type": blocking,
             "html_preview": (html or fetch.get("html_preview", ""))[:1500],
+            "source_diagnostic": get_leidsa_source_diagnostic(),
         }
         _log_fetch_result(
             {**out, "results": results, "parser": parsed.get("parser")},
