@@ -293,6 +293,62 @@ class LeidsaServiceTests(unittest.TestCase):
         self.assertIn("leidsa_quiniela_pale", out["games"])
         self.assertIn("leidsa_super_kino_tv", out["games"])
 
+    def test_sync_priority_games_can_pull_missing_slug_fast(self):
+        cache = {
+            "official_scrape": {
+                "ok": True,
+                "results": [
+                    {
+                        "lottery": "leidsa_quiniela_pale",
+                        "lottery_name": "LEIDSA Quiniela Palé",
+                        "draw": "tarde",
+                        "fecha_rd": "2026-09-12",
+                        "numeros": [32, 76, 6],
+                        "draw_time": "14:30",
+                        "fuente": "LEIDSA.com",
+                    },
+                ],
+            }
+        }
+
+        fake_game = {
+            "slug": "leidsa_super_kino_tv",
+            "family_name": "KinoTV",
+            "path": "KinoTV",
+            "draw_id_prefix": "3_",
+        }
+        fake_html = (
+            'drawResults":[{"gameDrawId":"3_200","gameFamilyName":"KinoTV",'
+            '"drawTime":"2026-09-11T20:00:00Z","results":{"drawnValues":[{"drawnValues":[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20]}]}}]'
+        ).replace('"', '\\"')
+        with patch("services.leidsa_service.save_leidsa_rows", return_value={"ok": True, "inserted": 2, "updated": 0, "ignored": 0, "skipped": 0}), patch(
+            "services.leidsa_history.discover_latest_draw_ids", return_value={"KinoTV": "3_200"}
+        ), patch("services.leidsa_config.LEIDSA_HISTORY_GAMES", [fake_game]), patch(
+            "services.leidsa_history.build_results_url", return_value="https://www.leidsa.com/results/Leidsa/KinoTV/3_200"
+        ), patch(
+            "services.leidsa_http.fetch_leidsa_page",
+            return_value={"ok": True, "html": f"<html>{fake_html}</html>"},
+        ), patch("services.leidsa_history.parse_draw_results_history") as parse_mock:
+            parse_mock.return_value = [
+                {
+                    "lottery": "leidsa_super_kino_tv",
+                    "lottery_name": "LEIDSA Super Kino TV",
+                    "draw": "noche",
+                    "fecha_rd": "2026-09-11",
+                    "numeros": list(range(1, 21)),
+                    "draw_time": "20:00",
+                    "fuente": "LEIDSA.com",
+                }
+            ]
+            out = leidsa_service.sync_priority_games_from_cached_scrape(
+                slugs=["leidsa_quiniela_pale", "leidsa_super_kino_tv"],
+                scrape_cache=cache,
+            )
+
+        self.assertTrue(out["ok"])
+        self.assertEqual(out["results_found"], 2)
+        self.assertEqual(out["games"]["leidsa_super_kino_tv"]["rows_found"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

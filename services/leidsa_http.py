@@ -83,6 +83,8 @@ def fetch_leidsa_page(
     use_cache: bool = False,
     min_bytes: int = 1000,
     require_draw_data: bool = False,
+    timeout: int | float | None = None,
+    retries: int | None = None,
 ) -> dict[str, Any]:
     """
     GET a leidsa.com con reintentos.
@@ -93,7 +95,8 @@ def fetch_leidsa_page(
     last_error = None
     status_code = None
     t0 = time.monotonic()
-    retries = int(os.environ.get("LEIDSA_FETCH_RETRIES", str(FETCH_RETRIES + 1)))
+    timeout_value = timeout if timeout is not None else FETCH_TIMEOUT
+    retries = int(retries if retries is not None else os.environ.get("LEIDSA_FETCH_RETRIES", str(FETCH_RETRIES + 1)))
 
     for attempt in range(1, retries + 1):
         try:
@@ -101,7 +104,7 @@ def fetch_leidsa_page(
                 **BROWSER_HEADERS,
                 "Referer": SOURCE_URL if url != SOURCE_URL else "https://www.google.com/",
             }
-            resp = session.get(url, headers=headers, timeout=FETCH_TIMEOUT)
+            resp = session.get(url, headers=headers, timeout=timeout_value)
             status_code = resp.status_code
             html = resp.text or ""
             elapsed = round(time.monotonic() - t0, 2)

@@ -1448,6 +1448,47 @@ def sync_priority_games_from_cached_scrape(
 
     wanted = {s for s in (slugs or []) if s}
     picked = [r for r in rows if (r.get("lottery") or "") in wanted]
+    missing = sorted(wanted - {r.get("lottery") for r in picked if r.get("lottery")})
+
+    def _pull_single_priority_slug(slug: str) -> list[dict]:
+        try:
+            from services.leidsa_config import LEIDSA_HISTORY_GAMES
+            from services.leidsa_history import (
+                build_results_url,
+                discover_latest_draw_ids,
+                parse_draw_results_history,
+            )
+            from services.leidsa_http import fetch_leidsa_page
+
+            game = next((g for g in LEIDSA_HISTORY_GAMES if g.get("slug") == slug), None)
+            if not game:
+                return []
+            ids = discover_latest_draw_ids(retries=1)
+            url = build_results_url(game, ids)
+            fetched = fetch_leidsa_page(
+                url,
+                juego=f"priority:{slug}",
+                min_bytes=3500,
+                require_draw_data=True,
+                timeout=6,
+                retries=1,
+            )
+            if not fetched.get("ok"):
+                return []
+            rows_slug = parse_draw_results_history(
+                fetched.get("html") or "",
+                game.get("family_name") or "",
+                days=14,
+                limit=3,
+                slug=slug,
+            )
+            rows_slug.sort(key=lambda r: (r.get("fecha_rd", ""), r.get("draw_timestamp", "")), reverse=True)
+            return rows_slug[:1]
+        except Exception:
+            return []
+
+    for slug in missing:
+        picked.extend(_pull_single_priority_slug(slug))
     if not picked:
         return _safe_response(
             ok=False,
