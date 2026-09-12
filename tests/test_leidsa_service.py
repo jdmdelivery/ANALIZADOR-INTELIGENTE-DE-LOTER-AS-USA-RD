@@ -253,6 +253,46 @@ class LeidsaServiceTests(unittest.TestCase):
         hh, mm = leidsa_service.utc_to_local_hm("2026-09-12T17:00:00Z")
         self.assertEqual((hh, mm), (13, 0))
 
+    def test_sync_priority_games_from_cached_scrape(self):
+        cache = {
+            "official_scrape": {
+                "ok": True,
+                "results": [
+                    {
+                        "lottery": "leidsa_quiniela_pale",
+                        "lottery_name": "LEIDSA Quiniela Palé",
+                        "draw": "tarde",
+                        "fecha_rd": "2026-09-12",
+                        "numeros": [32, 76, 6],
+                        "draw_time": "14:30",
+                        "fuente": "LEIDSA.com",
+                    },
+                    {
+                        "lottery": "leidsa_super_kino_tv",
+                        "lottery_name": "LEIDSA Super Kino TV",
+                        "draw": "noche",
+                        "fecha_rd": "2026-09-11",
+                        "numeros": list(range(1, 21)),
+                        "draw_time": "20:00",
+                        "fuente": "LEIDSA.com",
+                    },
+                ],
+            }
+        }
+        with patch.object(
+            leidsa_service,
+            "save_leidsa_rows",
+            return_value={"ok": True, "inserted": 1, "updated": 1, "ignored": 0, "skipped": 0},
+        ):
+            out = leidsa_service.sync_priority_games_from_cached_scrape(
+                slugs=["leidsa_quiniela_pale", "leidsa_super_kino_tv"],
+                scrape_cache=cache,
+            )
+        self.assertTrue(out["ok"])
+        self.assertEqual(out["results_found"], 2)
+        self.assertIn("leidsa_quiniela_pale", out["games"])
+        self.assertIn("leidsa_super_kino_tv", out["games"])
+
 
 if __name__ == "__main__":
     unittest.main()

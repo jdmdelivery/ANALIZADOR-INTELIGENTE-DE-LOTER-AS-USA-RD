@@ -750,7 +750,7 @@ def actualizar_leidsa_multi(
         # Prioridad funcional: Quiniela Palé + Super Kino no pueden quedar fuera.
         if not history_slug:
             from models import get_lottery_by_slug
-            from services.leidsa_service import update_leidsa_game_incremental
+            from services.leidsa_service import sync_priority_games_from_cached_scrape
 
             for slug in priority_targets:
                 lot_slug = get_lottery_by_slug(slug)
@@ -768,9 +768,9 @@ def actualizar_leidsa_multi(
                     source=f"leidsa_priority_{slug}",
                     elapsed_ms=int((time.monotonic() - t0) * 1000),
                 )
-                fix = update_leidsa_game_incremental(
-                    slug,
-                    lookback_days=max(7, min(days, 90)),
+                fix = sync_priority_games_from_cached_scrape(
+                    slugs=[slug],
+                    scrape_cache=scrape_cache,
                 )
                 fix["fuente"] = "leidsa"
                 fix["fuente_label"] = "LEIDSA.com"

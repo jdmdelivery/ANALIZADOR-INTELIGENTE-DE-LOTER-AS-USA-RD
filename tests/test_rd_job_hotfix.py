@@ -464,12 +464,73 @@ def test_leidsa_priority_sync_fetches_official_once(monkeypatch):
     monkeypatch.setattr("services.leidsa_service.scrape_leidsa_prefer_official", _scrape)
     monkeypatch.setattr("services.leidsa_service.save_leidsa_rows", lambda *_a, **_kw: {"ok": True, "inserted": 1, "updated": 0, "ignored": 0, "skipped": 0})
     monkeypatch.setattr("services.leidsa_service._latest_saved_leidsa_date", lambda: "2026-09-11")
-    monkeypatch.setattr("services.leidsa_service.update_leidsa_game_incremental", lambda slug, **_kw: {"ok": True, "inserted": 1, "updated": 0, "results_found": 1, "latest_date": "2026-09-12", "slug": slug})
+    monkeypatch.setattr(
+        "services.leidsa_service.sync_priority_games_from_cached_scrape",
+        lambda slugs, **_kw: {
+            "ok": True,
+            "inserted": 1,
+            "updated": 0,
+            "results_found": 1,
+            "games": {slugs[0]: {"latest_date": "2026-09-12", "rows_found": 1}},
+        },
+    )
     monkeypatch.setattr("models.get_lottery_by_slug", lambda slug: {"id": 1 if slug == "leidsa_quiniela_pale" else 2, "name": slug})
     monkeypatch.setattr(rdsvc, "get_max_draw_date", lambda lid: "2026-06-24" if lid == 2 else "2026-09-12")
     out = rdsvc.actualizar_leidsa_multi(days=30, max_job_seconds=120)
     assert out.get("ok") is True
     assert calls["scrape"] == 1
+
+
+def test_leidsa_priority_uses_cached_payload_not_incremental_backfill(monkeypatch):
+    calls = {"priority": 0}
+
+    monkeypatch.setattr(
+        "services.leidsa_service.scrape_leidsa_prefer_official",
+        lambda: {
+            "ok": True,
+            "results": [
+                {
+                    "lottery": "leidsa_quiniela_pale",
+                    "lottery_name": "LEIDSA Quiniela Palé",
+                    "draw": "tarde",
+                    "fecha_rd": "2026-09-12",
+                    "numeros": [32, 76, 6],
+                    "draw_time": "14:30",
+                    "fuente": "LEIDSA.com",
+                },
+                {
+                    "lottery": "leidsa_super_kino_tv",
+                    "lottery_name": "LEIDSA Super Kino TV",
+                    "draw": "noche",
+                    "fecha_rd": "2026-09-11",
+                    "numeros": list(range(1, 21)),
+                    "draw_time": "20:00",
+                    "fuente": "LEIDSA.com",
+                },
+            ],
+            "latest_date": "2026-09-12",
+            "fuente": "leidsa_official",
+            "fuente_label": "LEIDSA.com",
+        },
+    )
+    monkeypatch.setattr("services.leidsa_service.save_leidsa_rows", lambda *_a, **_kw: {"ok": True, "inserted": 1, "updated": 1, "ignored": 0, "skipped": 0})
+
+    def _priority(slugs, **_kw):
+        calls["priority"] += 1
+        return {
+            "ok": True,
+            "inserted": 1,
+            "updated": 0,
+            "results_found": 1,
+            "games": {slugs[0]: {"latest_date": "2026-09-12", "rows_found": 1}},
+        }
+
+    monkeypatch.setattr("services.leidsa_service.sync_priority_games_from_cached_scrape", _priority)
+    monkeypatch.setattr("models.get_lottery_by_slug", lambda slug: {"id": 1 if slug == "leidsa_quiniela_pale" else 2, "name": slug})
+    monkeypatch.setattr(rdsvc, "get_max_draw_date", lambda lid: "2026-06-24" if lid == 2 else "2026-09-12")
+    out = rdsvc.actualizar_leidsa_multi(days=30, max_job_seconds=120)
+    assert out.get("ok") is True
+    assert calls["priority"] == 1
 
 
 def test_leidsa_recent_upsert_visible_in_latest_query(monkeypatch):

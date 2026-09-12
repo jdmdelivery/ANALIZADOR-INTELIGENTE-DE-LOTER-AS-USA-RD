@@ -1422,6 +1422,65 @@ def update_leidsa_now(
         )
 
 
+def sync_priority_games_from_cached_scrape(
+    *,
+    slugs: list[str],
+    scrape_cache: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """
+    Reutiliza el scrape oficial/fallback ya descargado en el job y guarda solo
+    juegos prioritarios sin disparar backfill histórico adicional.
+    """
+    scrape = _get_scrape_with_cache(scrape_cache)
+    rows = list(scrape.get("results") or scrape.get("rows") or [])
+    if not scrape.get("ok") or not rows:
+        return _safe_response(
+            ok=False,
+            message=scrape.get("message") or scrape.get("error") or "LEIDSA sin datos en caché de job",
+            error=scrape.get("error"),
+            inserted=0,
+            updated=0,
+            ignored=0,
+            skipped=0,
+            results_found=0,
+            games={},
+        )
+
+    wanted = {s for s in (slugs or []) if s}
+    picked = [r for r in rows if (r.get("lottery") or "") in wanted]
+    if not picked:
+        return _safe_response(
+            ok=False,
+            message="LEIDSA payload sin filas para juegos prioritarios",
+            inserted=0,
+            updated=0,
+            ignored=0,
+            skipped=0,
+            results_found=0,
+            games={slug: {"rows_found": 0, "latest_date": None} for slug in wanted},
+        )
+
+    save = save_leidsa_rows(picked)
+    per_game: dict[str, dict[str, Any]] = {}
+    for slug in wanted:
+        game_rows = [r for r in picked if (r.get("lottery") or "") == slug]
+        latest = max((r.get("fecha_rd") for r in game_rows if r.get("fecha_rd")), default=None)
+        per_game[slug] = {"rows_found": len(game_rows), "latest_date": latest}
+
+    return _safe_response(
+        ok=bool(save.get("ok")),
+        message="LEIDSA priority sync desde payload cache",
+        inserted=int(save.get("inserted") or 0),
+        updated=int(save.get("updated") or 0),
+        ignored=int(save.get("ignored") or 0),
+        skipped=int(save.get("skipped") or 0),
+        results_found=len(picked),
+        games=per_game,
+        fuente=scrape.get("fuente") or "leidsa_official",
+        fuente_label=scrape.get("fuente_label") or "LEIDSA.com",
+    )
+
+
 def get_leidsa_real_results_board(fecha: str | None = None) -> list[dict]:
     """Solo resultados REALES guardados (con números). Sin placeholders de horario."""
     from models import get_leidsa_history_from_db, get_leidsa_results_for_date
