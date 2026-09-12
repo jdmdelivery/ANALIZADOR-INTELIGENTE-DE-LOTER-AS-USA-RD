@@ -1246,10 +1246,20 @@ def update_leidsa_game_fast(slug: str, *, days: int = 30) -> dict[str, Any]:
         )
 
 
+def _get_scrape_with_cache(scrape_cache: dict[str, Any] | None = None) -> dict[str, Any]:
+    if scrape_cache is not None and isinstance(scrape_cache.get("official_scrape"), dict):
+        return scrape_cache["official_scrape"]
+    scrape = scrape_leidsa_prefer_official()
+    if scrape_cache is not None:
+        scrape_cache["official_scrape"] = scrape
+    return scrape
+
+
 def update_leidsa_now(
     *,
     history_game_slug: str | None = None,
     history_days: int = 30,
+    scrape_cache: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Actualización manual — nunca lanza excepción.
 
@@ -1259,7 +1269,7 @@ def update_leidsa_now(
     try:
         from models import log_leidsa_sync
 
-        scrape = scrape_leidsa_prefer_official()
+        scrape = _get_scrape_with_cache(scrape_cache)
         _log_fetch_result(scrape)
 
         if not scrape.get("ok"):

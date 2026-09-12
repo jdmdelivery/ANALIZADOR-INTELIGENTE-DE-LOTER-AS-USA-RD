@@ -371,3 +371,148 @@ def test_job_soft_budget_stops_early(monkeypatch):
     out = rdsvc.actualizar_rd_todas(days=30, job_id="j-soft", max_job_seconds=120)
     assert out["ok"] is True
     assert any("soft budget" in e for e in out.get("errors", []))
+
+
+def test_priority_scopes_run_before_soft_budget_break(monkeypatch):
+    monkeypatch.setattr(rdsvc, "SOFT_RD_JOB_SECONDS", 1)
+    monkeypatch.setattr(rdsvc, "LEIDSA_PRIORITY_BUDGET_SECONDS", 1)
+    monkeypatch.setattr(rdsvc, "REAL_PRIORITY_BUDGET_SECONDS", 1)
+    monkeypatch.setattr(
+        rdsvc,
+        "iter_enabled_conectate_configs",
+        lambda: [("Real", {"db_names": ["Lotería Real"]}), ("Sec", {"db_names": ["Loteka"]})],
+    )
+    monkeypatch.setattr(rdsvc, "normalize_lottery_name", lambda x: x.lower())
+    monkeypatch.setattr(rdsvc, "find_lottery_in_list", lambda *_a, **_kw: {"id": 1, "name": "Lotería Real"})
+    monkeypatch.setattr(rdsvc, "get_all_lotteries", lambda: [{"id": 1, "name": "Lotería Real", "country": "RD"}])
+    monkeypatch.setattr(rdsvc, "get_max_draw_date", lambda *_a, **_kw: "2026-09-12")
+
+    calls = []
+
+    def _leidsa(**_kw):
+        time.sleep(0.2)
+        calls.append("LEIDSA")
+        return {"ok": True, "imported": 1, "updated": 0, "sources_tried": []}
+
+    def _lot(db_name, **_kw):
+        calls.append(db_name)
+        time.sleep(0.9 if db_name == "Lotería Real" else 0.4)
+        return {"ok": True, "imported": 1, "updated": 0, "sources_tried": []}
+
+    monkeypatch.setattr(rdsvc, "actualizar_leidsa_multi", _leidsa)
+    monkeypatch.setattr(rdsvc, "actualizar_rd_loteria", _lot)
+    out = rdsvc.actualizar_rd_todas(days=30, job_id="j-priority", max_job_seconds=120)
+    assert "LEIDSA" in calls
+    assert "Lotería Real" in calls
+    assert out.get("priority_completed") is True
+    assert any("soft budget" in e for e in out.get("errors", []))
+
+
+def test_secondaries_can_be_skipped_after_priority(monkeypatch):
+    monkeypatch.setattr(rdsvc, "SOFT_RD_JOB_SECONDS", 1)
+    monkeypatch.setattr(
+        rdsvc,
+        "iter_enabled_conectate_configs",
+        lambda: [
+            ("Real", {"db_names": ["Lotería Real"]}),
+            ("SecA", {"db_names": ["Loteka"]}),
+            ("SecB", {"db_names": ["Nacional"]}),
+        ],
+    )
+    monkeypatch.setattr(rdsvc, "normalize_lottery_name", lambda x: x.lower())
+    monkeypatch.setattr(rdsvc, "find_lottery_in_list", lambda *_a, **_kw: {"id": 1, "name": "Lotería Real"})
+    monkeypatch.setattr(rdsvc, "get_all_lotteries", lambda: [{"id": 1, "name": "Lotería Real", "country": "RD"}])
+    monkeypatch.setattr(rdsvc, "get_max_draw_date", lambda *_a, **_kw: "2026-09-12")
+    monkeypatch.setattr(rdsvc, "actualizar_leidsa_multi", lambda **_kw: {"ok": True, "imported": 1, "updated": 0, "sources_tried": []})
+    seen = []
+
+    def _lot(db_name, **_kw):
+        seen.append(db_name)
+        time.sleep(0.9 if db_name == "Lotería Real" else 0.4)
+        return {"ok": True, "imported": 1, "updated": 0, "sources_tried": []}
+
+    monkeypatch.setattr(rdsvc, "actualizar_rd_loteria", _lot)
+    out = rdsvc.actualizar_rd_todas(days=30, job_id="j-soft2", max_job_seconds=120)
+    assert seen[0] == "Lotería Real"
+    assert any("soft budget" in e for e in out.get("errors", []))
+
+
+def test_leidsa_priority_sync_fetches_official_once(monkeypatch):
+    calls = {"scrape": 0}
+
+    def _scrape():
+        calls["scrape"] += 1
+        return {
+            "ok": True,
+            "results": [
+                {
+                    "lottery": "leidsa_quiniela_pale",
+                    "lottery_name": "LEIDSA Quiniela Palé",
+                    "draw": "noche",
+                    "fecha_rd": "2026-09-11",
+                    "numeros": [21, 46, 88],
+                    "draw_time": "20:55",
+                    "fuente": "LEIDSA.com",
+                }
+            ],
+            "parser": "leidsa_official",
+            "latest_date": "2026-09-11",
+            "fuente": "leidsa_official",
+            "fuente_label": "LEIDSA.com",
+        }
+
+    monkeypatch.setattr("services.leidsa_service.scrape_leidsa_prefer_official", _scrape)
+    monkeypatch.setattr("services.leidsa_service.save_leidsa_rows", lambda *_a, **_kw: {"ok": True, "inserted": 1, "updated": 0, "ignored": 0, "skipped": 0})
+    monkeypatch.setattr("services.leidsa_service._latest_saved_leidsa_date", lambda: "2026-09-11")
+    monkeypatch.setattr("services.leidsa_service.update_leidsa_game_incremental", lambda slug, **_kw: {"ok": True, "inserted": 1, "updated": 0, "results_found": 1, "latest_date": "2026-09-12", "slug": slug})
+    monkeypatch.setattr("models.get_lottery_by_slug", lambda slug: {"id": 1 if slug == "leidsa_quiniela_pale" else 2, "name": slug})
+    monkeypatch.setattr(rdsvc, "get_max_draw_date", lambda lid: "2026-06-24" if lid == 2 else "2026-09-12")
+    out = rdsvc.actualizar_leidsa_multi(days=30, max_job_seconds=120)
+    assert out.get("ok") is True
+    assert calls["scrape"] == 1
+
+
+def test_leidsa_recent_upsert_visible_in_latest_query(monkeypatch):
+    import models
+    from models import get_all_lotteries, get_results, init_db
+    from services.leidsa_service import save_leidsa_rows
+
+    tmp_db = os.path.join(tempfile.gettempdir(), "rd_leidsa_latest_query_test.db")
+    if os.path.exists(tmp_db):
+        os.remove(tmp_db)
+    old_db = models.DATABASE
+    try:
+        monkeypatch.setenv("DATABASE_PATH", tmp_db)
+        monkeypatch.setattr(models, "DATABASE", tmp_db)
+        init_db()
+        lots = {l["name"]: l["id"] for l in get_all_lotteries() if l.get("country") == "RD"}
+        rows = [
+            {
+                "lottery": "leidsa_quiniela_pale",
+                "lottery_name": "LEIDSA Quiniela Palé",
+                "draw": "tarde",
+                "fecha_rd": "2026-09-12",
+                "numeros": [32, 76, 6],
+                "draw_time": "14:30",
+                "fuente": "LEIDSA.com",
+            },
+            {
+                "lottery": "leidsa_super_kino_tv",
+                "lottery_name": "LEIDSA Super Kino TV",
+                "draw": "noche",
+                "fecha_rd": "2026-09-11",
+                "numeros": list(range(1, 21)),
+                "draw_time": "20:00",
+                "fuente": "LEIDSA.com",
+            },
+        ]
+        out = save_leidsa_rows(rows)
+        assert out["ok"] is True
+
+        q_rows = get_results(lots["LEIDSA Quiniela Palé"], limit=1)
+        sk_rows = get_results(lots["LEIDSA Super Kino TV"], limit=1)
+        assert q_rows and sk_rows
+        assert q_rows[0]["draw_date"] == "2026-09-12"
+        assert sk_rows[0]["draw_date"] == "2026-09-11"
+    finally:
+        models.DATABASE = old_db

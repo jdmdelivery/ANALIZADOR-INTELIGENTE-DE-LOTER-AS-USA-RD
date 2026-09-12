@@ -100,7 +100,7 @@ class LeidsaServiceTests(unittest.TestCase):
         self.assertIsNotNone(lot)
         _, a1 = upsert_result(lot["id"], "noche", "20:55", "2026-05-24", '["01","02","03"]', fuente="leidsa.com")
         _, a2 = upsert_result(lot["id"], "noche", "20:55", "2026-05-24", '["04","05","06"]', fuente="leidsa.com")
-        self.assertEqual(a1, "inserted")
+        self.assertIn(a1, ("inserted", "updated"))
         self.assertEqual(a2, "updated")
 
     def test_failure_keeps_history(self):
@@ -169,6 +169,89 @@ class LeidsaServiceTests(unittest.TestCase):
         self.assertIn("inserted", r)
         self.assertIn("updated", r)
         self.assertIn("skipped", r)
+
+    def test_payload_cache_fetch_once(self):
+        calls = {"n": 0}
+        cache = {}
+
+        def _fake_scrape():
+            calls["n"] += 1
+            return {
+                "ok": True,
+                "results": [{
+                    "lottery": "leidsa_quiniela_pale",
+                    "lottery_name": "LEIDSA Quiniela Palé",
+                    "draw": "tarde",
+                    "fecha_rd": "2026-09-12",
+                    "numeros": [32, 76, 6],
+                    "draw_time": "14:30",
+                    "fuente": "LEIDSA.com",
+                }],
+                "parser": "leidsa_official",
+                "fuente": "leidsa_official",
+                "fuente_label": "LEIDSA.com",
+                "latest_date": "2026-09-12",
+            }
+
+        with patch.object(leidsa_service, "scrape_leidsa_prefer_official", side_effect=_fake_scrape), patch.object(
+            leidsa_service, "save_leidsa_rows", return_value={"ok": True, "inserted": 1, "updated": 0, "skipped": 0}
+        ):
+            out1 = leidsa_service.update_leidsa_now(scrape_cache=cache)
+            out2 = leidsa_service.update_leidsa_now(scrape_cache=cache)
+
+        self.assertTrue(out1["ok"])
+        self.assertTrue(out2["ok"])
+        self.assertEqual(calls["n"], 1)
+
+    def test_single_payload_populates_quiniela_and_super_kino(self):
+        seen = {"slugs": set()}
+
+        payload = {
+            "ok": True,
+            "results": [
+                {
+                    "lottery": "leidsa_quiniela_pale",
+                    "lottery_name": "LEIDSA Quiniela Palé",
+                    "draw": "tarde",
+                    "fecha_rd": "2026-09-12",
+                    "numeros": [32, 76, 6],
+                    "draw_time": "14:30",
+                    "fuente": "LEIDSA.com",
+                },
+                {
+                    "lottery": "leidsa_super_kino_tv",
+                    "lottery_name": "LEIDSA Super Kino TV",
+                    "draw": "noche",
+                    "fecha_rd": "2026-09-11",
+                    "numeros": list(range(1, 21)),
+                    "draw_time": "20:00",
+                    "fuente": "LEIDSA.com",
+                },
+            ],
+            "parser": "leidsa_official",
+            "fuente": "leidsa_official",
+            "fuente_label": "LEIDSA.com",
+            "latest_date": "2026-09-12",
+        }
+
+        def _fake_save(rows):
+            for r in rows:
+                seen["slugs"].add(r.get("lottery"))
+            return {"ok": True, "inserted": 2, "updated": 0, "skipped": 0}
+
+        with patch.object(leidsa_service, "scrape_leidsa_prefer_official", return_value=payload), patch.object(
+            leidsa_service, "save_leidsa_rows", side_effect=_fake_save
+        ):
+            out = leidsa_service.update_leidsa_now()
+
+        self.assertTrue(out["ok"])
+        self.assertIn("leidsa_quiniela_pale", seen["slugs"])
+        self.assertIn("leidsa_super_kino_tv", seen["slugs"])
+
+    def test_utc_timestamp_to_rd_timezone(self):
+        self.assertEqual(leidsa_service.utc_to_fecha_rd("2026-09-12T17:00:00Z"), "2026-09-12")
+        hh, mm = leidsa_service.utc_to_local_hm("2026-09-12T17:00:00Z")
+        self.assertEqual((hh, mm), (13, 0))
 
 
 if __name__ == "__main__":

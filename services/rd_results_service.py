@@ -19,6 +19,8 @@ logger = logging.getLogger(__name__)
 LOG = "[RD]"
 MAX_RD_JOB_SECONDS = int(os.environ.get("RD_MAX_JOB_SECONDS", "120"))
 SOFT_RD_JOB_SECONDS = int(os.environ.get("RD_SOFT_JOB_SECONDS", "30"))
+LEIDSA_PRIORITY_BUDGET_SECONDS = int(os.environ.get("RD_LEIDSA_PRIORITY_SECONDS", "10"))
+REAL_PRIORITY_BUDGET_SECONDS = int(os.environ.get("RD_REAL_PRIORITY_SECONDS", "10"))
 
 SOURCE_LABELS = {
     "conectate_api": "Conectate API",
@@ -652,6 +654,10 @@ def actualizar_leidsa_multi(
     t0 = time.monotonic()
     j_start = job_started_at or t0
     j_limit = int(max_job_seconds or MAX_RD_JOB_SECONDS)
+    total_imported = 0
+    total_updated = 0
+    total_ignored = 0
+    total_rejected = 0
 
     def _check_deadline(source: str) -> dict | None:
         if _deadline_reached(j_start, j_limit):
@@ -711,9 +717,11 @@ def actualizar_leidsa_multi(
         if deadline_hit:
             return deadline_hit
         _job_event(job_id, "SOURCE_START", source="leidsa", elapsed_ms=int((time.monotonic() - t0) * 1000))
+        scrape_cache: dict = {}
         leidsa = update_leidsa_now(
             history_game_slug=history_slug,
             history_days=days,
+            scrape_cache=scrape_cache,
         )
         leidsa["fuente"] = "leidsa"
         leidsa["fuente_label"] = "LEIDSA.com"
@@ -723,22 +731,89 @@ def actualizar_leidsa_multi(
             lot = find_lottery_in_list(get_all_lotteries(), lottery_name, country="RD")
         if lot:
             leidsa["latest_date"] = get_max_draw_date(lot["id"]) or leidsa.get("latest_date")
-        if (
-            leidsa.get("ok")
-            and (_saved(leidsa) or int(leidsa.get("results_found") or 0) > 0)
-            and not _latest_is_stale(leidsa.get("latest_date"))
-        ):
-            leidsa["pais"] = "DO"
-            leidsa["fuente_usada"] = "LEIDSA.com"
-            leidsa["sources_tried"] = sources_tried
-            leidsa["mensaje"] = leidsa.get("message") or "LEIDSA actualizada."
-            return leidsa
-        if leidsa.get("ok") and _latest_is_stale(leidsa.get("latest_date")):
+        total_imported += int(leidsa.get("imported") or leidsa.get("inserted") or 0)
+        total_updated += int(leidsa.get("updated") or 0)
+        total_ignored += int(leidsa.get("ignored") or 0)
+        total_rejected += int(leidsa.get("rejected") or 0)
+        if leidsa.get("ok") and not _latest_is_stale(leidsa.get("latest_date")):
+            pass
+        elif leidsa.get("ok") and _latest_is_stale(leidsa.get("latest_date")):
             errors.append(
                 f"LEIDSA update_now fecha atrasada ({leidsa.get('latest_date') or 'sin fecha'})"
             )
         elif leidsa.get("message"):
             errors.append(leidsa["message"])
+
+        priority_targets = [history_slug] if history_slug else ["leidsa_quiniela_pale", "leidsa_super_kino_tv"]
+        priority_fresh: dict[str, bool] = {}
+
+        # Prioridad funcional: Quiniela Palé + Super Kino no pueden quedar fuera.
+        if not history_slug:
+            from models import get_lottery_by_slug
+            from services.leidsa_service import update_leidsa_game_incremental
+
+            for slug in priority_targets:
+                lot_slug = get_lottery_by_slug(slug)
+                latest_slug = get_max_draw_date(lot_slug["id"]) if lot_slug else None
+                is_fresh = lot_slug and not _latest_is_stale(latest_slug, max_age_days=3)
+                if is_fresh:
+                    priority_fresh[slug] = True
+                    continue
+                deadline_hit = _check_deadline(f"leidsa_priority_{slug}")
+                if deadline_hit:
+                    return deadline_hit
+                _job_event(
+                    job_id,
+                    "SOURCE_START",
+                    source=f"leidsa_priority_{slug}",
+                    elapsed_ms=int((time.monotonic() - t0) * 1000),
+                )
+                fix = update_leidsa_game_incremental(
+                    slug,
+                    lookback_days=max(7, min(days, 90)),
+                )
+                fix["fuente"] = "leidsa"
+                fix["fuente_label"] = "LEIDSA.com"
+                _record(sources_tried, f"leidsa_priority_{slug}", fix, lottery_name=slug)
+                _job_event(
+                    job_id,
+                    "SOURCE_END",
+                    source=f"leidsa_priority_{slug}",
+                    elapsed_ms=int((time.monotonic() - t0) * 1000),
+                    rows=int(fix.get("results_found") or 0),
+                    status=fix.get("status_code"),
+                )
+                total_imported += int(fix.get("inserted") or fix.get("imported") or 0)
+                total_updated += int(fix.get("updated") or 0)
+                total_ignored += int(fix.get("ignored") or 0)
+                total_rejected += int(fix.get("rejected") or 0)
+                latest_slug = get_max_draw_date(lot_slug["id"]) if lot_slug else latest_slug
+                is_fresh = bool(lot_slug and not _latest_is_stale(latest_slug, max_age_days=3))
+                priority_fresh[slug] = is_fresh
+                if not is_fresh:
+                    errors.append(f"{slug}: stale_after_priority_sync ({latest_slug or 'sin fecha'})")
+        else:
+            priority_fresh[history_slug] = not _latest_is_stale(leidsa.get("latest_date"), max_age_days=3)
+
+        all_priority_fresh = all(priority_fresh.get(s, False) for s in priority_targets)
+        if (total_imported + total_updated > 0 or leidsa.get("ok")) and all_priority_fresh:
+            return {
+                "ok": True,
+                "pais": "DO",
+                "status": "updated" if not errors else "partial",
+                "message": leidsa.get("message") or "LEIDSA actualizada.",
+                "imported": total_imported,
+                "updated": total_updated,
+                "ignored": total_ignored,
+                "rejected": total_rejected,
+                "latest_date": leidsa.get("latest_date"),
+                "fuente": "leidsa",
+                "fuente_usada": "LEIDSA.com",
+                "fuente_label": "LEIDSA.com",
+                "sources_tried": sources_tried,
+                "warning": bool(errors),
+                "errors": errors[:10],
+            }
     except Exception as exc:
         logger.exception("%s LEIDSA primary error", LOG)
         errors.append(str(exc))
@@ -764,6 +839,10 @@ def actualizar_leidsa_multi(
                     sources_tried=sources_tried,
                     warning=True,
                 )
+                out["imported"] = int(out.get("imported") or 0) + total_imported
+                out["updated"] = int(out.get("updated") or 0) + total_updated
+                out["ignored"] = int(out.get("ignored") or 0) + total_ignored
+                out["rejected"] = int(out.get("rejected") or 0) + total_rejected
                 out["latest_date"] = latest_fb
                 return out
             if fb.get("ok") and _saved(fb) and _latest_is_stale(latest_fb):
@@ -793,10 +872,52 @@ def actualizar_leidsa_multi(
             }
     if cached:
         cached["sources_tried"] = sources_tried
+        cached["imported"] = int(cached.get("imported") or 0) + total_imported
+        cached["updated"] = int(cached.get("updated") or 0) + total_updated
+        cached["ignored"] = int(cached.get("ignored") or 0) + total_ignored
+        cached["rejected"] = int(cached.get("rejected") or 0) + total_rejected
         cached["mensaje"] = ALT_MESSAGE + " Se muestran datos guardados."
         cached["message"] = cached["mensaje"]
         cached["warning"] = True
         return cached
+
+    latest_date = None
+    try:
+        if history_slug:
+            from models import get_lottery_by_slug
+
+            lot_h = get_lottery_by_slug(history_slug)
+            latest_date = get_max_draw_date(lot_h["id"]) if lot_h else None
+        else:
+            from models import get_lottery_by_slug
+
+            cand = []
+            for slug in ("leidsa_quiniela_pale", "leidsa_super_kino_tv"):
+                lot_h = get_lottery_by_slug(slug)
+                if lot_h:
+                    d = get_max_draw_date(lot_h["id"])
+                    if d:
+                        cand.append(d)
+            latest_date = max(cand) if cand else None
+    except Exception:
+        latest_date = None
+
+    ok_any = (total_imported + total_updated) > 0
+    if ok_any:
+        return {
+            "ok": True,
+            "pais": "DO",
+            "status": "partial" if errors else "updated",
+            "sources_tried": sources_tried,
+            "errors": errors[:10],
+            "message": "LEIDSA actualizada parcialmente con prioridad aplicada.",
+            "imported": total_imported,
+            "updated": total_updated,
+            "ignored": total_ignored,
+            "rejected": total_rejected,
+            "latest_date": latest_date,
+            "warning": bool(errors),
+        }
 
     return {
         "ok": False,
@@ -804,6 +925,11 @@ def actualizar_leidsa_multi(
         "sources_tried": sources_tried,
         "errors": errors,
         "message": errors[0] if errors else "LEIDSA no respondió",
+        "imported": total_imported,
+        "updated": total_updated,
+        "ignored": total_ignored,
+        "rejected": total_rejected,
+        "latest_date": latest_date,
     }
 
 
@@ -830,13 +956,29 @@ def actualizar_rd_todas(
     soft_seconds = min(deadline_seconds, int(max(1, SOFT_RD_JOB_SECONDS)))
 
     _job_event(job_id, "JOB_START", source="-", elapsed_ms=0, days=days)
+    job_sequence: list[dict] = []
 
+    def _seq(scope: str, status: str, started_scope: float, *, kind: str = "scope", note: str = "") -> None:
+        job_sequence.append(
+            {
+                "kind": kind,
+                "scope": scope,
+                "status": status,
+                "elapsed_ms": int((time.monotonic() - started_scope) * 1000),
+                "elapsed_cumulative_ms": int((time.monotonic() - started) * 1000),
+                "note": note,
+            }
+        )
+
+    # PHASE 1 — PRIORITY (siempre antes de cortar por soft budget)
+    p1_start = time.monotonic()
     leidsa_out = actualizar_leidsa_multi(
         days=min(days, 30),
         job_id=job_id,
         job_started_at=started,
         max_job_seconds=deadline_seconds,
     )
+    _seq("LEIDSA", "done" if leidsa_out.get("ok") else "error", p1_start, kind="priority")
     details.append({"name": "LEIDSA", **leidsa_out})
     if leidsa_out.get("ok"):
         total_imported += int(leidsa_out.get("imported") or 0)
@@ -853,10 +995,16 @@ def actualizar_rd_todas(
     refreshed: set[str] = set()
     configs = list(iter_enabled_conectate_configs())
     configs.sort(key=lambda it: 0 if (it[1]["db_names"][0] == "Lotería Real") else 1)
+    # Reserva conceptual de presupuesto para prioridades.
+    reserved_priority = min(
+        soft_seconds,
+        max(1, min(LEIDSA_PRIORITY_BUDGET_SECONDS, soft_seconds))
+        + max(1, min(REAL_PRIORITY_BUDGET_SECONDS, soft_seconds)),
+    )
+    phase2_soft_gate = max(1, soft_seconds - max(0, reserved_priority - int(time.monotonic() - started)))
+
+    priority_done = {"Lotería Real": False}
     for _label, cfg in configs:
-        if (time.monotonic() - started) >= soft_seconds and (total_imported + total_updated) > 0:
-            errors.append(f"RD update reached soft budget ({soft_seconds}s)")
-            break
         if _deadline_reached(started, deadline_seconds):
             msg = f"RD update exceeded maximum execution time ({deadline_seconds}s)"
             errors.append(msg)
@@ -866,6 +1014,24 @@ def actualizar_rd_todas(
         if key in refreshed:
             continue
         refreshed.add(key)
+        # Completar scope prioritario (Real) aun si ya se tocó soft budget.
+        if (
+            db_name != "Lotería Real"
+            and (time.monotonic() - started) >= soft_seconds
+            and (total_imported + total_updated) > 0
+        ):
+            errors.append(f"RD update reached soft budget ({soft_seconds}s)")
+            _seq(db_name, "skipped", started, kind="secondary", note="soft_budget")
+            break
+        if (
+            db_name != "Lotería Real"
+            and (time.monotonic() - started) >= phase2_soft_gate
+            and (total_imported + total_updated) > 0
+        ):
+            errors.append(f"RD update reached soft budget ({soft_seconds}s)")
+            _seq(db_name, "skipped", started, kind="secondary", note="phase2_soft_gate")
+            break
+        scope_start = time.monotonic()
         try:
             out = actualizar_rd_loteria(
                 db_name,
@@ -874,6 +1040,12 @@ def actualizar_rd_todas(
                 job_id=job_id,
                 job_started_at=started,
                 max_job_seconds=deadline_seconds,
+            )
+            _seq(
+                db_name,
+                "done" if out.get("ok") else "error",
+                scope_start,
+                kind="priority" if db_name == "Lotería Real" else "secondary",
             )
             lot_row = find_lottery_in_list(get_all_lotteries(), db_name, country="RD")
             lid = lot_row["id"] if lot_row else None
@@ -901,8 +1073,17 @@ def actualizar_rd_todas(
                 errors.append(f"{db_name}: {out.get('message', 'error')}")
             for src in out.get("sources_tried") or []:
                 sources_all.append({"lottery": db_name, **src})
+            if db_name == "Lotería Real":
+                priority_done["Lotería Real"] = True
         except Exception as exc:
             errors.append(f"{db_name}: {exc}")
+            _seq(
+                db_name,
+                "error",
+                scope_start,
+                kind="priority" if db_name == "Lotería Real" else "secondary",
+                note=str(exc),
+            )
 
     saved = total_imported + total_updated
     msg = (
@@ -929,6 +1110,9 @@ def actualizar_rd_todas(
         "sources_tried": sources_all,
         "warning": bool(warnings),
         "alternate_sources_used": warnings,
+        "job_sequence": job_sequence,
+        "priority_completed": bool(leidsa_out.get("ok") or total_imported + total_updated > 0) and priority_done.get("Lotería Real", False),
+        "soft_budget_seconds": soft_seconds,
     }
     _job_event(
         job_id,
