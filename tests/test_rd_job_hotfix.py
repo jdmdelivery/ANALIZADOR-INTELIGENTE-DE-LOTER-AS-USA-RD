@@ -12,6 +12,7 @@ from services.rd_update_jobs import create_job, finish_job, get_job, start_job
 from scrapers import rd_http
 from scrapers import rd_fallback_scrapers as rdfs
 from services import leidsa_service
+from services import leidsa_http
 from services.precision import analytics as precision_analytics
 from services import rd_stale
 from services.rd_validation import validate_result
@@ -655,3 +656,41 @@ def test_leidsa_single_game_path_skips_incremental_fetch(monkeypatch):
     leidsa_try = tried[0]
     assert leidsa_try.get("fuente") == "leidsa"
     assert int(leidsa_try.get("status_code") or 0) == 403
+
+
+def test_leidsa_http_403_fails_fast_without_retries(monkeypatch):
+    calls = {"n": 0}
+
+    class _Sess:
+        def get(self, *_a, **_kw):
+            calls["n"] += 1
+            return _FakeResp(status_code=403, text="forbidden", url="https://www.leidsa.com/")
+
+    monkeypatch.setattr(leidsa_http, "_session", _Sess())
+    monkeypatch.setattr(leidsa_http, "_warmed", True)
+    monkeypatch.setattr(leidsa_http, "_warm_attempted", True)
+    out = leidsa_http.fetch_leidsa_page(
+        "https://www.leidsa.com/",
+        juego="historial",
+        retries=5,
+    )
+    assert out["ok"] is False
+    assert out["status_code"] == 403
+    assert calls["n"] == 1
+
+
+def test_leidsa_http_home_url_skips_warmup_duplicate_call(monkeypatch):
+    calls = {"n": 0}
+
+    class _Sess:
+        def get(self, *_a, **_kw):
+            calls["n"] += 1
+            html = "previousDrawDetails " + ("x" * 7000)
+            return _FakeResp(status_code=200, text=html, url="https://www.leidsa.com/")
+
+    monkeypatch.setattr(leidsa_http, "_session", _Sess())
+    monkeypatch.setattr(leidsa_http, "_warmed", False)
+    monkeypatch.setattr(leidsa_http, "_warm_attempted", False)
+    out = leidsa_http.fetch_leidsa_page("https://www.leidsa.com/", juego="home", retries=1)
+    assert out["ok"] is True
+    assert calls["n"] == 1

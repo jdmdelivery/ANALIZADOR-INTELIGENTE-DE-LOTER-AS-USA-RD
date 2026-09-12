@@ -15,6 +15,7 @@ LOG_TAG = "[LEIDSA SCRAPER]"
 
 _session: Any = None
 _warmed = False
+_warm_attempted = False
 
 
 def log_leidsa_scraper(
@@ -64,9 +65,10 @@ def get_leidsa_session():
 
 def warm_leidsa_session() -> None:
     """Primera visita a home para cookies / challenge Cloudflare."""
-    global _warmed
-    if _warmed:
+    global _warmed, _warm_attempted
+    if _warmed or _warm_attempted:
         return
+    _warm_attempted = True
     try:
         session = get_leidsa_session()
         resp = session.get(SOURCE_URL, timeout=FETCH_TIMEOUT)
@@ -90,7 +92,8 @@ def fetch_leidsa_page(
     GET a leidsa.com con reintentos.
     require_draw_data: en páginas /results/ exige drawnValues en HTML.
     """
-    warm_leidsa_session()
+    if url.rstrip("/") != SOURCE_URL.rstrip("/"):
+        warm_leidsa_session()
     session = get_leidsa_session()
     last_error = None
     status_code = None
@@ -118,6 +121,17 @@ def fetch_leidsa_page(
                     juego=juego or "fetch",
                     error=last_error,
                 )
+                # 401/403 from origin should fail fast (no retry storm per job).
+                if status_code in (401, 403):
+                    return {
+                        "ok": False,
+                        "html": "",
+                        "url": getattr(resp, "url", url),
+                        "status_code": status_code,
+                        "elapsed": elapsed,
+                        "error": last_error,
+                        "method": None,
+                    }
                 time.sleep(1.2 * attempt)
                 continue
 
