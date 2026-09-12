@@ -252,6 +252,8 @@ def fetch_json(url: str, *, source: str = "kiskoo", timeout: int | None = None) 
             "elapsed": out.get("elapsed"),
             "bytes": out.get("bytes"),
             "content_type": out.get("content_type"),
+            "source_health": out.get("source_health"),
+            "disabled_until": out.get("disabled_until"),
         }
     err = out.get("error") or "Error de red"
     log_rd_update(
@@ -269,6 +271,8 @@ def fetch_json(url: str, *, source: str = "kiskoo", timeout: int | None = None) 
         "bytes": out.get("bytes"),
         "content_type": out.get("content_type"),
         "error": err,
+        "source_health": out.get("source_health"),
+        "disabled_until": out.get("disabled_until"),
     }
 
 
@@ -407,6 +411,8 @@ def fetch_hub_rows(
         "bytes": int(payload_resp.get("bytes") or 0) + int(sess_resp.get("bytes") or 0),
         "content_type": sess_resp.get("content_type") or payload_resp.get("content_type") or "",
         "parser": KISKOO_PARSER_VERSION,
+        "source_health": sess_resp.get("source_health") or payload_resp.get("source_health"),
+        "disabled_until": sess_resp.get("disabled_until") or payload_resp.get("disabled_until"),
     }
     log_rd_update(
         fuente=source_label,

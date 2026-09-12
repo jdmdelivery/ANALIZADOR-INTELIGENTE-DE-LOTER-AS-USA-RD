@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 import tempfile
 import os
+from datetime import datetime, timedelta
 
 import requests
 
@@ -10,6 +11,8 @@ from services import rd_results_service as rdsvc
 from services.rd_update_jobs import create_job, finish_job, get_job, start_job
 from scrapers import rd_http
 from scrapers import rd_fallback_scrapers as rdfs
+from services import leidsa_service
+from services.rd_validation import validate_result
 
 
 class _FakeResp:
@@ -184,3 +187,187 @@ def test_cross_source_isolation_and_mutation_safety(monkeypatch):
         assert real_rows[0]["numbers"] != leidsa_rows[0]["numbers"]
     finally:
         models.DATABASE = old_db
+
+
+def test_source_health_ordering_prefers_recent_success(monkeypatch):
+    monkeypatch.setattr(rd_http, "_SOURCE_DISABLED_UNTIL", {})
+    monkeypatch.setattr(
+        rd_http,
+        "_SOURCE_HEALTH",
+        {
+            "enloteria": {"source": "enloteria", "success": 5, "failure": 0, "avg_latency_ms": 300, "failure_count": 0, "disabled_until": None, "reason": None},
+            "loteriadominicana": {"source": "loteriadominicana", "success": 0, "failure": 4, "avg_latency_ms": 9000, "failure_count": 3, "disabled_until": None, "reason": "connect_timeout"},
+        },
+    )
+    ordered = rd_http.rank_sources(["loteriadominicana", "enloteria"])
+    assert ordered[0] == "enloteria"
+
+
+def test_disabled_source_skipped_with_circuit_breaker(monkeypatch):
+    class _Sess:
+        def get(self, *_a, **_kw):
+            raise requests.Timeout("connect timeout")
+
+    monkeypatch.setattr(rd_http, "_SOURCE_DISABLED_UNTIL", {})
+    monkeypatch.setattr(rd_http, "_SOURCE_HEALTH", {})
+    monkeypatch.setattr(rd_http, "get_rd_session", lambda: _Sess())
+    monkeypatch.setattr(rd_http.time, "sleep", lambda *_a, **_kw: None)
+    first = rd_http.fetch_rd_url("https://x.test", source="loteriadominicana", retries=1, timeout=(0.05, 0.05))
+    second = rd_http.fetch_rd_url("https://x.test", source="loteriadominicana", retries=1, timeout=(0.05, 0.05))
+    assert first["ok"] is False
+    assert second["ok"] is False
+    assert "deshabilitada" in (second.get("error") or "").lower()
+
+
+def test_stale_result_does_not_satisfy_scope(monkeypatch):
+    monkeypatch.setattr(rdsvc, "get_all_lotteries", lambda: [{"id": 1, "name": "Lotería Real", "country": "RD", "type": "rd_loteria_real"}])
+    monkeypatch.setattr(rdsvc, "find_lottery_in_list", lambda *_a, **_kw: {"id": 1, "name": "Lotería Real", "country": "RD", "type": "rd_loteria_real"})
+    monkeypatch.setattr(rdsvc, "_effective_days_from_last_date", lambda *_a, **_kw: (30, "2026-08-01", "2026-09-12"))
+    monkeypatch.setattr(rdsvc, "_stale_threshold_for_lottery", lambda _lot: 3)
+    monkeypatch.setattr(rdsvc, "get_max_draw_date", lambda *_a, **_kw: "2026-07-01")
+    monkeypatch.setattr(rdsvc, "_run_fallback", lambda *_a, **_kw: {"ok": True, "imported": 1, "updated": 0, "rows_found": 1, "message": "ok"})
+    monkeypatch.setattr(rdsvc, "_run_conectate_primary", lambda *_a, **_kw: {"ok": False, "message": "x"})
+    monkeypatch.setattr(rdfs, "import_conectate_api", lambda *_a, **_kw: {"ok": False, "message": "x"})
+    out = rdsvc.actualizar_rd_loteria("Lotería Real", days=30)
+    assert out.get("ok") in (False, True)
+    assert any("stale_source_result" in e for e in out.get("errors", []))
+
+
+def test_current_result_stops_chain(monkeypatch):
+    calls = []
+    monkeypatch.setattr(rdsvc, "get_all_lotteries", lambda: [{"id": 1, "name": "Lotería Real", "country": "RD", "type": "rd_loteria_real"}])
+    monkeypatch.setattr(rdsvc, "find_lottery_in_list", lambda *_a, **_kw: {"id": 1, "name": "Lotería Real", "country": "RD", "type": "rd_loteria_real"})
+    monkeypatch.setattr(rdsvc, "_effective_days_from_last_date", lambda *_a, **_kw: (30, "2026-09-10", "2026-09-12"))
+    monkeypatch.setattr(rdsvc, "_stale_threshold_for_lottery", lambda _lot: 3)
+    monkeypatch.setattr(rdsvc, "get_max_draw_date", lambda *_a, **_kw: "2026-09-12")
+
+    def fake_run(key, *_a, **_kw):
+        calls.append(key)
+        if key == "enloteria":
+            return {"ok": True, "imported": 1, "updated": 0, "rows_found": 1}
+        return {"ok": False, "message": "should not be called"}
+
+    monkeypatch.setattr(rdsvc, "_run_fallback", fake_run)
+    out = rdsvc.actualizar_rd_loteria("Lotería Real", days=30)
+    assert out["ok"] is True
+    assert calls[0] == "enloteria"
+    assert "loteriadominicana" not in calls
+
+
+def test_leidsa_super_kino_20_numbers_accepted():
+    ok, err = validate_result(
+        {
+            "lottery_name": "LEIDSA Super Kino TV",
+            "draw_name": "noche",
+            "draw_date": "2026-09-12",
+            "numbers": [f"{n:02d}" for n in range(1, 21)],
+        },
+        lottery_type="leidsa_super_kino_tv",
+    )
+    assert ok is True
+    assert err == ""
+
+
+def test_leidsa_official_preferred_over_generic_fallback(monkeypatch):
+    monkeypatch.setattr(
+        leidsa_service,
+        "scrape_leidsa_prefer_official",
+        lambda: {
+            "ok": True,
+            "results": [
+                {"lottery": "leidsa_quiniela_pale", "lottery_name": "LEIDSA Quiniela Palé", "draw": "tarde", "fecha_rd": "2026-09-12", "numeros": [1, 2, 3], "draw_time": "14:30", "fuente": "LEIDSA.com"}
+            ],
+            "parser": "leidsa_official",
+            "fuente": "leidsa_official",
+            "fuente_label": "LEIDSA.com",
+            "latest_date": "2026-09-12",
+        },
+    )
+    monkeypatch.setattr(leidsa_service, "save_leidsa_rows", lambda *_a, **_kw: {"ok": True, "inserted": 1, "updated": 0, "skipped": 0})
+    out = leidsa_service.update_leidsa_now()
+    assert out["ok"] is True
+    assert "LEIDSA.com" in (out.get("message") or "")
+
+
+def test_second_run_faster_via_circuit_breaker(monkeypatch):
+    calls = {"n": 0}
+
+    class _Sess:
+        def get(self, *_a, **_kw):
+            calls["n"] += 1
+            raise requests.Timeout("connect timeout")
+
+    monkeypatch.setattr(rd_http, "_SOURCE_DISABLED_UNTIL", {})
+    monkeypatch.setattr(rd_http, "_SOURCE_HEALTH", {})
+    monkeypatch.setattr(rd_http, "get_rd_session", lambda: _Sess())
+    monkeypatch.setattr(rd_http.time, "sleep", lambda *_a, **_kw: None)
+    t0 = time.monotonic()
+    rd_http.fetch_rd_url("https://x.test", source="loteriadominicana", retries=2, timeout=(0.05, 0.05))
+    d1 = time.monotonic() - t0
+    t1 = time.monotonic()
+    rd_http.fetch_rd_url("https://x.test", source="loteriadominicana", retries=2, timeout=(0.05, 0.05))
+    d2 = time.monotonic() - t1
+    assert d2 < d1
+    assert calls["n"] == 2
+
+
+def test_connect_timeout_source_fast_fail_budget(monkeypatch):
+    class _Sess:
+        def get(self, *_a, **_kw):
+            raise requests.Timeout("connect timeout")
+
+    monkeypatch.setattr(rd_http, "_SOURCE_DISABLED_UNTIL", {})
+    monkeypatch.setattr(rd_http, "_SOURCE_HEALTH", {})
+    monkeypatch.setattr(rd_http, "get_rd_session", lambda: _Sess())
+    monkeypatch.setattr(rd_http.time, "sleep", lambda *_a, **_kw: None)
+    t0 = time.monotonic()
+    out = rd_http.fetch_rd_url("https://x.test", source="loteriadominicana", retries=1, timeout=(0.05, 0.05))
+    elapsed = time.monotonic() - t0
+    assert out["ok"] is False
+    assert elapsed < 1.0
+
+
+def test_render_simulation_completes_fast_with_alive_source(monkeypatch):
+    monkeypatch.setattr(rdsvc, "get_all_lotteries", lambda: [{"id": 1, "name": "Lotería Real", "country": "RD", "type": "rd_loteria_real"}])
+    monkeypatch.setattr(rdsvc, "find_lottery_in_list", lambda *_a, **_kw: {"id": 1, "name": "Lotería Real", "country": "RD", "type": "rd_loteria_real"})
+    monkeypatch.setattr(rdsvc, "_effective_days_from_last_date", lambda *_a, **_kw: (30, "2026-09-10", "2026-09-12"))
+    monkeypatch.setattr(rdsvc, "_stale_threshold_for_lottery", lambda _lot: 3)
+    monkeypatch.setattr(rdsvc, "get_max_draw_date", lambda *_a, **_kw: "2026-09-12")
+
+    calls = []
+
+    def fake_run(key, *_a, **_kw):
+        calls.append(key)
+        if key == "enloteria":
+            return {"ok": True, "imported": 1, "updated": 0, "rows_found": 1, "status_code": 200}
+        if key == "loteriadominicana":
+            return {"ok": False, "error": "ConnectTimeout", "message": "ConnectTimeout"}
+        return {"ok": False, "status_code": 403, "message": "HTTP 403"}
+
+    monkeypatch.setattr(rdsvc, "_run_fallback", fake_run)
+    t0 = time.monotonic()
+    out = rdsvc.actualizar_rd_loteria("Lotería Real", days=30, max_job_seconds=120)
+    elapsed = time.monotonic() - t0
+    assert out["ok"] is True
+    assert out.get("fuente") == "enloteria"
+    assert elapsed < 2.0
+    assert calls == ["enloteria"]
+
+
+def test_job_soft_budget_stops_early(monkeypatch):
+    monkeypatch.setattr(rdsvc, "SOFT_RD_JOB_SECONDS", 1)
+    monkeypatch.setattr(rdsvc, "iter_enabled_conectate_configs", lambda: [("A", {"db_names": ["Lotería Real"]}), ("B", {"db_names": ["Loteka"]})])
+    monkeypatch.setattr(rdsvc, "normalize_lottery_name", lambda x: x.lower())
+    monkeypatch.setattr(rdsvc, "actualizar_leidsa_multi", lambda **_kw: {"ok": True, "imported": 0, "updated": 0, "sources_tried": []})
+    monkeypatch.setattr(rdsvc, "find_lottery_in_list", lambda *_a, **_kw: {"id": 1, "name": "Lotería Real"})
+    monkeypatch.setattr(rdsvc, "get_all_lotteries", lambda: [{"id": 1, "name": "Lotería Real", "country": "RD"}])
+    monkeypatch.setattr(rdsvc, "get_max_draw_date", lambda *_a, **_kw: "2026-09-12")
+
+    def _lot(*_a, **_kw):
+        time.sleep(1.1)
+        return {"ok": True, "imported": 1, "updated": 0, "sources_tried": []}
+
+    monkeypatch.setattr(rdsvc, "actualizar_rd_loteria", _lot)
+    out = rdsvc.actualizar_rd_todas(days=30, job_id="j-soft", max_job_seconds=120)
+    assert out["ok"] is True
+    assert any("soft budget" in e for e in out.get("errors", []))

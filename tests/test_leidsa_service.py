@@ -15,7 +15,7 @@ os.environ["DATABASE_PATH"] = _test_db
 
 import models  # noqa: E402
 from models import init_db, get_lottery_by_slug, upsert_result  # noqa: E402
-from services.leidsa_config import LEIDSA_GAMES, build_leidsa_games_dict  # noqa: E402
+from services.leidsa_config import LEIDSA_GAMES  # noqa: E402
 from services import leidsa_service  # noqa: E402
 
 SAMPLE_HTML = (
@@ -112,7 +112,7 @@ class LeidsaServiceTests(unittest.TestCase):
                 "SELECT COUNT(*) AS c FROM lottery_results WHERE lottery_id=?",
                 (lot["id"],),
             ).fetchone()["c"]
-        with patch.object(leidsa_service, "scrape_leidsa_results", return_value=leidsa_service._safe_response(
+        with patch.object(leidsa_service, "scrape_leidsa_prefer_official", return_value=leidsa_service._safe_response(
             ok=False, error="HTTP 403", message="Leidsa no respondió", status_code=403,
         )):
             result = leidsa_service.update_leidsa_now()
@@ -154,7 +154,7 @@ class LeidsaServiceTests(unittest.TestCase):
         self.assertIn("results_count", dbg)
 
     def test_update_response_fields(self):
-        with patch.object(leidsa_service, "scrape_leidsa_results", return_value=leidsa_service._safe_response(
+        with patch.object(leidsa_service, "scrape_leidsa_prefer_official", return_value=leidsa_service._safe_response(
             ok=True, results=[{
                 "lottery": "leidsa_quiniela_pale",
                 "draw": "noche",

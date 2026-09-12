@@ -74,7 +74,7 @@ class LeidsaFallbackTests(unittest.TestCase):
 
         with patch.object(
             leidsa_service,
-            "scrape_leidsa_results",
+            "scrape_leidsa_prefer_official",
             return_value={
                 "ok": True,
                 "results": [],
@@ -132,7 +132,7 @@ class LeidsaFallbackTests(unittest.TestCase):
 
         with patch.object(
             leidsa_service,
-            "scrape_leidsa_results",
+            "scrape_leidsa_prefer_official",
             return_value={
                 "ok": False,
                 "error": "HTTP 403",

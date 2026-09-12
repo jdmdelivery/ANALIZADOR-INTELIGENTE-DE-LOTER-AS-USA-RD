@@ -10,7 +10,7 @@ import time
 from datetime import datetime, timedelta
 
 from models import format_numbers, get_all_lotteries, upsert_result
-from scrapers.rd_http import fetch_rd_url
+from scrapers.rd_http import fetch_rd_url, is_render_env
 from services.lottery_normalize import find_lottery_in_list, lottery_names_match, normalize_lottery_name
 from services.rd_lottery_config import get_rd_lottery_config, build_logo_main_page
 from services.rd_time import today_rd, today_rd_iso
@@ -428,6 +428,8 @@ def import_conectate_api(lottery_name: str, days: int = 30, *, force_refresh: bo
             "url": hub.get("url"),
             "status_code": status,
             "elapsed": hub.get("elapsed"),
+            "source_health": hub.get("source_health"),
+            "disabled_until": hub.get("disabled_until"),
             "message": f"{label}: {batch.get('rows_saved', 0)} sorteos.",
         }
     return {
@@ -506,6 +508,8 @@ def import_conectate_hub(lottery_name: str, days: int = 30) -> dict:
         "fuente_label": "Conectate.com.do",
         "url": url,
         "status_code": page.get("status_code"),
+        "source_health": page.get("source_health"),
+        "disabled_until": page.get("disabled_until"),
         "message": f"Conectate hub {lottery_name}: {batch.get('rows_saved', 0)} sorteos.",
     }
 
@@ -580,6 +584,8 @@ def import_loteriasdominicanas(lottery_name: str, days: int = 30) -> dict:
         "fuente_label": "LoteriasDominicanas.com",
         "url": url,
         "status_code": page.get("status_code"),
+        "source_health": page.get("source_health"),
+        "disabled_until": page.get("disabled_until"),
         "message": f"LoteriasDominicanas {lottery_name}: {batch.get('rows_saved', 0)} sorteos.",
     }
 
@@ -629,7 +635,10 @@ def _parse_loteriadominicana_html(html: str, source_url: str) -> list[dict]:
 
 def import_loteriadominicana(lottery_name: str, days: int = 30) -> dict:
     url = LOTDOM_BASE + "/"
-    page = fetch_rd_url(url, source="loteriadominicana", timeout=(8, 16), retries=2)
+    if is_render_env():
+        page = fetch_rd_url(url, source="loteriadominicana", timeout=(3, 8), retries=1)
+    else:
+        page = fetch_rd_url(url, source="loteriadominicana", timeout=(6, 12), retries=1)
     if not page.get("ok"):
         return {**page, "fuente": "loteriadominicana", "rows_found": 0, "imported": 0, "updated": 0}
 
@@ -645,6 +654,8 @@ def import_loteriadominicana(lottery_name: str, days: int = 30) -> dict:
         "fuente_label": "LoteriaDominicana.com.do",
         "url": url,
         "status_code": page.get("status_code"),
+        "source_health": page.get("source_health"),
+        "disabled_until": page.get("disabled_until"),
         "message": f"LoteriaDominicana {lottery_name}: {batch.get('rows_saved', 0)} sorteos.",
     }
 
@@ -712,5 +723,7 @@ def import_enloteria(lottery_name: str, days: int = 30) -> dict:
         "fuente_label": "EnLoteria.com",
         "url": url,
         "status_code": page.get("status_code"),
+        "source_health": page.get("source_health"),
+        "disabled_until": page.get("disabled_until"),
         "message": f"EnLoteria {lottery_name}: {batch.get('rows_saved', 0)} sorteos.",
     }

@@ -815,6 +815,22 @@ def scrape_leidsa_results() -> dict[str, Any]:
     return scrape_leidsa_with_fallbacks()
 
 
+def scrape_leidsa_prefer_official() -> dict[str, Any]:
+    """Prefiere leidsa.com oficial y solo cae a fallback si no hay datos válidos."""
+    from services.leidsa_fallback.orchestrator import (
+        scrape_leidsa_official_only,
+        scrape_leidsa_with_fallbacks,
+    )
+
+    official = scrape_leidsa_official_only()
+    if official.get("ok") and (official.get("results") or official.get("rows")):
+        return official
+    fallback = scrape_leidsa_with_fallbacks()
+    if not fallback.get("attempts") and official.get("attempts"):
+        fallback["attempts"] = official.get("attempts")
+    return fallback
+
+
 def fetch_leidsa_history(limit_days: int = 30) -> dict[str, Any]:
     """
     Intenta obtener historial desde la página principal y JSON embebido.
@@ -1243,7 +1259,7 @@ def update_leidsa_now(
     try:
         from models import log_leidsa_sync
 
-        scrape = scrape_leidsa_results()
+        scrape = scrape_leidsa_prefer_official()
         _log_fetch_result(scrape)
 
         if not scrape.get("ok"):
