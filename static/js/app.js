@@ -1345,6 +1345,12 @@
     }
 
     async function getPrediction(btn, opts = {}) {
+        if (!btn) {
+            $('analysisError').style.display = 'block';
+            $('analysisErrorMsg').textContent = 'Selecciona una tanda para analizar.';
+            showLoading(false);
+            return;
+        }
         const force = Boolean(opts.force);
         const reqId = ++predictionRequestSeq;
         lastPredictionDrawBtn = btn;
@@ -1360,9 +1366,8 @@
         const isUsa = selectCountry.value === 'USA';
         let timeoutId = null;
         const controller = predictionAbortController;
-        if (isUsa) {
-            timeoutId = setTimeout(() => controller.abort(), 45000);
-        }
+        const timeoutMs = isUsa ? 45000 : 35000;
+        timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
         const sorteoTime = encodeURIComponent(btn.time_display || btn.time || btn.draw_name || '');
         const sorteoName = encodeURIComponent(btn.draw_name || '');
@@ -1533,13 +1538,10 @@
             $('analysisContent').style.display = 'block';
             scrollToEl('analisis');
         } catch (e) {
-            if (e && (e.name === 'AbortError' || String(e.message || '').includes('aborted'))) {
-                return;
-            }
             $('analysisError').style.display = 'block';
             const timedOut = e && (e.name === 'AbortError' || String(e.message || '').includes('aborted'));
             $('analysisErrorMsg').textContent = timedOut
-                ? '⚠️ No se pudo completar el análisis.'
+                ? '⚠️ El análisis tardó demasiado. Intenta de nuevo en unos segundos.'
                 : (e.message || '⚠️ No se pudo completar el análisis.');
             console.error(e);
         } finally {
