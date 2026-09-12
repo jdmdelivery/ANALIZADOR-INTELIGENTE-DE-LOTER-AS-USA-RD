@@ -1452,19 +1452,51 @@ def sync_priority_games_from_cached_scrape(
 
     def _pull_single_priority_slug(slug: str) -> list[dict]:
         try:
-            from services.leidsa_config import LEIDSA_HISTORY_GAMES
-            from services.leidsa_history import (
-                build_results_url,
-                discover_latest_draw_ids,
-                parse_draw_results_history,
-            )
+            from urllib.parse import quote
+
+            from services.leidsa_config import LEIDSA_HISTORY_GAMES, SOURCE_URL
+            from services.leidsa_history import parse_draw_results_history
             from services.leidsa_http import fetch_leidsa_page
 
             game = next((g for g in LEIDSA_HISTORY_GAMES if g.get("slug") == slug), None)
             if not game:
                 return []
-            ids = discover_latest_draw_ids(retries=1)
-            url = build_results_url(game, ids)
+
+            # Descubrimiento rápido de drawId (1 request home, sin reintentos largos).
+            draw_id = ""
+            prefix = game.get("draw_id_prefix", "")
+            fam = game.get("family_name", "")
+            home = fetch_leidsa_page(
+                SOURCE_URL,
+                juego=f"priority_home:{slug}",
+                min_bytes=3500,
+                require_draw_data=False,
+                timeout=6,
+                retries=1,
+            )
+            if home.get("ok"):
+                home_html = home.get("html") or ""
+                for block in home_html.split('{\\"gameId\\":')[1:]:
+                    fam_m = re.search(r'\\"gameFamilyName\\":\\"([^\\"]+)', block)
+                    if not fam_m:
+                        continue
+                    family = (fam_m.group(1) or "").strip()
+                    if family != fam:
+                        continue
+                    did_m = re.search(
+                        r'\\"(?:current|previous|latest)DrawDetails\\":\{[^}]*?\\"drawId\\":\\"([^\\"]+)',
+                        block[:4000],
+                    )
+                    if did_m:
+                        draw_id = did_m.group(1).strip()
+                        break
+            if not draw_id and prefix:
+                draw_id = f"{prefix}1"
+            if not draw_id:
+                return []
+
+            path = quote(game.get("path") or fam, safe="")
+            url = f"https://www.leidsa.com/results/Leidsa/{path}/{draw_id}"
             fetched = fetch_leidsa_page(
                 url,
                 juego=f"priority:{slug}",

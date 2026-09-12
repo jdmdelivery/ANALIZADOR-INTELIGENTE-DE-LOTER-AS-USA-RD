@@ -321,13 +321,16 @@ class LeidsaServiceTests(unittest.TestCase):
             'drawResults":[{"gameDrawId":"3_200","gameFamilyName":"KinoTV",'
             '"drawTime":"2026-09-11T20:00:00Z","results":{"drawnValues":[{"drawnValues":[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20]}]}}]'
         ).replace('"', '\\"')
-        with patch("services.leidsa_service.save_leidsa_rows", return_value={"ok": True, "inserted": 2, "updated": 0, "ignored": 0, "skipped": 0}), patch(
-            "services.leidsa_history.discover_latest_draw_ids", return_value={"KinoTV": "3_200"}
-        ), patch("services.leidsa_config.LEIDSA_HISTORY_GAMES", [fake_game]), patch(
-            "services.leidsa_history.build_results_url", return_value="https://www.leidsa.com/results/Leidsa/KinoTV/3_200"
-        ), patch(
+        home_html = (
+            '{\\"gameId\\":{\\"gameFamilyName\\":\\"KinoTV\\",\\"gameProvider\\":\\"Leidsa\\"}'
+            ',\\"currentDrawDetails\\":{\\"drawId\\":\\"3_200\\"}}'
+        )
+        with patch("services.leidsa_service.save_leidsa_rows", return_value={"ok": True, "inserted": 2, "updated": 0, "ignored": 0, "skipped": 0}), patch("services.leidsa_config.LEIDSA_HISTORY_GAMES", [fake_game]), patch(
             "services.leidsa_http.fetch_leidsa_page",
-            return_value={"ok": True, "html": f"<html>{fake_html}</html>"},
+            side_effect=[
+                {"ok": True, "html": home_html},
+                {"ok": True, "html": f"<html>{fake_html}</html>"},
+            ],
         ), patch("services.leidsa_history.parse_draw_results_history") as parse_mock:
             parse_mock.return_value = [
                 {
