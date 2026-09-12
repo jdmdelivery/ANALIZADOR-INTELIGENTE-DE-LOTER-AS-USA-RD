@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import time
+import tempfile
+import os
 
 import requests
 
@@ -125,3 +127,60 @@ def test_loteriasdominicanas_current_only_does_not_loop_full_range(monkeypatch):
     assert out["ok"] is True
     # 1 fetch inicial + probes (max 3, con fallback "/") => acotado.
     assert calls["n"] <= 7
+
+
+def test_cross_source_isolation_and_mutation_safety(monkeypatch):
+    import models
+    from models import get_all_lotteries, get_results, init_db
+    from services.leidsa_service import save_leidsa_rows
+
+    tmp_db = os.path.join(tempfile.gettempdir(), "rd_cross_source_isolation_test.db")
+    if os.path.exists(tmp_db):
+        os.remove(tmp_db)
+    old_db = models.DATABASE
+    try:
+        monkeypatch.setenv("DATABASE_PATH", tmp_db)
+        monkeypatch.setattr(models, "DATABASE", tmp_db)
+        init_db()
+        lots = {l["name"]: l["id"] for l in get_all_lotteries() if l.get("country") == "RD"}
+
+        row_a = {
+            "lottery_name": "Lotería Real",
+            "draw_name": "tarde",
+            "draw_date": "2026-09-12",
+            "numbers": ["32", "76", "06"],
+            "source_url": "https://source-a.test",
+        }
+        row_b = {
+            "lottery": "leidsa_quiniela_pale",
+            "lottery_name": "LEIDSA Quiniela Palé",
+            "draw": "tarde",
+            "fecha_rd": "2026-09-12",
+            "numeros": [61, 93, 98],
+            "draw_time": "14:30",
+            "fuente": "LEIDSA.com",
+            "estado": "publicado",
+        }
+
+        a_out = rdfs.save_rd_rows([row_a], fuente="loteriadominicana", days=7, lottery_name="Lotería Real")
+        b_out = save_leidsa_rows([row_b])
+        assert a_out["ok"] is True
+        assert b_out["ok"] is True
+
+        # Mutar objetos originales no debe alterar lo persistido.
+        row_a["numbers"][0] = "99"
+        row_b["numeros"][0] = 0
+
+        real_rows = get_results(lots["Lotería Real"], limit=1)
+        leidsa_rows = get_results(lots["LEIDSA Quiniela Palé"], limit=1)
+
+        assert real_rows and leidsa_rows
+        assert real_rows[0]["numbers"] == "[\"32\", \"76\", \"06\"]"
+        assert leidsa_rows[0]["numbers"] == "[\"61\", \"93\", \"98\"]"
+        assert (real_rows[0].get("fuente") or "") == "loteriadominicana"
+        assert (leidsa_rows[0].get("fuente") or "") == "LEIDSA.com"
+
+        # Verifica no cruce de valores entre fuentes.
+        assert real_rows[0]["numbers"] != leidsa_rows[0]["numbers"]
+    finally:
+        models.DATABASE = old_db
