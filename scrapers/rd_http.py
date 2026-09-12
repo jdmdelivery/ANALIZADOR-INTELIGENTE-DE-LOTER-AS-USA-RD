@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import time
+from datetime import UTC, datetime, timedelta
 
 import requests
 
@@ -23,10 +24,13 @@ RD_HEADERS = {
     "Upgrade-Insecure-Requests": "1",
 }
 
-DEFAULT_TIMEOUT = int(os.environ.get("RD_FETCH_TIMEOUT", "20" if os.environ.get("RENDER") else "25"))
+DEFAULT_CONNECT_TIMEOUT = float(os.environ.get("RD_FETCH_CONNECT_TIMEOUT", "8"))
+DEFAULT_READ_TIMEOUT = float(os.environ.get("RD_FETCH_READ_TIMEOUT", "20"))
 DEFAULT_RETRIES = int(os.environ.get("RD_FETCH_RETRIES", "2" if os.environ.get("RENDER") else "3"))
+SOURCE_DISABLE_MINUTES = int(os.environ.get("RD_SOURCE_DISABLE_MINUTES", "10"))
 
 _session = None
+_SOURCE_DISABLED_UNTIL: dict[str, datetime] = {}
 
 
 def is_render_env() -> bool:
@@ -41,6 +45,44 @@ def get_rd_session():
     return _session
 
 
+def _timeout_tuple(timeout: int | float | tuple | None):
+    if isinstance(timeout, tuple):
+        return timeout
+    if timeout is None:
+        return (DEFAULT_CONNECT_TIMEOUT, DEFAULT_READ_TIMEOUT)
+    t = float(timeout)
+    return (min(t, DEFAULT_CONNECT_TIMEOUT), max(t, DEFAULT_READ_TIMEOUT))
+
+
+def _should_retry_status(status_code: int | None, attempt: int, retries: int) -> bool:
+    if not status_code:
+        return attempt < retries
+    if status_code in (400, 401, 403, 404):
+        return False
+    if status_code == 429:
+        return attempt < min(retries, 2)
+    if status_code >= 500:
+        return attempt < retries
+    return False
+
+
+def _is_source_disabled(source: str) -> tuple[bool, str | None]:
+    until = _SOURCE_DISABLED_UNTIL.get(source or "")
+    if not until:
+        return False, None
+    now = datetime.now(UTC).replace(tzinfo=None)
+    if now >= until:
+        _SOURCE_DISABLED_UNTIL.pop(source, None)
+        return False, None
+    return True, until.isoformat(timespec="seconds")
+
+
+def _mark_source_disabled(source: str) -> None:
+    if not source:
+        return
+    _SOURCE_DISABLED_UNTIL[source] = datetime.now(UTC).replace(tzinfo=None) + timedelta(minutes=SOURCE_DISABLE_MINUTES)
+
+
 def fetch_rd_url(
     url: str,
     *,
@@ -49,17 +91,30 @@ def fetch_rd_url(
     retries: int | None = None,
     min_bytes: int = 400,
 ) -> dict:
-    timeout = timeout or DEFAULT_TIMEOUT
+    timeout_tuple = _timeout_tuple(timeout)
     retries = retries or DEFAULT_RETRIES
     session = get_rd_session()
     last_error = None
     status_code = None
     t0 = time.monotonic()
+    disabled, until = _is_source_disabled(source)
+    if disabled:
+        return {
+            "ok": False,
+            "html": "",
+            "url": url,
+            "status_code": 0,
+            "elapsed": 0.0,
+            "error": f"Fuente temporalmente deshabilitada hasta {until}",
+            "message": f"Fuente temporalmente deshabilitada hasta {until}",
+            "bytes": 0,
+            "content_type": "",
+        }
 
     for attempt in range(1, retries + 1):
         try:
             logger.info("%s GET %s | fuente=%s | intento=%s/%s", LOG, url, source, attempt, retries)
-            resp = session.get(url, timeout=timeout)
+            resp = session.get(url, timeout=timeout_tuple)
             status_code = resp.status_code
             elapsed = round(time.monotonic() - t0, 2)
             size = len(resp.text or "")
@@ -74,12 +129,18 @@ def fetch_rd_url(
             )
             if status_code >= 400:
                 last_error = f"HTTP {status_code}"
-                time.sleep(1.5 * attempt)
+                if status_code in (400, 401, 403, 404):
+                    _mark_source_disabled(source)
+                if not _should_retry_status(status_code, attempt, retries):
+                    break
+                time.sleep(min(1.2 * attempt, 2.5))
                 continue
             html = resp.text or ""
             if size < min_bytes:
                 last_error = f"HTML vacío o muy corto ({size} bytes)"
-                time.sleep(1.0 * attempt)
+                if attempt >= retries:
+                    break
+                time.sleep(min(1.0 * attempt, 2.0))
                 continue
             return {
                 "ok": True,
@@ -94,7 +155,9 @@ def fetch_rd_url(
         except requests.RequestException as exc:
             last_error = str(exc)
             logger.warning("%s error GET %s: %s", LOG, url, exc)
-            time.sleep(1.5 * attempt)
+            if attempt >= min(retries, 2):
+                break
+            time.sleep(min(1.0 * attempt, 2.0))
 
     return {
         "ok": False,
@@ -117,7 +180,7 @@ def fetch_rd_json(
     retries: int | None = None,
 ) -> dict:
     """GET JSON con cloudscraper (misma sesión que HTML). Evita HTTP 403 en Render."""
-    timeout = timeout or DEFAULT_TIMEOUT
+    timeout_tuple = _timeout_tuple(timeout)
     retries = retries or DEFAULT_RETRIES
     session = get_rd_session()
     headers = {
@@ -127,11 +190,22 @@ def fetch_rd_json(
     last_error = None
     status_code = None
     t0 = time.monotonic()
+    disabled, until = _is_source_disabled(source)
+    if disabled:
+        return {
+            "ok": False,
+            "url": url,
+            "status_code": 0,
+            "elapsed": 0.0,
+            "error": f"Fuente temporalmente deshabilitada hasta {until}",
+            "bytes": 0,
+            "content_type": "",
+        }
 
     for attempt in range(1, retries + 1):
         try:
             logger.info("%s GET JSON %s | fuente=%s | intento=%s/%s", LOG, url, source, attempt, retries)
-            resp = session.get(url, headers=headers, timeout=timeout)
+            resp = session.get(url, headers=headers, timeout=timeout_tuple)
             status_code = resp.status_code
             elapsed = round(time.monotonic() - t0, 2)
             content_type = resp.headers.get("Content-Type", "")
@@ -145,13 +219,19 @@ def fetch_rd_json(
             )
             if status_code >= 400:
                 last_error = f"HTTP {status_code}"
-                time.sleep(1.5 * attempt)
+                if status_code in (400, 401, 403, 404):
+                    _mark_source_disabled(source)
+                if not _should_retry_status(status_code, attempt, retries):
+                    break
+                time.sleep(min(1.2 * attempt, 2.5))
                 continue
             try:
                 data = resp.json()
             except json.JSONDecodeError as exc:
                 last_error = f"JSON inválido: {exc}"
-                time.sleep(1.0 * attempt)
+                if attempt >= retries:
+                    break
+                time.sleep(min(1.0 * attempt, 2.0))
                 continue
             return {
                 "ok": True,
@@ -165,7 +245,9 @@ def fetch_rd_json(
         except requests.RequestException as exc:
             last_error = str(exc)
             logger.warning("%s error GET JSON %s: %s", LOG, url, exc)
-            time.sleep(1.5 * attempt)
+            if attempt >= min(retries, 2):
+                break
+            time.sleep(min(1.0 * attempt, 2.0))
 
     return {
         "ok": False,

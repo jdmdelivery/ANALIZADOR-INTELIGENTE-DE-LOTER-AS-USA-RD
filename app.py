@@ -3,6 +3,7 @@ import sys
 import secrets
 import logging
 import threading
+import time
 from datetime import datetime, timedelta, date
 
 from flask import Flask, render_template, request, jsonify, redirect, url_for, flash, abort, session
@@ -1091,6 +1092,7 @@ def _start_rd_update_async(data: dict):
     refresh_all = bool(data.get("refresh_all_rd") or not loteria)
     days = int(data.get("days") or 30)
     force_days = int(data.get("force_days") or 0)
+    max_job_seconds = int(os.environ.get("RD_MAX_JOB_SECONDS", "120"))
     from services.rd_update_jobs import create_job, finish_job, start_job
     global _rd_active_job_id
 
@@ -1119,29 +1121,44 @@ def _start_rd_update_async(data: dict):
 
     def _run_rd_bg() -> None:
         start_job(job["job_id"])
+        t0 = time.monotonic()
         try:
             with app_ref.app_context():
                 logger.info(
-                    "[RD ASYNC] Inicio lotería=%s days=%s refresh_all=%s",
+                    "[RDJOB] job=%s event=JOB_START source=- elapsed_ms=0 lottery=%s days=%s refresh_all=%s",
+                    job["job_id"],
                     loteria or "TODAS",
                     days,
                     refresh_all,
                 )
+                logger.info("[RDJOB] job=%s event=PERSIST_START source=- elapsed_ms=0", job["job_id"])
                 result = actualizar_resultados_rd(
                     loteria_arg,
                     days=days,
                     refresh_all=refresh_all,
                     force_days=force_days,
+                    job_id=job["job_id"],
+                    max_job_seconds=max_job_seconds,
+                )
+                elapsed_ms = int((time.monotonic() - t0) * 1000)
+                logger.info(
+                    "[RDJOB] job=%s event=PERSIST_END source=- elapsed_ms=%s inserted=%s updated=%s",
+                    job["job_id"],
+                    elapsed_ms,
+                    result.get("imported", 0),
+                    result.get("updated", 0),
                 )
                 finish_job(job["job_id"], result=result)
                 logger.info(
-                    "[RD ASYNC] Fin ok=%s imported=%s updated=%s",
-                    result.get("ok"),
+                    "[RDJOB] job=%s event=JOB_END source=- elapsed_ms=%s status=%s imported=%s updated=%s",
+                    job["job_id"],
+                    elapsed_ms,
+                    result.get("status") or ("success" if result.get("ok") else "failed"),
                     result.get("imported"),
                     result.get("updated"),
                 )
         except Exception as exc:
-            logger.exception("[RD ASYNC] Error en actualización RD")
+            logger.exception("[RDJOB] job=%s event=JOB_ERROR", job["job_id"])
             finish_job(job["job_id"], error=str(exc))
         finally:
             global _rd_active_job_id

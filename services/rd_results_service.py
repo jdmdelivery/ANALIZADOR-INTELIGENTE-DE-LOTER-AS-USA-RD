@@ -5,6 +5,7 @@ No afecta loterías USA.
 from __future__ import annotations
 
 import logging
+import os
 import time
 from datetime import datetime, timedelta
 
@@ -16,6 +17,7 @@ from services.rd_update_log import log_rd_update
 
 logger = logging.getLogger(__name__)
 LOG = "[RD]"
+MAX_RD_JOB_SECONDS = int(os.environ.get("RD_MAX_JOB_SECONDS", "120"))
 
 SOURCE_LABELS = {
     "conectate_api": "Conectate API",
@@ -32,11 +34,26 @@ SOURCE_LABELS = {
 ALT_MESSAGE = "No se pudo actualizar desde una fuente, se usó fuente alternativa."
 
 FALLBACK_CHAIN = [
-    ("conectate", "import_conectate_hub"),
-    ("loteriasdominicanas", "import_loteriasdominicanas"),
     ("loteriadominicana", "import_loteriadominicana"),
     ("enloteria", "import_enloteria"),
+    ("conectate", "import_conectate_hub"),
+    ("loteriasdominicanas", "import_loteriasdominicanas"),
 ]
+
+
+def _job_event(job_id: str | None, event: str, *, source: str = "-", elapsed_ms: int = 0, **extra) -> None:
+    if not job_id:
+        return
+    parts = [f"job={job_id}", f"event={event}", f"source={source}", f"elapsed_ms={elapsed_ms}"]
+    for k, v in extra.items():
+        if v is None:
+            continue
+        parts.append(f"{k}={v}")
+    logger.info("[RDJOB] %s", " ".join(parts))
+
+
+def _deadline_reached(started_at: float, max_seconds: int) -> bool:
+    return (time.monotonic() - started_at) >= max(5, int(max_seconds or MAX_RD_JOB_SECONDS))
 
 
 def _saved(res: dict) -> bool:
@@ -300,7 +317,15 @@ def _run_fallback(fuente_key: str, fn_name: str, lottery_name: str, days: int) -
     return fn(lottery_name, days)
 
 
-def actualizar_rd_loteria(lottery_name: str, days: int = 30, *, force_days: int = 0) -> dict:
+def actualizar_rd_loteria(
+    lottery_name: str,
+    days: int = 30,
+    *,
+    force_days: int = 0,
+    job_id: str | None = None,
+    job_started_at: float | None = None,
+    max_job_seconds: int | None = None,
+) -> dict:
     """Actualiza una lotería RD con cadena multi-fuente."""
     sources_tried: list[dict] = []
     errors: list[str] = []
@@ -329,14 +354,68 @@ def actualizar_rd_loteria(lottery_name: str, days: int = 30, *, force_days: int 
 
     logger.info("%s === Inicio %s — multi-fuente ===", LOG, db_name)
     t0 = time.monotonic()
+    j_start = job_started_at or t0
+    j_limit = int(max_job_seconds or MAX_RD_JOB_SECONDS)
+    attempted_sources: set[str] = set()
 
-    # 1 — API Kiskoo (Conectate → LD automático ante 403)
+    def _check_deadline(source: str) -> dict | None:
+        if _deadline_reached(j_start, j_limit):
+            msg = f"RD update exceeded maximum execution time ({j_limit}s)"
+            _job_event(job_id, "SOURCE_ERROR", source=source, elapsed_ms=int((time.monotonic() - t0) * 1000), error=msg)
+            return {
+                "ok": False,
+                "pais": "DO",
+                "lottery_name": db_name,
+                "sources_tried": sources_tried,
+                "errors": errors + [msg],
+                "error_detail": msg,
+                "live_failed": True,
+                "fecha_desde": fecha_desde,
+                "fecha_hasta": fecha_hasta,
+                "message": msg,
+            }
+        return None
+
+    # 1 — Fuentes vivas priorizadas (evita esperar APIs bloqueadas primero).
+    for fuente_key, fn_name in [("loteriadominicana", "import_loteriadominicana"), ("enloteria", "import_enloteria")]:
+        attempted_sources.add(fuente_key)
+        deadline_hit = _check_deadline(fuente_key)
+        if deadline_hit:
+            return deadline_hit
+        try:
+            _job_event(job_id, "SOURCE_START", source=fuente_key, elapsed_ms=int((time.monotonic() - t0) * 1000))
+            pri = _run_fallback(fuente_key, fn_name, db_name, days)
+            _record(sources_tried, fuente_key, pri, lottery_name=db_name)
+            _job_event(job_id, "SOURCE_END", source=fuente_key, elapsed_ms=int((time.monotonic() - t0) * 1000), rows=_rows_found(pri), status=pri.get("status_code"))
+            if pri.get("ok") and (_saved(pri) or _rows_found(pri) > 0):
+                out = _success(pri, fuente_key=fuente_key, lottery_name=db_name, sources_tried=sources_tried)
+                out["elapsed_total"] = round(time.monotonic() - t0, 2)
+                out["tiempo"] = out["elapsed_total"]
+                out["fecha_desde"] = fecha_desde
+                out["fecha_hasta"] = fecha_hasta
+                return out
+            if pri.get("message"):
+                errors.append(pri["message"])
+        except Exception as exc:
+            logger.exception("%s fuente priorizada %s error", LOG, fuente_key)
+            errors.append(str(exc))
+            _record(
+                sources_tried,
+                fuente_key,
+                {"ok": False, "error": str(exc), "message": str(exc)},
+                lottery_name=db_name,
+            )
+            _job_event(job_id, "SOURCE_ERROR", source=fuente_key, elapsed_ms=int((time.monotonic() - t0) * 1000), error=str(exc))
+
+    # 2 — API Kiskoo (Conectate → LD automático ante 403)
     try:
         from scrapers.rd_fallback_scrapers import import_conectate_api
 
+        _job_event(job_id, "SOURCE_START", source="conectate_api", elapsed_ms=int((time.monotonic() - t0) * 1000))
         api = import_conectate_api(db_name, days, force_refresh=True)
         api["elapsed"] = api.get("elapsed") or round(time.monotonic() - t0, 2)
         _record(sources_tried, "conectate_api", api, lottery_name=db_name)
+        _job_event(job_id, "SOURCE_END", source="conectate_api", elapsed_ms=int((time.monotonic() - t0) * 1000), rows=_rows_found(api), status=api.get("status_code"))
         if not _needs_fallback(api):
             # Complementar con páginas Conectate (todas las tandas del día)
             try:
@@ -369,12 +448,18 @@ def actualizar_rd_loteria(lottery_name: str, days: int = 30, *, force_days: int 
             {"ok": False, "error": str(exc), "message": str(exc)},
             lottery_name=db_name,
         )
+        _job_event(job_id, "SOURCE_ERROR", source="conectate_api", elapsed_ms=int((time.monotonic() - t0) * 1000), error=str(exc))
 
-    # 2 — Conectate HTML (páginas de tanda)
+    # 3 — Conectate HTML (páginas de tanda)
+    deadline_hit = _check_deadline("conectate_primary")
+    if deadline_hit:
+        return deadline_hit
     try:
+        _job_event(job_id, "SOURCE_START", source="conectate_primary", elapsed_ms=int((time.monotonic() - t0) * 1000))
         primary = _run_conectate_primary(db_name, days)
         primary["elapsed"] = round(time.monotonic() - t0, 2)
         _record(sources_tried, "conectate_primary", primary, lottery_name=db_name)
+        _job_event(job_id, "SOURCE_END", source="conectate_primary", elapsed_ms=int((time.monotonic() - t0) * 1000), rows=_rows_found(primary), status=primary.get("status_code"))
         if not _needs_fallback(primary):
             out = _success(primary, fuente_key="conectate", lottery_name=db_name, sources_tried=sources_tried)
             out["elapsed_total"] = round(time.monotonic() - t0, 2)
@@ -393,13 +478,21 @@ def actualizar_rd_loteria(lottery_name: str, days: int = 30, *, force_days: int 
             {"ok": False, "error": str(exc), "message": str(exc)},
             lottery_name=db_name,
         )
+        _job_event(job_id, "SOURCE_ERROR", source="conectate_primary", elapsed_ms=int((time.monotonic() - t0) * 1000), error=str(exc))
 
-    # 3–6 — Fallbacks HTML
+    # 4..n — Fallbacks restantes
     for fuente_key, fn_name in FALLBACK_CHAIN:
+        if fuente_key in attempted_sources:
+            continue
+        deadline_hit = _check_deadline(fuente_key)
+        if deadline_hit:
+            return deadline_hit
         logger.info("%s %s — probando %s", LOG, db_name, SOURCE_LABELS.get(fuente_key, fuente_key))
         try:
+            _job_event(job_id, "SOURCE_START", source=fuente_key, elapsed_ms=int((time.monotonic() - t0) * 1000))
             fb = _run_fallback(fuente_key, fn_name, db_name, days)
             _record(sources_tried, fuente_key, fb, lottery_name=db_name)
+            _job_event(job_id, "SOURCE_END", source=fuente_key, elapsed_ms=int((time.monotonic() - t0) * 1000), rows=_rows_found(fb), status=fb.get("status_code"))
             if fb.get("ok") and (_saved(fb) or _rows_found(fb) > 0):
                 out = _success(
                     fb,
@@ -424,6 +517,7 @@ def actualizar_rd_loteria(lottery_name: str, days: int = 30, *, force_days: int 
                 {"ok": False, "error": str(exc), "message": str(exc)},
                 lottery_name=db_name,
             )
+            _job_event(job_id, "SOURCE_ERROR", source=fuente_key, elapsed_ms=int((time.monotonic() - t0) * 1000), error=str(exc))
 
     # 7 — Caché BD (solo si TODAS las fuentes fallaron)
     cached = _cache_response(lot, errors=errors)
@@ -468,7 +562,14 @@ def _leidsa_history_slug(lottery_name: str | None) -> str | None:
     return normalize_lottery_slug(name=lot.get("name") or lottery_name)
 
 
-def actualizar_leidsa_multi(*, days: int = 30, lottery_name: str | None = None) -> dict:
+def actualizar_leidsa_multi(
+    *,
+    days: int = 30,
+    lottery_name: str | None = None,
+    job_id: str | None = None,
+    job_started_at: float | None = None,
+    max_job_seconds: int | None = None,
+) -> dict:
     """LEIDSA oficial + fallbacks agregadores + caché."""
     sources_tried: list[dict] = []
     errors: list[str] = []
@@ -483,10 +584,27 @@ def actualizar_leidsa_multi(*, days: int = 30, lottery_name: str | None = None) 
         lot = get_lottery_by_slug(history_slug)
 
     logger.info("%s === LEIDSA multi-fuente === slug=%s", LOG, history_slug or "todos")
+    t0 = time.monotonic()
+    j_start = job_started_at or t0
+    j_limit = int(max_job_seconds or MAX_RD_JOB_SECONDS)
+
+    def _check_deadline(source: str) -> dict | None:
+        if _deadline_reached(j_start, j_limit):
+            msg = f"RD update exceeded maximum execution time ({j_limit}s)"
+            _job_event(job_id, "SOURCE_ERROR", source=source, elapsed_ms=int((time.monotonic() - t0) * 1000), error=msg)
+            return {
+                "ok": False,
+                "pais": "DO",
+                "sources_tried": sources_tried,
+                "errors": errors + [msg],
+                "message": msg,
+            }
+        return None
 
     if history_slug:
         from services.leidsa_service import update_leidsa_game_incremental
 
+        _job_event(job_id, "SOURCE_START", source="leidsa_incremental", elapsed_ms=int((time.monotonic() - t0) * 1000))
         fast = update_leidsa_game_incremental(
             history_slug,
             lookback_days=days,
@@ -499,6 +617,7 @@ def actualizar_leidsa_multi(*, days: int = 30, lottery_name: str | None = None) 
             fast,
             lottery_name=lottery_name or history_slug,
         )
+        _job_event(job_id, "SOURCE_END", source="leidsa_incremental", elapsed_ms=int((time.monotonic() - t0) * 1000), rows=int(fast.get("rows_found") or 0), status=fast.get("status_code"))
         if lot:
             fast["lottery_id"] = lot["id"]
             fast["latest_date"] = get_max_draw_date(lot["id"]) or fast.get("latest_date")
@@ -523,6 +642,10 @@ def actualizar_leidsa_multi(*, days: int = 30, lottery_name: str | None = None) 
     try:
         from services.leidsa_service import update_leidsa_now
 
+        deadline_hit = _check_deadline("leidsa")
+        if deadline_hit:
+            return deadline_hit
+        _job_event(job_id, "SOURCE_START", source="leidsa", elapsed_ms=int((time.monotonic() - t0) * 1000))
         leidsa = update_leidsa_now(
             history_game_slug=history_slug,
             history_days=days,
@@ -530,6 +653,7 @@ def actualizar_leidsa_multi(*, days: int = 30, lottery_name: str | None = None) 
         leidsa["fuente"] = "leidsa"
         leidsa["fuente_label"] = "LEIDSA.com"
         _record(sources_tried, "leidsa", leidsa)
+        _job_event(job_id, "SOURCE_END", source="leidsa", elapsed_ms=int((time.monotonic() - t0) * 1000), rows=int(leidsa.get("results_found") or 0), status=leidsa.get("status_code"))
         if lot is None and lottery_name:
             lot = find_lottery_in_list(get_all_lotteries(), lottery_name, country="RD")
         if lot:
@@ -553,12 +677,18 @@ def actualizar_leidsa_multi(*, days: int = 30, lottery_name: str | None = None) 
     except Exception as exc:
         logger.exception("%s LEIDSA primary error", LOG)
         errors.append(str(exc))
+        _job_event(job_id, "SOURCE_ERROR", source="leidsa", elapsed_ms=int((time.monotonic() - t0) * 1000), error=str(exc))
 
     target = lottery_name or "Leidsa"
     for fuente_key, fn_name in FALLBACK_CHAIN:
+        deadline_hit = _check_deadline(fuente_key)
+        if deadline_hit:
+            return deadline_hit
         try:
+            _job_event(job_id, "SOURCE_START", source=fuente_key, elapsed_ms=int((time.monotonic() - t0) * 1000))
             fb = _run_fallback(fuente_key, fn_name, target, days)
             _record(sources_tried, fuente_key, fb)
+            _job_event(job_id, "SOURCE_END", source=fuente_key, elapsed_ms=int((time.monotonic() - t0) * 1000), rows=_rows_found(fb), status=fb.get("status_code"))
             lot_fb = find_lottery_in_list(get_all_lotteries(), target, country="RD")
             latest_fb = get_max_draw_date(lot_fb["id"]) if lot_fb else fb.get("latest_date")
             if fb.get("ok") and _saved(fb) and not _latest_is_stale(latest_fb):
@@ -579,6 +709,7 @@ def actualizar_leidsa_multi(*, days: int = 30, lottery_name: str | None = None) 
                 errors.append(fb["message"])
         except Exception as exc:
             errors.append(str(exc))
+            _job_event(job_id, "SOURCE_ERROR", source=fuente_key, elapsed_ms=int((time.monotonic() - t0) * 1000), error=str(exc))
 
     lot = find_lottery_in_list(get_all_lotteries(), target, country="RD")
     cached = _cache_response(lot, parser="leidsa")
@@ -611,47 +742,68 @@ def actualizar_leidsa_multi(*, days: int = 30, lottery_name: str | None = None) 
     }
 
 
-def actualizar_rd_todas(days: int = 30, *, force_days: int = 0) -> dict:
+def actualizar_rd_todas(
+    days: int = 30,
+    *,
+    force_days: int = 0,
+    job_id: str | None = None,
+    max_job_seconds: int | None = None,
+) -> dict:
     """Historial completo RD con multi-fuente por lotería."""
     days = int(days or 30)
     total_imported = 0
     total_updated = 0
+    total_ignored = 0
+    total_rejected = 0
     errors: list[str] = []
     details: list[dict] = []
+    sources_all: list[dict] = []
     dates_union: set[str] = set()
     warnings: list[str] = []
+    started = time.monotonic()
+    deadline_seconds = int(max_job_seconds or MAX_RD_JOB_SECONDS)
 
-    try:
-        from services.leidsa_history import fetch_all_leidsa_history
+    _job_event(job_id, "JOB_START", source="-", elapsed_ms=0, days=days)
 
-        leidsa_hist = fetch_all_leidsa_history(days=days, save=True)
-        leidsa_hist["imported"] = leidsa_hist.get("inserted", 0)
-        details.append({"name": "LEIDSA historial", **leidsa_hist})
-        if leidsa_hist.get("ok"):
-            total_imported += int(leidsa_hist.get("inserted", 0))
-            total_updated += int(leidsa_hist.get("updated", 0))
-    except Exception as exc:
-        errors.append(f"LEIDSA historial: {exc}")
-
-    leidsa_out = actualizar_leidsa_multi(days=days)
+    leidsa_out = actualizar_leidsa_multi(
+        days=min(days, 30),
+        job_id=job_id,
+        job_started_at=started,
+        max_job_seconds=deadline_seconds,
+    )
     details.append({"name": "LEIDSA", **leidsa_out})
     if leidsa_out.get("ok"):
         total_imported += int(leidsa_out.get("imported") or 0)
         total_updated += int(leidsa_out.get("updated") or 0)
+        total_ignored += int(leidsa_out.get("ignored") or 0)
+        total_rejected += int(leidsa_out.get("rejected") or 0)
         if leidsa_out.get("warning"):
             warnings.append("LEIDSA")
     else:
         errors.append(leidsa_out.get("message") or "LEIDSA: error")
+    for src in leidsa_out.get("sources_tried") or []:
+        sources_all.append({"lottery": "LEIDSA", **src})
 
     refreshed: set[str] = set()
     for _label, cfg in iter_enabled_conectate_configs():
+        if _deadline_reached(started, deadline_seconds):
+            msg = f"RD update exceeded maximum execution time ({deadline_seconds}s)"
+            errors.append(msg)
+            break
         db_name = cfg["db_names"][0]
         key = normalize_lottery_name(db_name)
         if key in refreshed:
             continue
         refreshed.add(key)
         try:
-            out = actualizar_rd_loteria(db_name, days=days, force_days=force_days)
+            out = actualizar_rd_loteria(
+                db_name,
+                days=days,
+                force_days=force_days,
+                job_id=job_id,
+                job_started_at=started,
+                max_job_seconds=deadline_seconds,
+            )
             lot_row = find_lottery_in_list(get_all_lotteries(), db_name, country="RD")
             lid = lot_row["id"] if lot_row else None
             latest = get_max_draw_date(lid) if lid else None
@@ -668,12 +820,16 @@ def actualizar_rd_todas(days: int = 30, *, force_days: int = 0) -> dict:
             if out.get("ok"):
                 total_imported += int(out.get("imported") or 0)
                 total_updated += int(out.get("updated") or 0)
+                total_ignored += int(out.get("ignored") or 0)
+                total_rejected += int(out.get("rejected") or 0)
                 for d in out.get("dates_found") or []:
                     dates_union.add(d)
                 if out.get("warning"):
                     warnings.append(db_name)
             else:
                 errors.append(f"{db_name}: {out.get('message', 'error')}")
+            for src in out.get("sources_tried") or []:
+                sources_all.append({"lottery": db_name, **src})
         except Exception as exc:
             errors.append(f"{db_name}: {exc}")
 
@@ -685,7 +841,7 @@ def actualizar_rd_todas(days: int = 30, *, force_days: int = 0) -> dict:
     if warnings:
         msg += f" {ALT_MESSAGE} Fuentes alternativas: {', '.join(warnings[:8])}."
 
-    return {
+    out = {
         "ok": bool(saved) or any(d.get("ok") for d in details),
         "status": "updated" if saved else "no_new",
         "pais": "DO",
@@ -693,13 +849,26 @@ def actualizar_rd_todas(days: int = 30, *, force_days: int = 0) -> dict:
         "mensaje": msg,
         "imported": total_imported,
         "updated": total_updated,
+        "ignored": total_ignored,
+        "rejected": total_rejected,
         "days": days,
         "dates_found": sorted(dates_union, reverse=True)[:60],
         "errors": errors,
         "details": details,
+        "sources_tried": sources_all,
         "warning": bool(warnings),
         "alternate_sources_used": warnings,
     }
+    _job_event(
+        job_id,
+        "JOB_END",
+        source="-",
+        elapsed_ms=int((time.monotonic() - started) * 1000),
+        inserted=total_imported,
+        updated=total_updated,
+        errors=len(errors),
+    )
+    return out
 
 
 def _days_for_range(fecha_desde: str, fecha_hasta: str) -> int:

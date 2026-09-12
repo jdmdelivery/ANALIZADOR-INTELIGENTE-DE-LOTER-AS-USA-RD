@@ -57,7 +57,14 @@ def finish_job(job_id: str, result: dict | None = None, error: str | None = None
         else:
             had_err = bool(result.get("errors"))
             has_new = int(result.get("imported") or result.get("inserted") or 0) > 0 or int(result.get("updated") or 0) > 0
-            job["status"] = "partial" if had_err and has_new else ("success" if result.get("ok") else "failed")
+            if result.get("live_failed") and not has_new:
+                job["status"] = "failed"
+            elif had_err and has_new:
+                job["status"] = "partial"
+            elif had_err and result.get("ok"):
+                job["status"] = "partial"
+            else:
+                job["status"] = "success" if result.get("ok") else "failed"
             job["inserted"] = int(result.get("imported") or result.get("inserted") or 0)
             job["updated"] = int(result.get("updated") or 0)
             job["ignored"] = int(result.get("ignored") or 0)

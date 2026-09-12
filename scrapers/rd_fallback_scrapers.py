@@ -458,7 +458,7 @@ def import_conectate_hub(lottery_name: str, days: int = 30) -> dict:
         }
         path = defaults.get(key, "/loterias/")
     url = CONECTATE_BASE.rstrip("/") + path
-    page = fetch_rd_url(url, source="conectate_hub")
+    page = fetch_rd_url(url, source="conectate_hub", timeout=(8, 16), retries=2)
     if not page.get("ok"):
         return {**page, "fuente": "conectate", "rows_found": 0, "imported": 0, "updated": 0}
 
@@ -513,7 +513,7 @@ def import_conectate_hub(lottery_name: str, days: int = 30) -> dict:
 def import_loteriasdominicanas(lottery_name: str, days: int = 30) -> dict:
     path = LD_LOTTERY_PATHS.get(lottery_name) or LD_LOTTERY_PATHS.get(_resolve_db_name(lottery_name)) or "/"
     url = LD_BASE.rstrip("/") + path
-    page = fetch_rd_url(url, source="loteriasdominicanas")
+    page = fetch_rd_url(url, source="loteriasdominicanas", timeout=(8, 16), retries=2)
     if not page.get("ok"):
         return {**page, "fuente": "loteriasdominicanas", "rows_found": 0, "imported": 0, "updated": 0}
 
@@ -548,16 +548,29 @@ def import_loteriasdominicanas(lottery_name: str, days: int = 30) -> dict:
         if hub.get("ok"):
             raw = _filter_lottery(hub.get("rows") or [], lottery_name)
 
-    for days_ago in range(min(days, 14)):
+    probe_days = min(days, 3) if days > 7 else min(days, 7)
+    for days_ago in range(probe_days):
         dt = datetime.combine(today_rd(), datetime.min.time()) - timedelta(days=days_ago)
         date_param = dt.strftime("%d-%m-%Y")
-        hub = fetch_rd_url(f"{LD_BASE}/?date={date_param}", source="loteriasdominicanas")
+        hub = fetch_rd_url(
+            f"{LD_BASE}/?date={date_param}",
+            source="loteriasdominicanas",
+            timeout=(8, 12),
+            retries=1,
+        )
         if not hub.get("ok"):
-            hub = fetch_rd_url(LD_BASE + "/", source="loteriasdominicanas")
+            hub = fetch_rd_url(
+                LD_BASE + "/",
+                source="loteriasdominicanas",
+                timeout=(8, 12),
+                retries=1,
+            )
         if hub.get("ok"):
             page_date = _date_param_to_iso(date_param) if days_ago == 0 else None
             raw.extend(_parse_kiskoo_main(hub["html"], hub["url"], LD_LOGO_MAP, str(dt.year), page_date))
-        time.sleep(0.15)
+        if raw and days_ago > 0:
+            break
+        time.sleep(0.1)
 
     raw = _dedupe_rows(_filter_lottery(_filter_days(raw, days), lottery_name))
     batch = save_rd_rows(raw, fuente="loteriasdominicanas", days=days, lottery_name=lottery_name)
@@ -616,7 +629,7 @@ def _parse_loteriadominicana_html(html: str, source_url: str) -> list[dict]:
 
 def import_loteriadominicana(lottery_name: str, days: int = 30) -> dict:
     url = LOTDOM_BASE + "/"
-    page = fetch_rd_url(url, source="loteriadominicana")
+    page = fetch_rd_url(url, source="loteriadominicana", timeout=(8, 16), retries=2)
     if not page.get("ok"):
         return {**page, "fuente": "loteriadominicana", "rows_found": 0, "imported": 0, "updated": 0}
 
@@ -683,7 +696,7 @@ def _parse_enloteria_html(html: str, source_url: str) -> list[dict]:
 
 def import_enloteria(lottery_name: str, days: int = 30) -> dict:
     url = ENLOTERIA_BASE + "/"
-    page = fetch_rd_url(url, source="enloteria")
+    page = fetch_rd_url(url, source="enloteria", timeout=(8, 16), retries=2)
     if not page.get("ok"):
         return {**page, "fuente": "enloteria", "rows_found": 0, "imported": 0, "updated": 0}
 
