@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import logging
 import time
-from datetime import datetime
 from typing import Any, Callable
+from services.rd_time import now_rd, today_rd_iso
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +33,7 @@ _LAST_RD_UPDATE: str | None = None
 
 def mark_rd_update() -> None:
     global _LAST_RD_UPDATE
-    _LAST_RD_UPDATE = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    _LAST_RD_UPDATE = now_rd().strftime("%Y-%m-%d %H:%M:%S")
 
 
 def get_last_rd_update() -> str | None:
@@ -65,7 +65,7 @@ def _record(key: str, result: dict) -> None:
         "status_code": result.get("status_code"),
         "count": len(result.get("rows") or []),
         "error": result.get("error") or result.get("message"),
-        "at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "at": now_rd().strftime("%Y-%m-%d %H:%M:%S"),
         "elapsed": result.get("elapsed"),
     }
 
@@ -94,7 +94,7 @@ def run_source(
         result.setdefault("fuente", key)
         result.setdefault("fuente_label", label)
         _record(key, result)
-        fecha_log = fecha or datetime.now().strftime("%Y-%m-%d")
+        fecha_log = fecha or today_rd_iso()
         count = len(result.get("rows") or [])
         status = "ok" if result.get("ok") else "error"
         logger.info(

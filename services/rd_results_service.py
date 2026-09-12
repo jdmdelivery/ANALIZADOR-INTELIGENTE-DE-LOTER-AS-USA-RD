@@ -6,11 +6,12 @@ from __future__ import annotations
 
 import logging
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
-from models import count_results_for_lottery, get_all_lotteries, get_max_draw_date
+from models import count_results_for_lottery, get_all_lotteries, get_latest_result_date_for_scope, get_max_draw_date
 from services.lottery_normalize import find_lottery_in_list, normalize_lottery_name
 from services.rd_lottery_config import get_rd_lottery_config, iter_enabled_conectate_configs
+from services.rd_time import today_rd_iso
 from services.rd_update_log import log_rd_update
 
 logger = logging.getLogger(__name__)
@@ -55,21 +56,44 @@ def _latest_is_stale(latest_date: str | None, *, max_age_days: int = 7) -> bool:
         return True
 
 
-def _effective_days_from_last_date(lottery_id: int, requested_days: int) -> int:
-    """Ventana dinámica: desde última fecha guardada hasta hoy (+buffer)."""
-    latest = get_max_draw_date(lottery_id)
-    if not latest:
-        return max(7, int(requested_days or 30))
-    try:
-        from services.leidsa_history import _days_since_draw
+def _iso_date(value: str):
+    return datetime.strptime((value or "")[:10], "%Y-%m-%d").date()
 
-        age = _days_since_draw(str(latest)[:10])
-    except Exception:
-        age = None
-    if age is None:
-        return max(7, int(requested_days or 30))
-    dynamic_days = age + 3
-    return max(7, min(max(dynamic_days, int(requested_days or 30)), 365))
+
+def _effective_days_from_last_date(
+    lottery_id: int,
+    requested_days: int,
+    *,
+    lottery_name: str = "",
+    force_days: int = 0,
+) -> tuple[int, str, str]:
+    """Ventana incremental por lotería/sorteo desde último dato guardado."""
+    cfg = get_rd_lottery_config(lottery_name or "") or {}
+    draws = cfg.get("draw_map", {})
+    latest_values: list[str] = []
+    for draw_name, time_12h in draws.items():
+        latest = get_latest_result_date_for_scope(
+            lottery_id,
+            draw_name=draw_name,
+            draw_time=time_12h,
+        )
+        if latest:
+            latest_values.append(latest)
+
+    latest_global = max(latest_values) if latest_values else get_max_draw_date(lottery_id)
+    end_iso = today_rd_iso()
+    if latest_global:
+        start_date = _iso_date(latest_global) + timedelta(days=1)
+    else:
+        start_date = _iso_date(end_iso) - timedelta(days=max(7, int(requested_days or 30)))
+    if force_days and int(force_days) > 0:
+        force_start = _iso_date(end_iso) - timedelta(days=max(1, int(force_days)))
+        if force_start < start_date:
+            start_date = force_start
+    start_iso = start_date.isoformat()
+    span_days = max(1, (_iso_date(end_iso) - start_date).days + 1)
+    days = max(7, min(max(span_days + 2, int(requested_days or 30)), 365))
+    return days, start_iso, end_iso
 
 
 def _rows_found(res: dict) -> int:
@@ -107,12 +131,19 @@ def _record(sources: list, key: str, res: dict, *, lottery_name: str = "") -> No
         "ok": bool(res.get("ok")),
         "status_code": res.get("status_code"),
         "elapsed": res.get("elapsed"),
+        "latency_ms": int(float(res.get("elapsed") or 0) * 1000),
+        "content_type": res.get("content_type") or "",
+        "bytes": int(res.get("bytes") or res.get("size") or 0),
         "sorteos": _rows_found(res),
+        "rows_detected": _rows_found(res),
         "imported": res.get("imported", 0),
         "updated": res.get("updated", 0),
+        "ignored": res.get("ignored", 0),
+        "rejected": res.get("rejected", 0),
         "error": err,
         "url": res.get("url") or "",
         "parser": res.get("parser"),
+        "latest_date": res.get("latest_date") or ((res.get("dates_found") or [None])[0]),
     }
     sources.append(entry)
     log_rd_update(
@@ -269,7 +300,7 @@ def _run_fallback(fuente_key: str, fn_name: str, lottery_name: str, days: int) -
     return fn(lottery_name, days)
 
 
-def actualizar_rd_loteria(lottery_name: str, days: int = 30) -> dict:
+def actualizar_rd_loteria(lottery_name: str, days: int = 30, *, force_days: int = 0) -> dict:
     """Actualiza una lotería RD con cadena multi-fuente."""
     sources_tried: list[dict] = []
     errors: list[str] = []
@@ -289,7 +320,12 @@ def actualizar_rd_loteria(lottery_name: str, days: int = 30) -> dict:
     if es_leidsa:
         return actualizar_leidsa_multi(days=days, lottery_name=db_name)
 
-    days = _effective_days_from_last_date(lot["id"], days)
+    days, fecha_desde, fecha_hasta = _effective_days_from_last_date(
+        lot["id"],
+        days,
+        lottery_name=db_name,
+        force_days=force_days,
+    )
 
     logger.info("%s === Inicio %s — multi-fuente ===", LOG, db_name)
     t0 = time.monotonic()
@@ -319,6 +355,8 @@ def actualizar_rd_loteria(lottery_name: str, days: int = 30) -> dict:
             out = _success(api, fuente_key="conectate_api", lottery_name=db_name, sources_tried=sources_tried)
             out["elapsed_total"] = round(time.monotonic() - t0, 2)
             out["tiempo"] = out["elapsed_total"]
+            out["fecha_desde"] = fecha_desde
+            out["fecha_hasta"] = fecha_hasta
             return out
         if api.get("message"):
             errors.append(api["message"])
@@ -341,6 +379,8 @@ def actualizar_rd_loteria(lottery_name: str, days: int = 30) -> dict:
             out = _success(primary, fuente_key="conectate", lottery_name=db_name, sources_tried=sources_tried)
             out["elapsed_total"] = round(time.monotonic() - t0, 2)
             out["tiempo"] = out["elapsed_total"]
+            out["fecha_desde"] = fecha_desde
+            out["fecha_hasta"] = fecha_hasta
             return out
         if primary.get("message"):
             errors.append(primary["message"])
@@ -370,6 +410,8 @@ def actualizar_rd_loteria(lottery_name: str, days: int = 30) -> dict:
                 )
                 out["elapsed_total"] = round(time.monotonic() - t0, 2)
                 out["tiempo"] = out["elapsed_total"]
+                out["fecha_desde"] = fecha_desde
+                out["fecha_hasta"] = fecha_hasta
                 return out
             if fb.get("message"):
                 errors.append(fb["message"])
@@ -390,6 +432,8 @@ def actualizar_rd_loteria(lottery_name: str, days: int = 30) -> dict:
         cached["errors"] = errors[:10]
         cached["elapsed_total"] = round(time.monotonic() - t0, 2)
         cached["tiempo"] = cached["elapsed_total"]
+        cached["fecha_desde"] = fecha_desde
+        cached["fecha_hasta"] = fecha_hasta
         logger.info("%s %s — usando caché BD (%s registros)", LOG, db_name, cached["saved_count"])
         return cached
 
@@ -402,6 +446,8 @@ def actualizar_rd_loteria(lottery_name: str, days: int = 30) -> dict:
         "errors": errors,
         "error_detail": "; ".join(errors[:5]) if errors else "Todas las fuentes fallaron",
         "live_failed": True,
+        "fecha_desde": fecha_desde,
+        "fecha_hasta": fecha_hasta,
         "message": errors[0] if errors else f"No se pudo actualizar {db_name}",
     }
 
@@ -565,7 +611,7 @@ def actualizar_leidsa_multi(*, days: int = 30, lottery_name: str | None = None) 
     }
 
 
-def actualizar_rd_todas(days: int = 30) -> dict:
+def actualizar_rd_todas(days: int = 30, *, force_days: int = 0) -> dict:
     """Historial completo RD con multi-fuente por lotería."""
     days = int(days or 30)
     total_imported = 0
@@ -605,7 +651,7 @@ def actualizar_rd_todas(days: int = 30) -> dict:
             continue
         refreshed.add(key)
         try:
-            out = actualizar_rd_loteria(db_name, days=days)
+            out = actualizar_rd_loteria(db_name, days=days, force_days=force_days)
             lot_row = find_lottery_in_list(get_all_lotteries(), db_name, country="RD")
             lid = lot_row["id"] if lot_row else None
             latest = get_max_draw_date(lid) if lid else None

@@ -11,6 +11,7 @@ import time
 from datetime import datetime, timedelta
 
 from scrapers.rd_http import fetch_rd_json
+from services.rd_time import today_rd_iso
 from services.rd_update_log import log_rd_update
 
 logger = logging.getLogger(__name__)
@@ -224,7 +225,7 @@ def parse_page_quiniela_rows(html: str, source_url: str, *, days: int = 90) -> l
     pool = extract_devalue_pool(html)
     if not pool:
         return []
-    cutoff = (datetime.now() - timedelta(days=max(1, days))).strftime("%Y-%m-%d")
+    cutoff = (datetime.strptime(today_rd_iso(), "%Y-%m-%d").date() - timedelta(days=max(1, days))).isoformat()
     return [
         {**r, "source_url": source_url}
         for r in parse_quiniela_scores_from_pool(pool, cutoff=cutoff)
@@ -249,6 +250,8 @@ def fetch_json(url: str, *, source: str = "kiskoo", timeout: int | None = None) 
             "status_code": out.get("status_code"),
             "url": out.get("url", url),
             "elapsed": out.get("elapsed"),
+            "bytes": out.get("bytes"),
+            "content_type": out.get("content_type"),
         }
     err = out.get("error") or "Error de red"
     log_rd_update(
@@ -263,6 +266,8 @@ def fetch_json(url: str, *, source: str = "kiskoo", timeout: int | None = None) 
         "status_code": out.get("status_code"),
         "url": out.get("url", url),
         "elapsed": out.get("elapsed"),
+        "bytes": out.get("bytes"),
+        "content_type": out.get("content_type"),
         "error": err,
     }
 
@@ -368,7 +373,7 @@ def fetch_hub_rows(
         if cached and (now - cached[0]) < HUB_CACHE_TTL_SEC:
             return cached[1]
 
-    cutoff = (datetime.now() - timedelta(days=max(1, days))).strftime("%Y-%m-%d")
+    cutoff = (datetime.strptime(today_rd_iso(), "%Y-%m-%d").date() - timedelta(days=max(1, days))).isoformat()
     payload_resp = fetch_json(payload_url, source=f"{source_label}_payload")
     if not payload_resp.get("ok"):
         out = {**payload_resp, "rows": [], "parser": KISKOO_PARSER_VERSION}
@@ -399,6 +404,8 @@ def fetch_hub_rows(
         "status_code": sess_resp.get("status_code"),
         "url": sess_resp.get("url"),
         "elapsed": elapsed,
+        "bytes": int(payload_resp.get("bytes") or 0) + int(sess_resp.get("bytes") or 0),
+        "content_type": sess_resp.get("content_type") or payload_resp.get("content_type") or "",
         "parser": KISKOO_PARSER_VERSION,
     }
     log_rd_update(

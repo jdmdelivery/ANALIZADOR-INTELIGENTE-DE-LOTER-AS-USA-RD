@@ -7,7 +7,7 @@ from contextlib import contextmanager
 
 from werkzeug.security import check_password_hash, generate_password_hash
 
-DATABASE = os.environ.get("DATABASE_PATH", "lottery.db")
+DATABASE = os.path.expanduser(os.environ.get("DATABASE_PATH", "lottery.db"))
 
 INITIAL_ADMIN_USERNAME = os.environ.get("INITIAL_ADMIN_USERNAME", "jdmcashnow")
 # En producción definir INITIAL_ADMIN_PASSWORD en variables de entorno
@@ -22,10 +22,38 @@ MIN_RESULTS_FOR_ANALYSIS = 10
 
 
 def get_connection():
+    db_dir = os.path.dirname(os.path.abspath(DATABASE))
+    if db_dir and not os.path.exists(db_dir):
+        os.makedirs(db_dir, exist_ok=True)
     conn = sqlite3.connect(DATABASE)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
+
+
+def _today_iso() -> str:
+    try:
+        from services.rd_time import today_rd_iso
+
+        return today_rd_iso()
+    except Exception:
+        return datetime.now().strftime("%Y-%m-%d")
+
+
+def _iso_date(value: str):
+    try:
+        return datetime.strptime((value or "")[:10], "%Y-%m-%d").date()
+    except ValueError:
+        return datetime.now().date()
+
+
+def _now_timestamp() -> str:
+    try:
+        from services.rd_time import now_rd
+
+        return now_rd().strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
 @contextmanager
@@ -611,7 +639,7 @@ def get_leidsa_history_from_db(limit_days=90):
 
     slugs = list(LEIDSA_SLUGS) + ["leidsa_pega3_mas"]
     placeholders = ",".join("?" * len(slugs))
-    cutoff = (datetime.now() - timedelta(days=limit_days)).strftime("%Y-%m-%d")
+    cutoff = (_iso_date(_today_iso()) - timedelta(days=limit_days)).isoformat()
     with get_db() as conn:
         rows = conn.execute(
             f"""SELECT r.*, l.name AS lottery_display, l.type AS lottery_slug
@@ -963,7 +991,7 @@ def get_results_grouped_by_date(lottery_id, limit_days=30, draw_name=None):
             q += " AND draw_name = ?"
             params.append(draw_name)
         if limit_days and int(limit_days) > 0:
-            cutoff = (datetime.now() - timedelta(days=int(limit_days))).strftime("%Y-%m-%d")
+            cutoff = (_iso_date(_today_iso()) - timedelta(days=int(limit_days))).isoformat()
             q += " AND draw_date >= ?"
             params.append(cutoff)
         q += " ORDER BY draw_date DESC"
@@ -990,7 +1018,7 @@ def get_results_history(lottery_id, draw_name=None, days=30, limit=500):
         q = "SELECT * FROM lottery_results WHERE lottery_id = ?"
         params: list = [lottery_id]
         if days and int(days) > 0:
-            cutoff = (datetime.now() - timedelta(days=int(days))).strftime("%Y-%m-%d")
+            cutoff = (_iso_date(_today_iso()) - timedelta(days=int(days))).isoformat()
             q += " AND draw_date >= ?"
             params.append(cutoff)
         if draw_name:
@@ -1038,7 +1066,7 @@ def get_results_history_filtered(
             q.append("AND substr(r.draw_date, 6, 2) = ?")
             params.append(str(int(month)).zfill(2))
         if days and int(days) > 0:
-            cutoff = (datetime.now() - timedelta(days=int(days))).strftime("%Y-%m-%d")
+            cutoff = (_iso_date(_today_iso()) - timedelta(days=int(days))).isoformat()
             q.append("AND r.draw_date >= ?")
             params.append(cutoff)
 
@@ -1136,7 +1164,7 @@ def get_results_for_analysis(lottery_id, draw_name, limit=None, days=None):
                WHERE lottery_id = ? AND draw_name = ?"""
         params: list = [lottery_id, draw_name]
         if days is not None and int(days) > 0 and int(days) < 365:
-            cutoff = (datetime.now() - timedelta(days=int(days))).strftime("%Y-%m-%d")
+            cutoff = (_iso_date(_today_iso()) - timedelta(days=int(days))).isoformat()
             sql += " AND draw_date >= ?"
             params.append(cutoff)
         sql += " ORDER BY draw_date DESC, id DESC"
@@ -1164,7 +1192,7 @@ def count_results_for_analysis(lottery_id, draw_name, days=None) -> int:
         sql = "SELECT COUNT(*) AS c FROM lottery_results WHERE lottery_id = ? AND draw_name = ?"
         params: list = [lottery_id, draw_name]
         if days is not None and int(days) > 0 and int(days) < 365:
-            cutoff = (datetime.now() - timedelta(days=int(days))).strftime("%Y-%m-%d")
+            cutoff = (_iso_date(_today_iso()) - timedelta(days=int(days))).isoformat()
             sql += " AND draw_date >= ?"
             params.append(cutoff)
         row = conn.execute(sql, params).fetchone()
@@ -1231,7 +1259,7 @@ def upsert_result(lottery_id, draw_name, draw_time, draw_date, numbers,
     if isinstance(bonus_json, list):
         bonus_json = format_numbers(bonus_json)
 
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    now = _now_timestamp()
     src = fuente or source_url or ""
     with get_db() as conn:
         existing = conn.execute(
@@ -1315,14 +1343,15 @@ def upsert_rd_result(
     import json as _json
 
     draw_time = normalize_draw_time(draw_time) or "00:00"
-    nums = format_numbers(parse_numbers(numbers) if not isinstance(numbers, list) else numbers)
+    nums_list = parse_numbers(numbers) if not isinstance(numbers, list) else [str(n) for n in numbers]
+    nums = format_numbers(nums_list)
     src_list = sorted({s for s in ([fuente] + list(fuentes_extra or [])) if s})
     conf = confianza_fuente if confianza_fuente is not None else min(100, 50 + 15 * len(src_list))
     raw_json = _json.dumps(raw_data, ensure_ascii=False) if raw_data is not None else None
     p, s, t = (primera, segunda, tercera)
-    if not p and len(nums) >= 3:
-        p, s, t = nums[0], nums[1], nums[2]
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    if (not p or not s or not t) and len(nums_list) >= 3:
+        p, s, t = nums_list[0], nums_list[1], nums_list[2]
+    now = _now_timestamp()
 
     with get_db() as conn:
         existing = conn.execute(

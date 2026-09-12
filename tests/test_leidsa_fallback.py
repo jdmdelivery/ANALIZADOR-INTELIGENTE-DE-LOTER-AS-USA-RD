@@ -123,9 +123,12 @@ class LeidsaFallbackTests(unittest.TestCase):
         self.assertEqual(calls["ldus"], 0)
 
     def test_all_fail_cache_no_false_success(self):
+        from datetime import datetime, timedelta
+
         models.seed_leidsa_lotteries()
         lot = get_lottery_by_slug("leidsa_loto_pool")
-        upsert_result(lot["id"], "noche", "21:00", "2026-05-20", '["09","10"]', fuente="leidsa.com")
+        recent = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+        upsert_result(lot["id"], "noche", "21:00", recent, '["09","10"]', fuente="leidsa.com")
 
         with patch.object(
             leidsa_service,

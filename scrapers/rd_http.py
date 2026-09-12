@@ -36,14 +36,7 @@ def is_render_env() -> bool:
 def get_rd_session():
     global _session
     if _session is None:
-        try:
-            import cloudscraper
-
-            _session = cloudscraper.create_scraper(
-                browser={"browser": "chrome", "platform": "windows", "mobile": False},
-            )
-        except Exception:
-            _session = requests.Session()
+        _session = requests.Session()
         _session.headers.update(RD_HEADERS)
     return _session
 
@@ -70,6 +63,7 @@ def fetch_rd_url(
             status_code = resp.status_code
             elapsed = round(time.monotonic() - t0, 2)
             size = len(resp.text or "")
+            content_type = resp.headers.get("Content-Type", "")
             logger.info(
                 "%s respuesta | url=%s | status=%s | bytes=%s | tiempo=%ss",
                 LOG,
@@ -94,6 +88,8 @@ def fetch_rd_url(
                 "status_code": status_code,
                 "elapsed": elapsed,
                 "size": size,
+                "bytes": len(resp.content or b""),
+                "content_type": content_type,
             }
         except requests.RequestException as exc:
             last_error = str(exc)
@@ -108,6 +104,8 @@ def fetch_rd_url(
         "elapsed": round(time.monotonic() - t0, 2),
         "error": last_error or "Error de red",
         "message": last_error or "Error de red",
+        "bytes": 0,
+        "content_type": "",
     }
 
 
@@ -136,6 +134,7 @@ def fetch_rd_json(
             resp = session.get(url, headers=headers, timeout=timeout)
             status_code = resp.status_code
             elapsed = round(time.monotonic() - t0, 2)
+            content_type = resp.headers.get("Content-Type", "")
             logger.info(
                 "%s respuesta JSON | url=%s | status=%s | bytes=%s | tiempo=%ss",
                 LOG,
@@ -160,6 +159,8 @@ def fetch_rd_json(
                 "status_code": status_code,
                 "url": resp.url,
                 "elapsed": elapsed,
+                "bytes": len(resp.content or b""),
+                "content_type": content_type,
             }
         except requests.RequestException as exc:
             last_error = str(exc)
@@ -172,4 +173,6 @@ def fetch_rd_json(
         "status_code": status_code,
         "elapsed": round(time.monotonic() - t0, 2),
         "error": last_error or "Error de red",
+        "bytes": 0,
+        "content_type": "",
     }

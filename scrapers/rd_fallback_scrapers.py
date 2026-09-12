@@ -13,6 +13,8 @@ from models import format_numbers, get_all_lotteries, upsert_result
 from scrapers.rd_http import fetch_rd_url
 from services.lottery_normalize import find_lottery_in_list, lottery_names_match, normalize_lottery_name
 from services.rd_lottery_config import get_rd_lottery_config, build_logo_main_page
+from services.rd_time import today_rd, today_rd_iso
+from services.rd_validation import validate_result
 
 logger = logging.getLogger(__name__)
 LOG = "[RD SCRAPER]"
@@ -196,25 +198,51 @@ def _parse_kiskoo_main(html: str, base_url: str, logo_map: dict, year_hint: str,
     payload_url = CONECTATE_PAYLOAD if "conectate" in base_url else LD_PAYLOAD
     label = "conectate_api" if "conectate" in base_url else "loteriasdominicanas_api"
     hub = fetch_hub_rows(api_base=api_base, payload_url=payload_url, days=days, source_label=label)
-    if not hub.get("ok"):
-        return []
     rows = hub.get("rows") or []
-    if page_date:
-        rows = [r for r in rows if r.get("draw_date") == page_date]
-    return [
-        {
-            "lottery_name": r["lottery_name"],
-            "draw_name": r["draw_name"],
-            "draw_date": r["draw_date"],
-            "numbers": r["numbers"],
-            "source_url": r.get("source_url", base_url),
-        }
-        for r in rows
-    ]
+    if rows:
+        if page_date:
+            rows = [r for r in rows if r.get("draw_date") == page_date]
+        return [
+            {
+                "lottery_name": r["lottery_name"],
+                "draw_name": r["draw_name"],
+                "draw_date": r["draw_date"],
+                "numbers": r["numbers"],
+                "source_url": r.get("source_url", base_url),
+            }
+            for r in rows
+        ]
+
+    # Fallback offline parser para HTML legado (tests sin red / snapshots viejos).
+    out: list[dict] = []
+    for chunk in re.findall(r'<div class="game-block[^"]*"[^>]*>.*?</div>\s*</div>', html or "", re.S):
+        logo_m = re.search(r"(?:data-src|src)=\"[^\"]*/([a-z0-9-]+)\.png", chunk, re.I)
+        date_m = re.search(r'class="session-date"[^>]*>\s*([^<]+)\s*<', chunk, re.I)
+        nums = re.findall(r'class="score[^"]*"[^>]*>\s*(\d{1,2})\s*<', chunk, re.I)
+        if len(nums) != 3 or not date_m:
+            continue
+        draw_date = _normalize_date_raw(date_m.group(1), year_hint)
+        if page_date and draw_date != page_date:
+            continue
+        logo_key = (logo_m.group(1) if logo_m else "").strip().lower()
+        mapping = logo_map.get(logo_key)
+        if not mapping:
+            continue
+        lottery_name, draw_name = mapping
+        out.append(
+            {
+                "lottery_name": lottery_name,
+                "draw_name": draw_name,
+                "draw_date": draw_date,
+                "numbers": [_pad(n) for n in nums[:3]],
+                "source_url": base_url,
+            }
+        )
+    return out
 
 
 def _cutoff_iso(days: int) -> str:
-    return (datetime.now() - timedelta(days=max(1, days))).strftime("%Y-%m-%d")
+    return (today_rd() - timedelta(days=max(1, days))).isoformat()
 
 
 def _dedupe_rows(rows: list[dict]) -> list[dict]:
@@ -271,25 +299,41 @@ def save_rd_rows(
     """Guarda filas válidas; nunca borra existentes."""
     lotteries = get_all_lotteries()
     cutoff = _cutoff_iso(days)
-    imported = updated = 0
+    imported = updated = rejected = 0
     errors: list[str] = []
     saved_rows: list[dict] = []
 
     for row in rows:
         nums = row.get("numbers") or []
         if not _valid_quiniela(nums):
+            rejected += 1
             continue
         db_name = _resolve_db_name(row.get("lottery_name") or lottery_name or "")
         if lottery_name and not lottery_names_match(db_name, lottery_name):
             continue
         lot = find_lottery_in_list(lotteries, db_name, country="RD")
         if not lot:
+            rejected += 1
             continue
         dd = row.get("draw_date") or ""
         if dd and dd < cutoff:
             continue
         draw_name = row.get("draw_name") or "tarde"
         draw_time = row.get("draw_time") or _draw_time_for(db_name, draw_name)
+        ok_row, err = validate_result(
+            {
+                **row,
+                "draw_date": dd,
+                "draw_name": draw_name,
+                "numbers": nums,
+            },
+            lottery_type=lot.get("type") or "",
+            allow_unknown_schema=False,
+        )
+        if not ok_row:
+            rejected += 1
+            errors.append(f"{db_name} {dd} {draw_name}: {err}")
+            continue
         try:
             _, action = upsert_result(
                 lot["id"],
@@ -329,6 +373,7 @@ def save_rd_rows(
         "updated": updated,
         "rows_found": len(rows),
         "rows_saved": len(saved_rows),
+        "rejected": rejected,
         "errors": errors[:10],
         "saved_rows": saved_rows,
     }
@@ -367,6 +412,9 @@ def import_conectate_api(lottery_name: str, days: int = 30, *, force_refresh: bo
             errors.append(f"{label}: {err}")
             continue
         raw = _filter_lottery(hub.get("rows") or [], lottery_name)
+        if not raw and lottery_name:
+            # Si el título remoto llega con caracteres corruptos, no descartar todo el lote.
+            raw = hub.get("rows") or []
         raw = _dedupe_rows(_filter_days(raw, days))
         if not raw:
             errors.append(f"{label}: 0 filas para {lottery_name}")
@@ -414,7 +462,7 @@ def import_conectate_hub(lottery_name: str, days: int = 30) -> dict:
     if not page.get("ok"):
         return {**page, "fuente": "conectate", "rows_found": 0, "imported": 0, "updated": 0}
 
-    year_hint = str(datetime.now().year)
+    year_hint = str(today_rd().year)
     db_name = _resolve_db_name(lottery_name)
     raw: list[dict] = []
     for pcfg in (cfg.get("conectate_pages") or []):
@@ -469,7 +517,7 @@ def import_loteriasdominicanas(lottery_name: str, days: int = 30) -> dict:
     if not page.get("ok"):
         return {**page, "fuente": "loteriasdominicanas", "rows_found": 0, "imported": 0, "updated": 0}
 
-    year_hint = str(datetime.now().year)
+    year_hint = str(today_rd().year)
     db_name = _resolve_db_name(lottery_name)
     cfg = get_rd_lottery_config(lottery_name) or {}
     raw: list[dict] = []
@@ -501,7 +549,7 @@ def import_loteriasdominicanas(lottery_name: str, days: int = 30) -> dict:
             raw = _filter_lottery(hub.get("rows") or [], lottery_name)
 
     for days_ago in range(min(days, 14)):
-        dt = datetime.now() - timedelta(days=days_ago)
+        dt = datetime.combine(today_rd(), datetime.min.time()) - timedelta(days=days_ago)
         date_param = dt.strftime("%d-%m-%Y")
         hub = fetch_rd_url(f"{LD_BASE}/?date={date_param}", source="loteriasdominicanas")
         if not hub.get("ok"):
@@ -553,7 +601,7 @@ def _parse_loteriadominicana_html(html: str, source_url: str) -> list[dict]:
         if not _valid_quiniela(nums):
             continue
         date_m = re.search(r"(\d{2}-\d{2}-\d{4})", title)
-        draw_date = _normalize_date_raw(date_m.group(1), str(datetime.now().year)) if date_m else None
+        draw_date = _normalize_date_raw(date_m.group(1), str(today_rd().year)) if date_m else None
         if not draw_date:
             continue
         rows.append({
@@ -622,7 +670,7 @@ def _parse_enloteria_html(html: str, source_url: str) -> list[dict]:
             if mo:
                 draw_date = f"{year}-{mo:02d}-{int(day):02d}"
         if not draw_date:
-            draw_date = datetime.now().strftime("%Y-%m-%d")
+            draw_date = today_rd_iso()
         rows.append({
             "lottery_name": lottery_name,
             "draw_name": draw_name,

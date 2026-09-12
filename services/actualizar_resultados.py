@@ -89,6 +89,7 @@ def actualizar_resultados_rd(
     *,
     days: int = 30,
     refresh_all: bool = False,
+    force_days: int = 0,
 ) -> dict:
     """
     RD multi-fuente: Conectate → LD → LotDom → EnLoteria → caché BD.
@@ -101,7 +102,7 @@ def actualizar_resultados_rd(
 
     if refresh_all or not loteria:
         logger.info("%s Historial completo RD (%s días) — multi-fuente", LOG_RD, days)
-        return actualizar_rd_todas(days=days)
+        return actualizar_rd_todas(days=days, force_days=force_days)
 
     lot = _find_rd_lottery(loteria)
     if not lot:
@@ -111,7 +112,7 @@ def actualizar_resultados_rd(
             "message": f"Lotería RD no encontrada: {loteria}",
         }
 
-    result = actualizar_rd_loteria(lot["name"], days=days)
+    result = actualizar_rd_loteria(lot["name"], days=days, force_days=force_days)
     if result.get("ok"):
         return _finalize_rd_scrape(lot, result, days)
 

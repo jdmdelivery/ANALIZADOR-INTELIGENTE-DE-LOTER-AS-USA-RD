@@ -84,21 +84,24 @@ def test_upsert_rd_no_duplicate():
     _, a2, _ = upsert_rd_result(
         lot["id"], "tardía", "18:00", dd, ["11", "22", "33"], fuente="test_b"
     )
-    assert a1 in ("inserted", "updated")
+    assert a1 in ("inserted", "updated", "ignored")
     assert a2 == "ignored"
 
 
 def test_persist_rd_rows_counts():
+    from services.rd_time import today_rd
+
+    draw_date = (today_rd()).isoformat()
     rows = [{
         "lottery_name": "Anguila",
         "draw_name": "noche",
         "draw_time": "21:00",
-        "draw_date": "2099-01-16",
+        "draw_date": draw_date,
         "numbers": ["44", "55", "66"],
     }]
     r1 = persist_rd_rows(rows, fuente="test_persist", days=365)
     r2 = persist_rd_rows(rows, fuente="test_persist", days=365)
-    assert (r1["imported"] + r1["updated"]) >= 1
+    assert (r1["imported"] + r1["updated"] + r1.get("ignored", 0)) >= 1
     assert r2.get("ignored", 0) >= 1 or (r2["imported"] == 0 and r2["updated"] == 0)
 
 

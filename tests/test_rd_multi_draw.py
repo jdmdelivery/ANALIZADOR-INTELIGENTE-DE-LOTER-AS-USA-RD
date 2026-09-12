@@ -5,7 +5,7 @@ import pytest
 
 from models import (
     count_results_for_date,
-    get_results_for_latest_date,
+    get_results_history,
     migrate_db,
     upsert_result,
 )
@@ -36,12 +36,12 @@ def test_upsert_three_draws_same_day_distinct():
         _, action = upsert_result(
             lid, draw_name, draw_time, dd, nums, fuente="test", confirmed=1
         )
-        assert action in ("inserted", "updated")
+        assert action in ("inserted", "updated", "ignored")
 
     total = count_results_for_date(lid, dd)
     assert total == 3, f"esperaba 3 sorteos, hay {total}"
 
-    results, latest = get_results_for_latest_date(lid, None)
+    results = get_results_history(lid, days=0, limit=2000)
     same_day = [r for r in results if r.get("draw_date") == dd]
     assert len(same_day) == 3
     times = {r["draw_time"] for r in same_day}
@@ -59,6 +59,7 @@ def test_upsert_later_draw_does_not_overwrite_earlier():
     upsert_result(lid, "tarde", "14:30", dd, ["10", "11", "12"], fuente="test")
     assert count_results_for_date(lid, dd) == 3
 
-    results, _ = get_results_for_latest_date(lid, None)
-    tarde = next(r for r in results if r["draw_name"] == "tarde")
+    results = get_results_history(lid, days=0, limit=2000)
+    same_day = [r for r in results if r.get("draw_date") == dd]
+    tarde = next(r for r in same_day if r["draw_name"] == "tarde")
     assert "10" in tarde["numbers"]

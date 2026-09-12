@@ -1,6 +1,7 @@
 """Tests cadena actualización RD — sin tocar USA."""
 from __future__ import annotations
 
+from datetime import date, timedelta
 from unittest.mock import patch
 
 
@@ -25,6 +26,7 @@ def test_needs_fallback_ok_when_rows_no_save():
 
 def test_import_conectate_api_tries_ld_on_403():
     from scrapers.rd_fallback_scrapers import import_conectate_api
+    recent = (date.today() - timedelta(days=1)).isoformat()
 
     hub_403 = {"ok": False, "status_code": 403, "error": "HTTP 403", "rows": []}
     hub_ok = {
@@ -34,7 +36,7 @@ def test_import_conectate_api_tries_ld_on_403():
             {
                 "lottery_name": "Gana Más",
                 "draw_name": "tarde",
-                "draw_date": "2026-06-24",
+                "draw_date": recent,
                 "numbers": ["01", "02", "03"],
                 "source_url": "https://api.test/sessions",
             }

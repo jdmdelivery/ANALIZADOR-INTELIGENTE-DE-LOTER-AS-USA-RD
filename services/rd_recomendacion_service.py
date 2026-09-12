@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import hashlib
 import random
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 
 from models import (
     get_lottery,
@@ -16,6 +16,7 @@ from models import (
     save_recomendacion_rd,
 )
 from services.rd_fuentes_service import get_fuentes_status, get_last_rd_update
+from services.rd_time import today_rd_iso
 from services.recommendations.draw_resolver import resolve_prediction_draw
 from services.recommendations.scoring import confidence_from_score
 
@@ -250,7 +251,7 @@ def generar_recomendacion_rd(
     """
     from services.recommendations.engine import generate_recommendation
 
-    fecha = (fecha_actual or date.today().isoformat())[:10]
+    fecha = (fecha_actual or today_rd_iso())[:10]
     rango = int(rango_dias or 90)
     rango = max(7, min(rango, 365))
 

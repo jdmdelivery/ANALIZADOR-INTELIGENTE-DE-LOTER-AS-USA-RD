@@ -64,7 +64,19 @@ class IncrementalResultsTests(unittest.TestCase):
 
     def test_incremental_without_new_dates_returns_no_new(self):
         before = count_results_for_lottery(self.lottery_id, "noche")
-        out = update_leidsa_game_incremental("leidsa_super_kino_tv", lookback_days=90)
+        with patch(
+            "services.leidsa_history.sync_leidsa_game_history_range",
+            return_value={
+                "ok": True,
+                "rows": [],
+                "results_found": 0,
+                "inserted": 0,
+                "updated": 0,
+                "ignored": 0,
+                "parser": "test",
+            },
+        ):
+            out = update_leidsa_game_incremental("leidsa_super_kino_tv", lookback_days=90)
         after = count_results_for_lottery(self.lottery_id, "noche")
         self.assertTrue(out.get("ok"))
         self.assertEqual(out.get("status"), "no_new")

@@ -21,6 +21,7 @@ from scrapers.kiskoo_nuxt_parser import (
 from scrapers.rd_fallback_scrapers import _draw_time_for, save_rd_rows
 from scrapers.rd_http import fetch_rd_json
 from services.rd_normalize import normalize_rd_row
+from services.rd_time import today_rd
 
 logger = logging.getLogger(__name__)
 
@@ -139,7 +140,7 @@ def fetch_sites_env_range(
 ) -> dict:
     """Intenta sites/env (hoy); si falla, usa sessions hub (una sola llamada)."""
     days = max(1, min(int(days or 30), 365))
-    today = datetime.now().date()
+    today = today_rd()
     fecha = today.strftime("%Y-%m-%d")
 
     res = fetch_sites_env_for_date(fecha, api_kind=api_kind, lottery_name=lottery_name)

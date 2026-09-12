@@ -144,6 +144,39 @@ def _analisis_cantidad_utilizada(result: dict | None) -> int | str:
     return "—"
 
 
+def _prediction_sample_meta(result: dict | None) -> tuple[int, int]:
+    if not isinstance(result, dict):
+        return 0, 0
+    diag = result.get("analyzer_diagnostic") or {}
+    sample = (
+        result.get("history_count")
+        or result.get("total_results")
+        or result.get("total_resultados_usados")
+        or diag.get("sorteos_analizados")
+        or diag.get("total_resultados_usados")
+        or 0
+    )
+    min_req = (
+        result.get("min_required")
+        or result.get("effective_min_history")
+        or diag.get("minimum_required")
+        or 10
+    )
+    try:
+        return int(sample or 0), int(min_req or 0)
+    except Exception:
+        return 0, 0
+
+
+def _is_insufficient_history(result: dict | None) -> bool:
+    if not isinstance(result, dict):
+        return False
+    if result.get("error") == "insufficient_history":
+        return True
+    msg = str(result.get("message") or result.get("mensaje") or "").lower()
+    return "no hay resultados suficientes" in msg or "insuficiente" in msg
+
+
 def _prepare_prediction_response(result: dict | None) -> dict:
     """
     Quita campos pesados de debug interno para evitar respuestas enormes/timeout.
@@ -407,6 +440,8 @@ def health():
     from models import DATABASE, get_connection
     from services.rd_results_debug import _git_commit_short
     from scrapers.kiskoo_nuxt_parser import KISKOO_PARSER_VERSION
+    from services.rd_fuentes_service import get_last_rd_update
+    from services.rd_time import RD_TZ_NAME
 
     db_ok = False
     try:
@@ -417,14 +452,38 @@ def health():
     except Exception as exc:
         logger.error("Health DB check failed: %s", exc)
     status = 200 if db_ok else 503
+    stale = {}
+    try:
+        from services.rd_stale import build_rd_stale_status
+
+        stale = build_rd_stale_status()
+    except Exception:
+        stale = {"ok": False}
     return jsonify({
         "ok": db_ok,
         "status": "healthy" if db_ok else "degraded",
+        "environment": os.environ.get("FLASK_ENV") or ("production" if IS_PRODUCTION else "development"),
         "production": IS_PRODUCTION,
+        "database_type": "sqlite",
+        "database_path": DATABASE,
         "database": DATABASE,
+        "timezone": RD_TZ_NAME,
         "git_commit": _git_commit_short(),
         "rd_parser_version": KISKOO_PARSER_VERSION,
+        "rd_sync_status": {
+            "last_update": get_last_rd_update(),
+            "stale_count": stale.get("stale_count"),
+            "total_scopes": stale.get("total_scopes"),
+        },
     }), status
+
+
+@app.route("/api/resultados/rd/stale", methods=["GET"])
+@admin_required
+def api_resultados_rd_stale():
+    from services.rd_stale import build_rd_stale_status
+
+    return jsonify(build_rd_stale_status())
 
 
 @app.route("/debug/system")
@@ -587,7 +646,9 @@ def api_results():
     else:
         limit_days = max(limit, 30)
 
-    today_iso = datetime.now().strftime("%Y-%m-%d")
+    from services.rd_time import today_rd_iso
+
+    today_iso = today_rd_iso()
 
     is_rd_scope = (
         (lottery and lottery.get("country") == "RD")
@@ -809,6 +870,7 @@ def _api_actualizar_resultados_payload(data=None):
     refresh_all_rd = data.get("refresh_all_rd")
     refresh_all_usa = data.get("refresh_all_usa")
     days = int(data.get("days") or 30)
+    force_days = int(data.get("force_days") or 0)
 
     if es_pais_us(pais):
         return actualizar_resultados_usa(
@@ -823,6 +885,7 @@ def _api_actualizar_resultados_payload(data=None):
             loteria or None,
             days=days,
             refresh_all=bool(refresh_all_rd or not loteria),
+            force_days=force_days,
         )
 
     return {
@@ -1012,6 +1075,7 @@ def _actualizar_resultados_api(data=None):
 
 
 _rd_bulk_update_lock = threading.Lock()
+_rd_active_job_id: str | None = None
 
 
 def _start_rd_update_async(data: dict):
@@ -1026,12 +1090,17 @@ def _start_rd_update_async(data: dict):
     loteria = (data.get("loteria") or data.get("lottery") or "").strip()
     refresh_all = bool(data.get("refresh_all_rd") or not loteria)
     days = int(data.get("days") or 30)
+    force_days = int(data.get("force_days") or 0)
+    from services.rd_update_jobs import create_job, finish_job, start_job
+    global _rd_active_job_id
 
     if not _rd_bulk_update_lock.acquire(blocking=False):
+        running = _rd_active_job_id
         return _api_json_response({
             "ok": True,
             "async": True,
             "already_running": True,
+            "job_id": running,
             "pais": "DO",
             "message": "RD ya se está actualizando. Espere 2-3 minutos y recargue.",
             "mensaje": "RD ya se está actualizando. Espere 2-3 minutos y recargue.",
@@ -1039,8 +1108,17 @@ def _start_rd_update_async(data: dict):
 
     app_ref = current_app._get_current_object()
     loteria_arg = loteria or None
+    job = create_job({
+        "pais": pais,
+        "loteria": loteria_arg,
+        "days": days,
+        "refresh_all": refresh_all,
+        "force_days": force_days,
+    })
+    _rd_active_job_id = job["job_id"]
 
     def _run_rd_bg() -> None:
+        start_job(job["job_id"])
         try:
             with app_ref.app_context():
                 logger.info(
@@ -1053,16 +1131,21 @@ def _start_rd_update_async(data: dict):
                     loteria_arg,
                     days=days,
                     refresh_all=refresh_all,
+                    force_days=force_days,
                 )
+                finish_job(job["job_id"], result=result)
                 logger.info(
                     "[RD ASYNC] Fin ok=%s imported=%s updated=%s",
                     result.get("ok"),
                     result.get("imported"),
                     result.get("updated"),
                 )
-        except Exception:
+        except Exception as exc:
             logger.exception("[RD ASYNC] Error en actualización RD")
+            finish_job(job["job_id"], error=str(exc))
         finally:
+            global _rd_active_job_id
+            _rd_active_job_id = None
             _rd_bulk_update_lock.release()
 
     threading.Thread(
@@ -1076,12 +1159,24 @@ def _start_rd_update_async(data: dict):
     return _api_json_response({
         "ok": True,
         "async": True,
+        "job_id": job["job_id"],
         "pais": "DO",
         "days": days,
         "loteria": loteria,
         "message": msg,
         "mensaje": msg,
     }, 202)
+
+
+@app.route("/api/resultados/rd/update/<job_id>", methods=["GET"])
+@login_required
+def api_rd_update_status(job_id):
+    from services.rd_update_jobs import get_job
+
+    job = get_job(job_id)
+    if not job:
+        return jsonify({"ok": False, "message": "job_id no encontrado"}), 404
+    return jsonify({"ok": True, **job}), 200
 
 
 @app.route("/api/resultados/actualizar", methods=["POST"])
@@ -1137,6 +1232,17 @@ def api_actualizar_resultados_ahora():
             "status": 500,
             "message": str(exc),
         }, 500)
+
+
+@app.route("/api/resultados/rd/update", methods=["POST"])
+@login_required
+def api_resultados_rd_update():
+    data = request.get_json(silent=True) or {}
+    data["pais"] = "RD"
+    data["country"] = "RD"
+    return _start_rd_update_async(data) or _api_json_response(
+        {"ok": False, "message": "No se pudo iniciar update RD."}, 400
+    )
 
 
 @app.route("/api/resultados/debug", methods=["GET"])
@@ -1848,24 +1954,44 @@ def api_prediction():
 
         def build():
             force = request.args.get("force") == "1" or request.args.get("recalc") == "1"
-            build_days = request.args.get("days", type=int)
-            if build_days is None:
-                build_days = request.args.get("rango", type=int)
+            requested_days = request.args.get("days", type=int)
+            if requested_days is None:
+                requested_days = request.args.get("rango", type=int)
+            requested_days = requested_days or 90
             from services.leidsa_config import is_leidsa_game_lottery
 
-            if lottery.get("country") == "RD" and not is_leidsa_game_lottery(lottery):
-                from services.rd_recomendacion_service import generar_recomendacion_rd
-                result = generar_recomendacion_rd(
-                    lottery["name"],
-                    draw_name,
-                    rango_dias=build_days or 90,
-                    force=force,
-                    lottery_id=lottery_id,
-                )
-            else:
-                result = generar_jugada_inteligente(
-                    lottery_id, draw_name, force_refresh=force, days=build_days
-                )
+            ladders = [requested_days]
+            for candidate in (180, 365, None):
+                if candidate not in ladders:
+                    ladders.append(candidate)
+            result = {}
+            effective_days = requested_days
+            for probe_days in ladders:
+                if lottery.get("country") == "RD" and not is_leidsa_game_lottery(lottery):
+                    from services.rd_recomendacion_service import generar_recomendacion_rd
+
+                    result = generar_recomendacion_rd(
+                        lottery["name"],
+                        draw_name,
+                        rango_dias=(probe_days or 365),
+                        force=force,
+                        lottery_id=lottery_id,
+                    )
+                else:
+                    result = generar_jugada_inteligente(
+                        lottery_id,
+                        draw_name,
+                        force_refresh=force,
+                        days=probe_days,
+                    )
+                effective_days = probe_days if probe_days is not None else 0
+                if not _is_insufficient_history(result):
+                    break
+            sample_size, minimum_required = _prediction_sample_meta(result)
+            result["requested_days"] = requested_days
+            result["effective_days"] = effective_days
+            result["sample_size"] = sample_size
+            result["minimum_required"] = minimum_required
             result = _enrich_prediction_payload(result, lottery_id, draw_name, lottery)
             if fecha_mode == "latest" and result.get("ok"):
                 diag = result.get("analyzer_diagnostic") or {}

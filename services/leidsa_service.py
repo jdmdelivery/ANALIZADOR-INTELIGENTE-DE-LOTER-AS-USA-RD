@@ -896,6 +896,7 @@ def _ensure_lottery_ids() -> dict[str, int]:
 
 def save_leidsa_rows(rows: list[dict]) -> dict[str, Any]:
     from models import format_numbers, upsert_result
+    from services.rd_validation import validate_result
 
     lottery_ids = _ensure_lottery_ids()
     inserted = updated = skipped = ignored = 0
@@ -913,6 +914,28 @@ def save_leidsa_rows(rows: list[dict]) -> dict[str, Any]:
             continue
         if not _valid_numbers(row.get("numeros", [])):
             skipped += 1
+            continue
+        lot_type = ""
+        try:
+            from models import get_lottery
+
+            lot_type = (get_lottery(lid) or {}).get("type", "")
+        except Exception:
+            lot_type = ""
+        ok_row, err = validate_result(
+            {
+                "lottery": slug,
+                "lottery_name": row.get("lottery_name", ""),
+                "draw_name": row.get("draw"),
+                "draw_date": row.get("fecha_rd"),
+                "numbers": row.get("numeros", []),
+            },
+            lottery_type=lot_type,
+            allow_unknown_schema=True,
+        )
+        if not ok_row:
+            skipped += 1
+            errors.append(f"{slug}/{row.get('draw')}: {err}")
             continue
 
         nums = format_numbers(row["numeros"])

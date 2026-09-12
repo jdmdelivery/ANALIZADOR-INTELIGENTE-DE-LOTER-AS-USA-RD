@@ -26,6 +26,8 @@ from services.rd_fuentes_service import (
     run_source,
 )
 from services.rd_normalize import normalize_rd_row
+from services.rd_time import today_rd_iso
+from services.rd_validation import validate_result
 from services.rd_lottery_config import iter_enabled_conectate_configs
 
 logger = logging.getLogger(__name__)
@@ -81,7 +83,7 @@ def _import_ld_us(lottery_name: str | None = None, days: int = 30, **_) -> dict:
 
 
 def _cutoff_iso(days: int) -> str:
-    return (datetime.now() - timedelta(days=max(1, int(days)))).strftime("%Y-%m-%d")
+    return (datetime.strptime(today_rd_iso(), "%Y-%m-%d").date() - timedelta(days=max(1, int(days)))).isoformat()
 
 
 def _load_importer(key: str):
@@ -105,12 +107,13 @@ def persist_rd_rows(
     """Guarda filas normalizadas; fusiona fuentes_confirmadas en duplicados."""
     lotteries = get_all_lotteries()
     cutoff = _cutoff_iso(days)
-    imported = updated = ignored = 0
+    imported = updated = ignored = rejected = 0
     errors: list[str] = []
 
     for raw in rows:
         row = normalize_rd_row(raw) if not raw.get("pais") else raw
         if not row:
+            rejected += 1
             continue
         nums = row.get("numbers") or []
         db_name = row.get("lottery_name") or ""
@@ -118,12 +121,26 @@ def persist_rd_rows(
             continue
         lot = find_lottery_in_list(lotteries, db_name, country="RD")
         if not lot:
+            rejected += 1
             continue
         dd = row.get("draw_date") or ""
         if dd and dd < cutoff:
             continue
         draw_name = row.get("draw_name") or "tarde"
         draw_time = row.get("draw_time") or ""
+        ok_row, err = validate_result(
+            {
+                **row,
+                "draw_date": dd,
+                "draw_name": draw_name,
+            },
+            lottery_type=lot.get("type") or "",
+            allow_unknown_schema=False,
+        )
+        if not ok_row:
+            rejected += 1
+            errors.append(f"{db_name} {dd} {draw_name}: {err}")
+            continue
         try:
             rid, action, merged = upsert_rd_result(
                 lot["id"],
@@ -157,6 +174,7 @@ def persist_rd_rows(
         "imported": imported,
         "updated": updated,
         "ignored": ignored,
+        "rejected": rejected,
         "rows_found": len(rows),
         "rows_saved": imported + updated,
         "errors": errors[:10],

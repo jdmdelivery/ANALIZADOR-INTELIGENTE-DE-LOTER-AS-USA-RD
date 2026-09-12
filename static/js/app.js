@@ -464,6 +464,27 @@
         );
     }
 
+    async function pollRdUpdateJob(jobId) {
+        if (!jobId) return null;
+        const maxAttempts = 80;
+        for (let i = 0; i < maxAttempts; i += 1) {
+            await new Promise((resolve) => setTimeout(resolve, 3000));
+            try {
+                const res = await fetch(`/api/resultados/rd/update/${encodeURIComponent(jobId)}`);
+                const data = await parseJsonResponse(res);
+                if (!data.ok) continue;
+                if (data.status === 'running' || data.status === 'queued') {
+                    setRefreshStatus('🔄 Actualizando resultados...', 'loading');
+                    continue;
+                }
+                return data;
+            } catch (e) {
+                console.warn('poll rd update failed', e);
+            }
+        }
+        return null;
+    }
+
     async function refreshResultsNow() {
         if (!currentLotteryId || !btnRefreshResultsNow || refreshResultsInProgress) return;
 
@@ -497,6 +518,36 @@
             const isRd = selectCountry.value === 'RD' || data.pais === 'DO';
 
             if (data.async || res.status === 202) {
+                if (isRd && data.job_id) {
+                    setRefreshStatus('⏳ Actualizando resultados…', 'loading');
+                    const finalJob = await pollRdUpdateJob(data.job_id);
+                    await loadRecentResults(true);
+                    if (finalJob) {
+                        const partial = finalJob.status === 'partial';
+                        const failed = finalJob.status === 'failed';
+                        if (failed) {
+                            setRefreshStatus(
+                                '⚠️ No fue posible obtener resultados nuevos. Se mantienen los últimos resultados guardados.',
+                                'error'
+                            );
+                        } else if (partial) {
+                            setRefreshStatus(
+                                `⚠️ Actualización parcial. Nuevos: ${finalJob.inserted || 0}, actualizados: ${finalJob.updated || 0}, ignorados: ${finalJob.ignored || 0}.`,
+                                'muted'
+                            );
+                        } else {
+                            setRefreshStatus(
+                                `✅ Actualización completada. Nuevos: ${finalJob.inserted || 0}, actualizados: ${finalJob.updated || 0}, ignorados: ${finalJob.ignored || 0}.`,
+                                'ok'
+                            );
+                        }
+                    } else {
+                        setRefreshStatus('⚠️ Actualización en segundo plano sin estado final. Recarga en 1 minuto.', 'muted');
+                    }
+                    if (isRd && leidsaBoard) await loadLeidsaBoard();
+                    recalcPredictionIfNeeded(true);
+                    return;
+                }
                 const msg = data.message || data.mensaje
                     || 'Actualización en segundo plano. Recargue en 2-3 minutos.';
                 setRefreshStatus(`⏳ ${msg}`, 'loading');
