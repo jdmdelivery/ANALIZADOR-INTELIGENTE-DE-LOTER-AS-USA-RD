@@ -12,6 +12,7 @@ from services.rd_update_jobs import create_job, finish_job, get_job, start_job
 from scrapers import rd_http
 from scrapers import rd_fallback_scrapers as rdfs
 from services import leidsa_service
+from services.precision import analytics as precision_analytics
 from services import rd_stale
 from services.rd_validation import validate_result
 
@@ -609,3 +610,48 @@ def test_stale_super_kino_marks_source_unavailable_reason(monkeypatch):
     assert scope["status"] == "STALE"
     assert scope["reason"] == "source_unavailable"
     assert scope["source_blocked"] is True
+
+
+def test_precision_safe_last_updated_handles_empty_sources():
+    now = datetime(2026, 9, 12, 19, 0, 0)
+    out = precision_analytics._safe_last_updated(None, None, now)
+    assert out == "2026-09-12 19:00:00"
+
+
+def test_leidsa_single_game_path_skips_incremental_fetch(monkeypatch):
+    calls = {"update_now": 0}
+
+    def _update_now(**_kw):
+        calls["update_now"] += 1
+        return {
+            "ok": False,
+            "status": "partial",
+            "message": "LEIDSA official blocked (403); no fallback source for Super Kino",
+            "official_blocked": True,
+            "official_status_code": 403,
+                "status_code": 403,
+            "inserted": 0,
+            "updated": 0,
+            "ignored": 0,
+            "rejected": 0,
+            "results_found": 0,
+            "fallback_has_super_kino": False,
+            "latest_date": "2026-07-17",
+            "attempts": [{"source": "leidsa_official", "status": 403}],
+        }
+
+    monkeypatch.setattr("services.leidsa_service.update_leidsa_game_incremental", lambda *_a, **_kw: (_ for _ in ()).throw(AssertionError("incremental must not run")))
+    monkeypatch.setattr("services.leidsa_service.update_leidsa_now", _update_now)
+    monkeypatch.setattr(rdsvc, "find_lottery_in_list", lambda *_a, **_kw: {"id": 19, "name": "LEIDSA Super Kino TV", "country": "RD", "type": "leidsa_super_kino_tv"})
+    monkeypatch.setattr(rdsvc, "get_all_lotteries", lambda: [{"id": 19, "name": "LEIDSA Super Kino TV", "country": "RD", "type": "leidsa_super_kino_tv"}])
+    monkeypatch.setattr(rdsvc, "get_max_draw_date", lambda *_a, **_kw: "2026-07-17")
+    monkeypatch.setattr(rdsvc, "_run_fallback", lambda *_a, **_kw: {"ok": False, "message": "down"})
+
+    out = rdsvc.actualizar_leidsa_multi(days=90, lottery_name="LEIDSA Super Kino TV", max_job_seconds=120)
+    assert calls["update_now"] == 1
+    assert out.get("ok") is True
+    tried = out.get("sources_tried") or []
+    assert tried
+    leidsa_try = tried[0]
+    assert leidsa_try.get("fuente") == "leidsa"
+    assert int(leidsa_try.get("status_code") or 0) == 403

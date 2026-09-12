@@ -45,6 +45,12 @@ def _avg_pct(conn, where: str = "", params: tuple = ()) -> float:
     return round(float(row["v"] or 0), 2)
 
 
+def _safe_last_updated(last_eval: str | None, last_rec: str | None, now: datetime) -> str:
+    """Avoid ValueError when both precision tables are empty."""
+    candidates = [v for v in (last_eval, last_rec) if v]
+    return max(candidates) if candidates else now.strftime("%Y-%m-%d %H:%M:%S")
+
+
 def build_snapshot(conn) -> dict:
     now = datetime.now()
     today = now.strftime("%Y-%m-%d")
@@ -81,7 +87,7 @@ def build_snapshot(conn) -> dict:
     last_rec = conn.execute(
         "SELECT MAX(created_at) as m FROM recommendation_runs"
     ).fetchone()["m"]
-    last_updated = max(filter(None, [last_eval, last_rec])) or now.strftime("%Y-%m-%d %H:%M:%S")
+    last_updated = _safe_last_updated(last_eval, last_rec, now)
 
     avg_score = conn.execute(
         "SELECT AVG(score) as v FROM backtest_results"

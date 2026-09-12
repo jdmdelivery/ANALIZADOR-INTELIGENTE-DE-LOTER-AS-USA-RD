@@ -672,43 +672,12 @@ def actualizar_leidsa_multi(
             }
         return None
 
-    if history_slug:
-        from services.leidsa_service import update_leidsa_game_incremental
-
-        _job_event(job_id, "SOURCE_START", source="leidsa_incremental", elapsed_ms=int((time.monotonic() - t0) * 1000))
-        fast = update_leidsa_game_incremental(
-            history_slug,
-            lookback_days=days,
-        )
-        fast["fuente"] = "leidsa"
-        fast["fuente_label"] = "LEIDSA.com"
-        _record(
-            sources_tried,
-            "leidsa_drawResults",
-            fast,
-            lottery_name=lottery_name or history_slug,
-        )
-        _job_event(job_id, "SOURCE_END", source="leidsa_incremental", elapsed_ms=int((time.monotonic() - t0) * 1000), rows=int(fast.get("rows_found") or 0), status=fast.get("status_code"))
-        if lot:
-            fast["lottery_id"] = lot["id"]
-            fast["latest_date"] = get_max_draw_date(lot["id"]) or fast.get("latest_date")
-            fast["ultima_fecha"] = fast.get("latest_date")
-        if fast.get("ok") and not _latest_is_stale(fast.get("latest_date")):
-            fast["pais"] = "DO"
-            fast["fuente_usada"] = "LEIDSA.com"
-            fast["sources_tried"] = sources_tried
-            fast["imported"] = int(fast.get("inserted") or 0)
-            fast["mensaje"] = fast.get("message") or f"LEIDSA {history_slug} actualizado."
-            return fast
-        if fast.get("ok") and _latest_is_stale(fast.get("latest_date")):
-            msg = (
-                f"LEIDSA {history_slug}: fecha atrasada "
-                f"({fast.get('latest_date') or 'sin fecha'}) — probando fuentes alternativas"
-            )
-            logger.warning("%s %s", LOG, msg)
-            errors.append(msg)
-        elif fast.get("message"):
-            errors.append(fast["message"])
+    # NOTE:
+    # For one-game LEIDSA updates (e.g. Super Kino from UI refresh button), using
+    # the incremental history fetch first can trigger many extra official requests
+    # under WAF 403 and keep the job running for minutes. We rely on update_leidsa_now
+    # below, which already performs a single cached official attempt per job and
+    # reports blocked/unavailable state explicitly.
 
     try:
         from services.leidsa_service import update_leidsa_now
